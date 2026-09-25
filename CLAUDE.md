@@ -56,6 +56,17 @@ and reviewers should reject it on that basis alone.
    any of them — a bigger cap, a higher ceiling, a public result — is a change to the
    law and belongs in this file, not in a PR that quietly needs the room.
 
+   **Public study courses are that change, made here, and they are not a Studio result
+   made public.** A public course is prepared once by the project, never from a reader's
+   material: from a work whose `rights_status` is `public_domain` or `licensed`, reviewed
+   by a person, and published as a snapshot by the service role alone
+   (`publish_study_course`). Its quotations are capped in the schema — 300 characters
+   each, and together a tenth of the source and 20,000 characters — and the source itself
+   is never published (law 4). Readers add it by copy (`enrol_public_course`): no model
+   call and nothing spent, so one preparation serves every reader — the ratio above
+   pointing the right way again. A reader's own course made public is still the thing
+   this law forbids. See `docs/study-public-courses.md`.
+
 3. **Free law — the five stay free.**
    Audio, offline, unlimited history, unlimited stashing and curated Daily Pulls are
    free forever. Each is affordable by design, not by subsidy: audio is client-side

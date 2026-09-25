@@ -824,7 +824,11 @@ export function Course({
           aria-controls={`context-${key}`}
           onClick={() => showContext(claim, ordinal)}
         >
-          {open ? 'Hide the surrounding text' : 'Show it in your text'}
+          {open
+            ? 'Hide the surrounding text'
+            : course?.publicCourseId
+              ? 'Show it among the excerpts'
+              : 'Show it in your text'}
         </button>
         {open && (
           <div id={`context-${key}`}>
@@ -1265,7 +1269,11 @@ export function Course({
                 if (!(e.currentTarget as HTMLDetailsElement).open) setClaimReport(null);
               }}
             >
-              <summary>Where this comes from in your material</summary>
+              <summary>
+                {course.publicCourseId
+                  ? 'Where this comes from in the work'
+                  : 'Where this comes from in your material'}
+              </summary>
               <LessonSources
                 claims={lesson.claims}
                 renderContext={renderContext}
@@ -1524,7 +1532,15 @@ export function Course({
   return (
     <section className="stack measure course">
       <div className="course__bar">{back}</div>
-      <p className="meta">Your private course</p>
+      <p className="meta">
+        {course.publicCourseId ? 'A public course, in your courses' : 'Your private course'}
+      </p>
+      {course.publicCourseLabel && (
+        <p>
+          {course.publicCourseLabel}. Its passages are short quotations from the work; the lessons
+          and questions are ours, checked by a person.
+        </p>
+      )}
       <h1 id="course-title" className="display" tabIndex={-1}>
         {title}
       </h1>
@@ -1686,7 +1702,8 @@ export function Course({
       <hr className="rule" />
       {(course.updateAvailable || status === 'failed' || status === 'empty') &&
         !course.preparing &&
-        !course.awaitingValidation && (
+        !course.awaitingValidation &&
+        !course.publicCourseId && (
           <div className="stack">
             <h2 className="course__subheading">Prepare this course again</h2>
             <p>

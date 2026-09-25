@@ -54,6 +54,9 @@ export interface CourseSummary {
   awaitingValidation: boolean;
   /** The newest generation was saved and validation settled it, whatever its job said. */
   latestSettled: boolean;
+  /** The public course this is a reader's copy of, and where it came from; null for their own. */
+  publicCourseId: string | null;
+  publicCourseLabel: string | null;
   updateAvailable: boolean;
   lessonCount: number;
   lessonsReadCount: number;
@@ -164,6 +167,8 @@ export function shapeCourseSummary(row: unknown): CourseSummary | null {
     heldBack: bool(row.held_back),
     awaitingValidation: bool(row.awaiting_validation),
     latestSettled: bool(row.latest_settled),
+    publicCourseId: nullableStr(row.public_course_id),
+    publicCourseLabel: nullableStr(row.public_course_label),
     updateAvailable: bool(row.update_available),
     lessonCount: int(row.lesson_count),
     lessonsReadCount: int(row.lessons_read_count),
@@ -171,6 +176,49 @@ export function shapeCourseSummary(row: unknown): CourseSummary | null {
     claimCount: int(row.claim_count),
     claimsDemonstratedCount: int(row.claims_demonstrated_count),
   };
+}
+
+/** A course the project published from a rights-cleared work, as the catalogue lists it. */
+export interface PublicCourse {
+  id: string;
+  slug: string;
+  title: string;
+  goal: string;
+  overview: string | null;
+  objectives: string[];
+  lessonCount: number;
+  questionCount: number;
+  workTitle: string;
+  rightsStatus: string;
+}
+
+export function shapePublicCourses(data: unknown): PublicCourse[] {
+  return rows(data).flatMap((r) => {
+    const id = str(r.id);
+    if (!id) return [];
+    return [
+      {
+        id,
+        slug: str(r.slug),
+        title: str(r.title),
+        goal: str(r.goal),
+        overview: nullableStr(r.overview),
+        objectives: strings(r.objectives),
+        lessonCount: int(r.lesson_count),
+        questionCount: int(r.question_count),
+        workTitle: str(r.work_title),
+        rightsStatus: str(r.rights_status),
+      },
+    ];
+  });
+}
+
+/** Where a public course comes from, in words: "From Meditations · public domain". */
+export function publicCourseSource(
+  course: Pick<PublicCourse, 'workTitle' | 'rightsStatus'>,
+): string {
+  const rights = course.rightsStatus === 'public_domain' ? 'public domain' : 'licensed';
+  return `From ${course.workTitle} · ${rights}`;
 }
 
 export function shapeCourseSummaries(data: unknown): CourseSummary[] {
@@ -350,6 +398,9 @@ export function preparationRefusal(
   switch (code) {
     case '55000':
       if (detail === 'preparing') return 'A new version of this course is already being prepared.';
+      if (detail === 'public') {
+        return 'This is a public course, copied into your courses; it is not prepared again from its excerpts.';
+      }
       if (detail === 'unchanged') {
         return 'None of this course’s sources has changed since it was last prepared, so it would come out the same. Save a newer version of a source in Studio first.';
       }

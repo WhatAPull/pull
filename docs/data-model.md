@@ -1,6 +1,6 @@
 # Data model
 
-81 tables in `public`, created by the timestamped migrations in `supabase/migrations/`
+82 tables in `public`, created by the timestamped migrations in `supabase/migrations/`
 (`YYYYMMDDHHMMSS_name.sql`, applied in filename order). Every one has RLS enabled with
 at least one policy, every foreign key has a supporting index, and every
 `SECURITY DEFINER` function pins its `search_path`. CI check 4 replays the whole thing
@@ -73,6 +73,8 @@ generation_dispatches · generation_hash_claims
 reports ─── moderation_decisions · rights_requests
 daily_pulls · daily_pull_selections · interleave_config · rate_limits
 blocked_email_domains                             ← refused at signup
+public_study_courses                              ← published from a rights-cleared work;
+                                                    readers' courses copy it
 study_release_gates ─── study_beta_settings · study_beta_log   ← the study beta: a reviewed
                                                     release, the one switch, every change
 ```
@@ -245,8 +247,9 @@ writes a private reflection note, pulls forward the next due date within 3 days,
 advances the path idempotently via `client_mutation_id`.
 
 **Cost data is not user-facing.** `cost_ledger`, `budget_reservations`,
-`moderation_decisions` and the study beta's `study_release_gates`, `study_beta_settings` and
-`study_beta_log` have RLS enabled with a policy of `using (false)` —
+`moderation_decisions`, the study beta's `study_release_gates`, `study_beta_settings` and
+`study_beta_log`, and `public_study_courses` (whose snapshot carries answer keys; the catalogue
+is read through definer functions) have RLS enabled with a policy of `using (false)` —
 service-role only. That is deliberate, not an oversight: the invariant check
 requires _a_ policy to exist, not that it grants anything. The study beta's three are
 narrower still: the service role only reads them, and the database owner writes them.

@@ -7,6 +7,7 @@ import {
   type CourseSummary,
 } from '../lib/study-course.js';
 import { COURSE_LIST_LIMIT, fetchCourses } from '../lib/study-course-api.js';
+import { PublicCourseList } from '../components/PublicCourseList.js';
 
 function statusLine(course: CourseSummary): string {
   switch (courseStatus(course)) {
@@ -136,6 +137,16 @@ export function Courses({
           )}
         </>
       )}
+      <PublicCourseList
+        enrolled={
+          new Map(
+            courses
+              .filter((c) => c.publicCourseId !== null)
+              .map((c) => [c.publicCourseId as string, c.courseId]),
+          )
+        }
+        onNavigate={onNavigate}
+      />
     </section>
   );
 }

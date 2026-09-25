@@ -100,6 +100,15 @@ schema from the start, before the feature that needs them.
 There is a commercial reason too: ad networks prohibit monetising infringing content, so
 getting this wrong breaks the funding model as well as the legal position.
 
+## Public study courses
+
+A study course the project publishes is analysis of a work, not a copy of it: prepared from a
+work whose `rights_status` is `public_domain` or `licensed`, reviewed by a person, and quoting
+it only in capped excerpts -- 300 characters a quotation, and together a tenth of the source and
+20,000 characters -- which the schema refuses to exceed. The source itself is never published.
+A course can be withdrawn, and for a rights complaint every reader's copy with it. See
+[`study-public-courses.md`](./study-public-courses.md).
+
 ## Attribution
 
 Every Pull keeps its source identity, links back to a legitimate original, and carries

@@ -246,6 +246,7 @@ describe('preparationRefusal', () => {
   it('reads the DETAIL a code shares between refusals', () => {
     expect(preparationRefusal('55000', 'preparing')).toMatch(/already being prepared/);
     expect(preparationRefusal('55000', 'unchanged')).toMatch(/has changed since/);
+    expect(preparationRefusal('55000', 'public')).toMatch(/public course/);
     expect(preparationRefusal('42501', 'beta')).toMatch(/limited beta/);
     expect(preparationRefusal('42501', 'unavailable')).toMatch(/no longer in your account/);
     expect(preparationRefusal('22023', 'too_large')).toMatch(/200,000-character limit/);
