@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+// The beta's goal kinds (20260925220000) read the builder's suggestions by their text.
+import betaMigration from '../../../../supabase/migrations/20260925220000_study_beta.sql?raw';
 import {
   applyProgress,
   asSentence,
@@ -40,6 +42,7 @@ import {
   draftUnsaved,
   lessonDraft,
   allLessons,
+  GOAL_SUGGESTIONS,
 } from './study-course.js';
 
 const overviewRow = {
@@ -759,5 +762,16 @@ describe('the study Delta in a session', () => {
     ];
     expect(nextLesson(done)).toBeNull();
     expect(planSession(done)).toEqual([]);
+  });
+});
+
+describe('the builder\u2019s goals and the beta\u2019s goal kinds', () => {
+  it('names every suggestion the builder offers, so none is counted as the reader\u2019s own', () => {
+    // `study_goal_kind` sorts the beta's courses by what they are for; a suggestion it did
+    // not name would be counted as a goal in the reader's own words.
+    const kinds = betaMigration.slice(betaMigration.indexOf('function public.study_goal_kind'));
+    for (const goal of GOAL_SUGGESTIONS) {
+      expect(kinds).toContain(`when '${goal.toLowerCase()}' then`);
+    }
   });
 });

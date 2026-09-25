@@ -42,6 +42,9 @@ and reviewers should reject it on that basis alone.
      is spent — so the worst case for a day is the cap and not the demand.
    - One requester gets three fast jobs a day, then a widening stagger, and fifty in
      total — counted across both doors, under one per-requester advisory lock.
+   - Who may ask is an allowlist, or every reader with an account once the study beta
+     is open — and it opens only on a human-reviewed release gate recorded in the schema
+     (`docs/study-beta.md`). Opening it widens who may spend the day's cap, never the cap.
    - The result is `private` and never joins the catalogue, so it cannot be a way to
      publish around law 4.
 
