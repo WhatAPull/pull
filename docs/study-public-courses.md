@@ -119,6 +119,9 @@ not written by the reader -- an answer to it proves recall as an answer to the m
 - Deleting the course keeps the excerpts, and adding it again uses them.
 - The reader's copy says where it came from -- the work, and its rights while they hold
   (`public_study_course_origin`, readable only by a reader with a copy).
+- The study beta's dashboards ([`study-beta.md`](./study-beta.md)) leave copies out, and
+  what a reader does in one: they measure courses prepared from readers' own material, and an
+  enrolment would otherwise read as a course prepared and a generation validated.
 
 ## Withdrawing
 

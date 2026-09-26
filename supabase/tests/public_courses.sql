@@ -151,6 +151,27 @@ begin
           ->> 'versionId')::uuid;
 end $fn$;
 
+/*
+ * What the beta's dashboards (20260925220000) add up to, as the owner reads them: every count
+ * each view keeps of courses, generations, answers, reading, reports and changes.
+ */
+create or replace function pg_temp.beta_totals()
+returns jsonb language sql as $fn$
+  select jsonb_build_object(
+    'mix', (select coalesce(sum(courses), 0) from ops.study_beta_mix),
+    'daily', (select coalesce(sum(courses_created + readers_creating + jobs), 0)
+              from ops.study_daily),
+    'validation', (select coalesce(sum(generations + awaiting_validation + held_back
+                                       + claims_validated + claims_quarantined
+                                       + lessons_validated + lessons_quarantined
+                                       + questions_validated + questions_quarantined), 0)
+                   from ops.study_validation_weekly),
+    'learning', (select coalesce(sum(answers + right_unhinted), 0) from ops.study_learning_weekly),
+    'trust', (select coalesce(sum(lessons_shown + lessons_read + lessons_skipped + questions_shown
+                                  + reports + withdrawn + corrected), 0)
+              from ops.study_trust_weekly))
+$fn$;
+
 /* Record one answer and hand back its result. */
 create or replace function pg_temp.answer(p_item uuid, p_response jsonb)
 returns jsonb language sql as $fn$
@@ -198,6 +219,10 @@ declare
   pub       uuid;
   lic_pub   uuid;
   filler    uuid;
+  totals    jsonb;
+  p_gen     uuid;
+  p_lesson  uuid;
+  p_item    uuid;
   copy      uuid;
   copy_gen  uuid;
   cur_copy  uuid;
@@ -552,6 +577,40 @@ begin
   if exists (select 1 from public.public_study_course_origin(pub)) then
     raise exception 'a reader without a copy read where a public course came from';
   end if;
+
+  -- The beta's dashboards count what readers prepared from their own material: a copy, and
+  -- what a reader does in one -- reading, answering, reporting, withdrawing, correcting -- is
+  -- none of it. Probed, and undone.
+  begin
+    perform pg_temp.as_owner();
+    totals := pg_temp.beta_totals();
+    perform pg_temp.become_reader(reader);
+    p_gen := (public.enrol_public_course(pub) ->> 'generationId')::uuid;
+    select id into p_lesson from public.study_lessons
+    where generation_id = p_gen order by lesson_key limit 1;
+    select id into p_item from public.study_items
+    where generation_id = p_gen order by item_key limit 1;
+    perform public.record_study_progress(jsonb_build_array(
+      jsonb_build_object('clientEventId', extensions.gen_random_uuid(), 'kind', 'lesson_shown',
+                         'lessonId', p_lesson),
+      jsonb_build_object('clientEventId', extensions.gen_random_uuid(), 'kind', 'lesson_read',
+                         'lessonId', p_lesson)));
+    r := pg_temp.answer(p_item, '"Neither group"');
+    if (r ->> 'recorded')::int <> 1 then
+      raise exception 'the probe''s answer in a copy was not recorded: %', r;
+    end if;
+    perform public.report_study_content('lesson', p_lesson, 'incorrect', null);
+    perform public.revise_study_lesson(p_lesson, '{"title": "Said my way"}');
+    perform public.retire_study_content('item', p_item);
+    perform pg_temp.as_owner();
+    if pg_temp.beta_totals() is distinct from totals then
+      raise exception 'a copy counted in the beta''s dashboards: % then %',
+        totals, pg_temp.beta_totals();
+    end if;
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
 
   -- ---------------------------------------------------------------- enrolling
   perform pg_temp.become_reader(reader);

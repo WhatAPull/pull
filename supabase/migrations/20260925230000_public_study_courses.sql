@@ -1864,3 +1864,229 @@ begin
   );
 end
 $fn$;
+
+-- ------------------------------------------------------------------ the beta's views
+
+/*
+ * The beta's dashboards (20260925220000) measure courses readers prepared from their own
+ * material. A public course's copy is none of that: it is the project's course, added by
+ * enrolment, and its generation, claims, lessons and questions arrive with the snapshot --
+ * counted, one enrolment would read as a course prepared, a generation validated, questions
+ * passed. So each view leaves a copy out, and a reader's answers, reading, reports and
+ * corrections in one: they are about the project's course, not about what the pipeline
+ * prepared. The status view needs nothing: a copy is never assembled, so it has no
+ * provenance to be off the gate by.
+ */
+
+create or replace view ops.study_beta_mix as
+with courses as (
+  select c.id, c.owner_id, c.goal, public.study_course_generation(c.id) as generation_id
+  from public.study_courses c
+  where c.public_course_id is null
+)
+select 'format'::text as dimension,
+       public.study_format_family(v.format) as value,
+       count(distinct cs.id)::int as courses,
+       count(distinct cs.owner_id)::int as readers
+from courses cs
+join public.study_generation_sources gs on gs.generation_id = cs.generation_id
+join public.study_source_versions v on v.id = gs.source_version_id
+group by 1, 2
+union all
+select 'goal', public.study_goal_kind(cs.goal), count(*)::int, count(distinct cs.owner_id)::int
+from courses cs
+where cs.generation_id is not null
+group by 1, 2;
+
+create or replace view ops.study_daily as
+with jobs as (
+  select j.id, j.status, j.created_at, j.finished_at
+  from public.generation_jobs j
+  where j.kind = 'study_course'
+),
+spend as (
+  select (l.created_at at time zone 'UTC')::date as day, sum(l.cost_cents) as cents
+  from public.cost_ledger l
+  join jobs j on j.id = l.job_id
+  group by 1
+),
+per_day as (
+  select (j.created_at at time zone 'UTC')::date as day,
+         count(*)::int as jobs,
+         count(*) filter (where j.status = 'succeeded')::int as succeeded,
+         count(*) filter (where j.status = 'failed')::int as failed,
+         count(*) filter (where j.status = 'cancelled')::int as cancelled,
+         count(*) filter (where j.status in ('queued', 'running'))::int as in_flight,
+         percentile_cont(0.5) within group (
+           order by extract(epoch from j.finished_at - j.created_at) / 60)
+           filter (where j.status = 'succeeded') as median_minutes,
+         percentile_cont(0.95) within group (
+           order by extract(epoch from j.finished_at - j.created_at) / 60)
+           filter (where j.status = 'succeeded') as p95_minutes
+  from jobs j
+  group by 1
+),
+courses as (
+  select (c.created_at at time zone 'UTC')::date as day, count(*)::int as courses,
+         count(distinct c.owner_id)::int as readers
+  from public.study_courses c
+  where c.public_course_id is null
+  group by 1
+)
+select coalesce(p.day, c.day, s.day) as day,
+       coalesce(c.courses, 0) as courses_created,
+       coalesce(c.readers, 0) as readers_creating,
+       coalesce(p.jobs, 0) as jobs,
+       coalesce(p.succeeded, 0) as succeeded,
+       coalesce(p.failed, 0) as failed,
+       coalesce(p.cancelled, 0) as cancelled,
+       coalesce(p.in_flight, 0) as in_flight,
+       p.median_minutes,
+       p.p95_minutes,
+       coalesce(s.cents, 0) as spend_cents
+from per_day p
+full join courses c on c.day = p.day
+full join spend s on s.day = coalesce(p.day, c.day);
+
+create or replace view ops.study_validation_weekly as
+with gens as (
+  select g.id, date_trunc('week', g.created_at at time zone 'UTC')::date as week, g.text_status
+  from public.study_generations g
+  where g.public_course_id is null
+)
+select gens.week,
+       count(*)::int as generations,
+       count(*) filter (where gens.text_status = 'pending')::int as awaiting_validation,
+       count(*) filter (where public.study_generation_rank(gens.id) = 0
+                          and gens.text_status <> 'pending')::int as held_back,
+       (select count(*) from public.study_claims c join gens g2 on g2.id = c.generation_id
+        where g2.week = gens.week and c.status = 'validated')::int as claims_validated,
+       (select count(*) from public.study_claims c join gens g2 on g2.id = c.generation_id
+        where g2.week = gens.week and c.status = 'quarantined')::int as claims_quarantined,
+       (select count(*) from public.study_lessons l join gens g2 on g2.id = l.generation_id
+        where g2.week = gens.week and l.authored_by = 'model'
+          and l.status = 'validated')::int as lessons_validated,
+       (select count(*) from public.study_lessons l join gens g2 on g2.id = l.generation_id
+        where g2.week = gens.week and l.authored_by = 'model'
+          and l.status = 'quarantined')::int as lessons_quarantined,
+       (select count(*) from public.study_items i join gens g2 on g2.id = i.generation_id
+        where g2.week = gens.week and i.authored_by = 'model'
+          and i.status = 'validated')::int as questions_validated,
+       (select count(*) from public.study_items i join gens g2 on g2.id = i.generation_id
+        where g2.week = gens.week and i.authored_by = 'model'
+          and i.status = 'quarantined')::int as questions_quarantined
+from gens
+group by gens.week;
+
+create or replace view ops.study_learning_weekly as
+with every_answer as (
+  -- Every answer to the question, in any of its versions and however graded, before the
+  -- measure is filtered: a self-graded "not had" or a wrong answer to the reader's own
+  -- version between two right ones is the last answer before the second.
+  select e.owner_id,
+         e.answered_at,
+         e.correct,
+         e.hinted,
+         e.claims_known_before,
+         e.grading = 'deterministic' and i.authored_by = 'model' as counted,
+         lag(e.answered_at) over w as previous_at,
+         lag(e.correct and not e.hinted and e.grading = 'deterministic') over w as previous_clean
+  from public.study_answer_events e
+  join public.study_items i on i.id = e.item_id and i.owner_id = e.owner_id
+  join public.study_generations g on g.id = i.generation_id and g.public_course_id is null
+  window w as (partition by e.owner_id, i.lineage_id order by e.answered_at, e.id)
+),
+answers as (
+  select * from every_answer where counted
+)
+select date_trunc('week', a.answered_at at time zone 'UTC')::date as week,
+       count(*)::int as answers,
+       count(distinct a.owner_id)::int as readers,
+       count(*) filter (where a.correct and not a.hinted)::int as right_unhinted,
+       count(*) filter (where a.previous_clean
+                          and a.answered_at - a.previous_at >= interval '7 days')::int
+         as delayed_attempts,
+       count(*) filter (where a.previous_clean
+                          and a.answered_at - a.previous_at >= interval '7 days'
+                          and a.correct and not a.hinted)::int
+         as delayed_recalled,
+       -- Unhinted only: a hinted answer is not a test of what the reader knew.
+       count(*) filter (where a.claims_known_before and not a.hinted)::int as answers_when_known,
+       count(*) filter (where a.claims_known_before and not a.hinted and not a.correct)::int
+         as wrong_when_known
+from answers a
+group by 1;
+
+create or replace view ops.study_trust_weekly as
+with shown as (
+  select date_trunc('week', p.recorded_at at time zone 'UTC')::date as week,
+         count(*) filter (where p.kind = 'lesson_shown')::int as lessons_shown,
+         count(*) filter (where p.kind = 'lesson_read')::int as lessons_read,
+         count(*) filter (where p.kind = 'lesson_skipped')::int as lessons_skipped,
+         count(*) filter (where p.kind = 'item_shown')::int as questions_shown
+  from public.study_progress_events p
+  where not exists (select 1 from public.study_generations g
+                    where g.id = p.generation_id and g.public_course_id is not null)
+  group by 1
+),
+reports as (
+  select date_trunc('week', r.created_at at time zone 'UTC')::date as week,
+         count(*)::int as reports,
+         count(*) filter (where r.lesson_id is not null)::int as lesson_reports,
+         count(*) filter (where r.claim_id is not null)::int as claim_reports,
+         count(*) filter (where r.item_id is not null)::int as question_reports,
+         count(*) filter (where r.status = 'dismissed')::int as reports_restored
+  from public.study_reports r
+  where not exists (select 1 from public.study_generations g
+                    where g.id = r.generation_id and g.public_course_id is not null)
+  group by 1
+),
+withdrawals as (
+  -- The lesson, claim or question withdrawn; what rests on a withdrawn claim is logged as
+  -- `claim_retired` and not counted again.
+  select date_trunc('week', s.at at time zone 'UTC')::date as week, count(*)::int as withdrawn
+  from public.study_status_log s
+  where s.reason = 'retired'
+    and not exists (
+      select 1 from public.study_generations g
+      where g.public_course_id is not null
+        and g.id = coalesce(
+              (select c.generation_id from public.study_claims c where c.id = s.claim_id),
+              (select l.generation_id from public.study_lessons l where l.id = s.lesson_id),
+              (select i.generation_id from public.study_items i where i.id = s.item_id)))
+  group by 1
+),
+corrections as (
+  select date_trunc('week', x.created_at at time zone 'UTC')::date as week,
+         count(*)::int as corrected
+  from (select l.created_at, l.generation_id from public.study_lessons l
+        where l.authored_by = 'reader'
+        union all
+        select i.created_at, i.generation_id from public.study_items i
+        where i.authored_by = 'reader') as x
+  where not exists (select 1 from public.study_generations g
+                    where g.id = x.generation_id and g.public_course_id is not null)
+  group by 1
+),
+changes as (
+  select coalesce(w.week, c.week) as week,
+         coalesce(w.withdrawn, 0) as withdrawn,
+         coalesce(c.corrected, 0) as corrected
+  from withdrawals w
+  full join corrections c on c.week = w.week
+)
+select coalesce(sh.week, r.week, ch.week) as week,
+       coalesce(sh.lessons_shown, 0) as lessons_shown,
+       coalesce(sh.lessons_read, 0) as lessons_read,
+       coalesce(sh.lessons_skipped, 0) as lessons_skipped,
+       coalesce(sh.questions_shown, 0) as questions_shown,
+       coalesce(r.reports, 0) as reports,
+       coalesce(r.lesson_reports, 0) as lesson_reports,
+       coalesce(r.claim_reports, 0) as claim_reports,
+       coalesce(r.question_reports, 0) as question_reports,
+       coalesce(r.reports_restored, 0) as reports_restored,
+       coalesce(ch.withdrawn, 0) as withdrawn,
+       coalesce(ch.corrected, 0) as corrected
+from shown sh
+full join reports r on r.week = sh.week
+full join changes ch on ch.week = coalesce(sh.week, r.week);
