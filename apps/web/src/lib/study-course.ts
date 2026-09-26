@@ -66,7 +66,8 @@ export interface CourseSummary {
   publicCourseWorkTitle: string | null;
   /**
    * The public course is still offered: not withdrawn, and its work's rights hold. When it is
-   * not, the copy stays the reader's, but a copy deleted cannot be added again.
+   * not, the reader can go on studying the copy they have -- until it is removed, as the
+   * copies of a course withdrawn over its rights are -- but a copy deleted cannot be added again.
    */
   publicCourseOnOffer: boolean;
   updateAvailable: boolean;
@@ -321,6 +322,55 @@ export function publicCopyLabel(
   return course.publicCourseWorkTitle
     ? `Public course · a course on ${course.publicCourseWorkTitle}`
     : 'Public course';
+}
+
+/** What a course's page says of what it is, and of deleting it. */
+export interface CopyWords {
+  /** Under where a copy comes from, once its course is no longer offered; null before. */
+  offerNote: string | null;
+  /** What deleting it leaves, said before the reader confirms. */
+  deleteWarning: string;
+  /** What deleting it left, said after. */
+  deleted: string;
+  /** Whose it is, at the foot of the page. */
+  footer: string;
+}
+
+/**
+ * The words for the reader's own course, a copy of a public course on offer, and a copy of one
+ * no longer offered -- which says only what is true while it is shown: that the copy can be
+ * studied now, not that it is kept, since the copies of a course withdrawn over its rights are
+ * removed.
+ */
+export function copyWords(
+  course: Pick<CourseSummary, 'publicCourseId' | 'publicCourseOnOffer'> | null | undefined,
+): CopyWords {
+  if (!course?.publicCourseId) {
+    const sources = 'Its sources stay in Studio, and you can make a new course from them.';
+    return {
+      offerNote: null,
+      deleteWarning: sources,
+      deleted: sources,
+      footer:
+        'This course is private to you. It was made from your own material and is never published.',
+    };
+  }
+  if (course.publicCourseOnOffer) {
+    return {
+      offerNote: null,
+      deleteWarning: 'You can add it again from Courses; it starts over.',
+      deleted: 'You can add it again from Courses; it starts over.',
+      footer:
+        'Your copy is private to you: what you read and answer is yours alone. The course itself is published by What a Pull.',
+    };
+  }
+  return {
+    offerNote: 'No longer offered. You can go on studying your copy.',
+    deleteWarning: 'It is no longer offered, so it cannot be added again: deleting it is for good.',
+    deleted: 'It was no longer offered, so it cannot be added again.',
+    footer:
+      'Your copy is private to you: what you read and answer is yours alone. The course itself was published by What a Pull.',
+  };
 }
 
 /**

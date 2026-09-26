@@ -39,8 +39,13 @@
 
 .public-course > * {
   margin: 0;
+}
+
+/* A title, a goal or a work's name with no space in it breaks rather than widening the page:
+   on the course page, in a row of the reader's courses, and in a public course on offer. */
+.course > *,
+.courses__item > * {
   min-width: 0;
-  /* A title or a work's name with no space in it breaks rather than widening the page. */
   overflow-wrap: anywhere;
 }
 

@@ -48,6 +48,7 @@ import {
   excerptWindow,
   lessonCountLabel,
   publicCopyLabel,
+  copyWords,
   reportReasons,
   REPORT_REASONS,
   shapeEnrolment,
@@ -283,6 +284,38 @@ describe('public courses', () => {
     ).toBe('Public course · no longer offered');
   });
 
+  it('says what a course is and what deleting it leaves: the reader’s own, a copy on offer, and one not', () => {
+    const own = copyWords({ publicCourseId: null, publicCourseOnOffer: false });
+    expect(own).toEqual({
+      offerNote: null,
+      deleteWarning: 'Its sources stay in Studio, and you can make a new course from them.',
+      deleted: 'Its sources stay in Studio, and you can make a new course from them.',
+      footer:
+        'This course is private to you. It was made from your own material and is never published.',
+    });
+    // Deleted, the course may be gone from the page's state: it is said as the reader's own.
+    expect(copyWords(null)).toEqual(own);
+    expect(copyWords({ publicCourseId: 'p1', publicCourseOnOffer: true })).toEqual({
+      offerNote: null,
+      deleteWarning: 'You can add it again from Courses; it starts over.',
+      deleted: 'You can add it again from Courses; it starts over.',
+      footer:
+        'Your copy is private to you: what you read and answer is yours alone. The course itself is published by What a Pull.',
+    });
+    // No longer offered: what is true while the page is shown, and no promise the copy is kept
+    // -- the copies of a course withdrawn over its rights are removed.
+    const gone = copyWords({ publicCourseId: 'p1', publicCourseOnOffer: false });
+    expect(gone).toEqual({
+      offerNote: 'No longer offered. You can go on studying your copy.',
+      deleteWarning:
+        'It is no longer offered, so it cannot be added again: deleting it is for good.',
+      deleted: 'It was no longer offered, so it cannot be added again.',
+      footer:
+        'Your copy is private to you: what you read and answer is yours alone. The course itself was published by What a Pull.',
+    });
+    expect(Object.values(gone).join(' ')).not.toMatch(/stays|keep|always|forever/i);
+  });
+
   it('reads the answer to adding one, and an answer that names no copy as none', () => {
     expect(shapeEnrolment({ courseId: 'c1', replayed: false })).toEqual({
       courseId: 'c1',
@@ -432,7 +465,7 @@ describe('public courses', () => {
     expect(
       shapeSourceText({
         extracted_text: 'x',
-        quotations: [[3, 1], [0.5, 2], ['0', 2], [0], [-1, 2], [0, 1]],
+        quotations: [[3, 1], [0.5, 2], [0, 2.5], ['0', 2], [0], [-1, 2], [0, 1]],
       }).quotations,
     ).toEqual([[0, 1]]);
     expect(shapeSourceText(undefined)).toEqual({ text: '', quotations: [] });

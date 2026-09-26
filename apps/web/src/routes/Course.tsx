@@ -23,6 +23,7 @@ import {
   asSentence,
   awaitingPreparation,
   contextWindow,
+  copyWords,
   courseProgressLabel,
   correctionRefusal,
   courseStatus,
@@ -1019,13 +1020,7 @@ export function Course({
         <h1 id="course-title" tabIndex={-1}>
           The course is deleted.
         </h1>
-        <p>
-          {!course?.publicCourseId
-            ? 'Its sources stay in Studio, and you can make a new course from them.'
-            : course.publicCourseOnOffer
-              ? 'You can add it again from Courses; it starts over.'
-              : 'It was no longer offered, so it cannot be added again.'}
-        </p>
+        <p>{copyWords(course).deleted}</p>
       </section>
     );
   }
@@ -1553,6 +1548,7 @@ export function Course({
   const readCount = lessons.filter((l) => l.state === 'read').length;
   // A course nobody has opened yet: nothing shown, read or skipped.
   const untouched = lessons.length > 0 && lessons.every((l) => l.state === 'not_seen');
+  const words = copyWords(course);
 
   return (
     <section className="stack measure course">
@@ -1583,9 +1579,7 @@ export function Course({
           {course.publicCourseLabel ? ` · ${course.publicCourseLabel}` : ''}
         </p>
       )}
-      {course.publicCourseId && !course.publicCourseOnOffer && (
-        <p className="meta">No longer offered. Your copy stays yours.</p>
-      )}
+      {words.offerNote && <p className="meta">{words.offerNote}</p>}
       {course.title && course.goal && <p className="meta">Goal: {course.goal}</p>}
       {noticeLine}
 
@@ -1786,11 +1780,7 @@ export function Course({
         <div className="stack" role="group" aria-labelledby="course-delete-warning">
           <p id="course-delete-warning" tabIndex={-1}>
             Deleting this course removes its lessons, its questions and your place in it.{' '}
-            {!course.publicCourseId
-              ? 'Its sources stay in Studio, and you can make a new course from them.'
-              : course.publicCourseOnOffer
-                ? 'You can add it again from Courses; it starts over.'
-                : 'It is no longer offered, so it cannot be added again: deleting it is for good.'}
+            {words.deleteWarning}
           </p>
           <div className="course__actions">
             <button
@@ -1826,13 +1816,7 @@ export function Course({
           </button>
         </p>
       )}
-      <p className="meta">
-        {!course.publicCourseId
-          ? 'This course is private to you. It was made from your own material and is never published.'
-          : course.publicCourseOnOffer
-            ? 'Your copy is private to you: what you read and answer is yours alone. The course itself is published by What a Pull.'
-            : 'Your copy is private to you: what you read and answer is yours alone. The course itself was published by What a Pull.'}
-      </p>
+      <p className="meta">{words.footer}</p>
     </section>
   );
 }

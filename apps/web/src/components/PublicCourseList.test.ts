@@ -10,7 +10,7 @@ vi.mock('../lib/study-course-api.js', () => ({
   fetchPublicCourses: vi.fn(),
 }));
 
-const { PublicCourseCard, enrolOutcome, oneEnrolmentAtATime } =
+const { OutlineBody, PublicCourseCard, enrolOutcome, oneEnrolmentAtATime } =
   await import('./PublicCourseList.js');
 const { rpcError, TRANSPORT_ERROR } = await import('../lib/rpc-error.js');
 
@@ -103,6 +103,33 @@ describe('PublicCourseCard', () => {
   });
 });
 
+describe('OutlineBody', () => {
+  const outline = (units: Parameters<typeof OutlineBody>[0]['units']) =>
+    renderToStaticMarkup(createElement(OutlineBody, { units }));
+
+  it('shows the units and their lessons, in order', () => {
+    const html = outline([
+      {
+        unitNo: 1,
+        unitTitle: 'Timing',
+        lessons: [
+          { unitNo: 1, unitTitle: 'Timing', title: 'Lesson one', minutes: 3 },
+          { unitNo: 1, unitTitle: 'Timing', title: 'Lesson two', minutes: 4 },
+        ],
+      },
+    ]);
+    expect(html).toMatch(
+      /<h4 class="course__unit-title">Timing<\/h4>.*<span>Lesson one<\/span><span class="course__lesson-state">3 min<\/span>.*<span>Lesson two<\/span>/,
+    );
+  });
+
+  it('says a course no longer offered is, and is not taken for one with no lessons', () => {
+    // No course came back: withdrawn, or its work's rights in question.
+    expect(outline(null)).toBe('<p>This course is no longer offered.</p>');
+    expect(outline([])).toBe('<p>This course has no lessons to show now.</p>');
+  });
+});
+
 describe('adding a public course', () => {
   it('says a copy made, and one the reader had, and hands back the copy', () => {
     expect(enrolOutcome({ answer: { courseId: 'c1', replayed: false } })).toEqual({
@@ -116,11 +143,12 @@ describe('adding a public course', () => {
     });
   });
 
-  it('reads an answer naming no copy as a copy made, and asks for the reader’s list again', () => {
+  it('reads an answer naming no copy as a copy made, said as a status and not a failure', () => {
+    // The reader's list is read again to show it, and that read may fail: "should".
     expect(enrolOutcome({ answer: null })).toEqual({
-      kind: 'error',
-      refresh: true,
-      text: 'The course was added, but its answer could not be read. It is among your courses above.',
+      kind: 'added',
+      courseId: null,
+      text: 'Added to your courses. It should now be among your courses above.',
     });
   });
 
@@ -131,12 +159,10 @@ describe('adding a public course', () => {
     expect(enrolOutcome(refused('P0002'))).toEqual({ kind: 'withdrawn' });
     expect(enrolOutcome(refused('54000'))).toEqual({
       kind: 'error',
-      refresh: false,
       text: 'That is as many public courses as can be added in a day. More at 00:00 UTC.',
     });
-    expect(enrolOutcome(refused('XX000', 'something went wrong'))).toMatchObject({
+    expect(enrolOutcome(refused('XX000', 'something went wrong'))).toEqual({
       kind: 'error',
-      refresh: false,
       text: 'Something went wrong',
     });
     // Offline, the request may have landed: it is not said to have failed.
@@ -144,7 +170,6 @@ describe('adding a public course', () => {
     lost.name = TRANSPORT_ERROR;
     expect(enrolOutcome({ error: lost })).toEqual({
       kind: 'error',
-      refresh: false,
       text: 'That may not have reached your account — you look offline. Try again when you reconnect.',
     });
   });

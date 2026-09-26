@@ -27,14 +27,14 @@ import {
 export type CardNote = { kind: 'added' | 'error'; text: string };
 
 /**
- * What adding a course came to: a copy (made, or found); a course no longer offered; or a
- * failure to say -- after which `refresh` asks for the reader's own list again, when the copy
- * was made though its answer could not be read.
+ * What adding a course came to: a copy (made, or found) -- which `courseId` names, unless the
+ * answer could not be read, when the reader's own list is what will show it; a course no
+ * longer offered; or a failure to say.
  */
 export type EnrolOutcome =
-  | { kind: 'added'; courseId: string; text: string }
+  | { kind: 'added'; courseId: string | null; text: string }
   | { kind: 'withdrawn' }
-  | { kind: 'error'; text: string; refresh: boolean };
+  | { kind: 'error'; text: string };
 
 export function enrolOutcome(
   settled: { answer: Enrolment | null } | { error: unknown },
@@ -45,17 +45,18 @@ export function enrolOutcome(
     if (sqlState(e) === 'P0002') return { kind: 'withdrawn' };
     return {
       kind: 'error',
-      refresh: false,
       text: isOfflineFailure(e)
         ? 'That may not have reached your account — you look offline. Try again when you reconnect.'
         : (enrolRefusal(sqlState(e)) ?? asSentence(e instanceof Error ? e.message : String(e))),
     };
   }
+  // Answered without naming the copy: the answer is the copy made, so it is said as made. The
+  // reader's list is asked for again, and should show it -- should, since that read can fail.
   if (!settled.answer) {
     return {
-      kind: 'error',
-      refresh: true,
-      text: 'The course was added, but its answer could not be read. It is among your courses above.',
+      kind: 'added',
+      courseId: null,
+      text: 'Added to your courses. It should now be among your courses above.',
     };
   }
   return {
@@ -89,11 +90,36 @@ export function oneEnrolmentAtATime(
 }
 
 /**
- * The lesson outline, loaded the first time the reader opens it; a course no longer offered
- * has none to show, and says so.
+ * A course's outline, as the catalogue answered for it: its units, or null for a course no
+ * longer offered -- withdrawn, or its work's rights in question -- which has none to show, and
+ * is not the same thing to say as a course with no lessons in it.
  */
+export function OutlineBody({ units }: { units: PublicOutlineUnit[] | null }) {
+  if (!units) return <p>This course is no longer offered.</p>;
+  if (units.length === 0) return <p>This course has no lessons to show now.</p>;
+  return (
+    <ol className="course__units">
+      {units.map((unit) => (
+        <li key={unit.unitNo} className="course__unit">
+          <h4 className="course__unit-title">{unit.unitTitle}</h4>
+          <ol className="course__lessons">
+            {unit.lessons.map((lesson, i) => (
+              <li key={i} className="course__lesson">
+                <span>{lesson.title}</span>
+                <span className="course__lesson-state">{lesson.minutes} min</span>
+              </li>
+            ))}
+          </ol>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/** The lesson outline, loaded the first time the reader opens it. */
 function OutlineDetails({ slug, titleId }: { slug: string; titleId: string }) {
-  const [outline, setOutline] = useState<PublicOutlineUnit[] | 'withdrawn' | null>(null);
+  // Once answered: the catalogue's answer, held as it came.
+  const [outline, setOutline] = useState<{ units: PublicOutlineUnit[] | null } | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [asked, setAsked] = useState(false);
   const loading = useRef<AbortController | null>(null);
@@ -109,7 +135,7 @@ function OutlineDetails({ slug, titleId }: { slug: string; titleId: string }) {
     setFailed(null);
     fetchPublicCourseOutline(slug, controller.signal)
       .then((units) => {
-        if (!controller.signal.aborted) setOutline(units ?? 'withdrawn');
+        if (!controller.signal.aborted) setOutline({ units });
       })
       .catch((e: unknown) => {
         if (controller.signal.aborted) return;
@@ -132,28 +158,8 @@ function OutlineDetails({ slug, titleId }: { slug: string; titleId: string }) {
       }}
     >
       <summary aria-describedby={titleId}>Outline</summary>
-      {outline === 'withdrawn' ? (
-        <p>This course is no longer offered.</p>
-      ) : outline ? (
-        outline.length === 0 ? (
-          <p>This course has no lessons to show now.</p>
-        ) : (
-          <ol className="course__units">
-            {outline.map((unit) => (
-              <li key={unit.unitNo} className="course__unit">
-                <h4 className="course__unit-title">{unit.unitTitle}</h4>
-                <ol className="course__lessons">
-                  {unit.lessons.map((lesson, i) => (
-                    <li key={i} className="course__lesson">
-                      <span>{lesson.title}</span>
-                      <span className="course__lesson-state">{lesson.minutes} min</span>
-                    </li>
-                  ))}
-                </ol>
-              </li>
-            ))}
-          </ol>
-        )
+      {outline ? (
+        <OutlineBody units={outline.units} />
       ) : failed ? (
         <p>{failed}</p>
       ) : asked ? (
@@ -271,7 +277,8 @@ export function PublicCourseList({
   const [added, setAdded] = useState<ReadonlyMap<string, string>>(new Map());
   const [withdrawn, setWithdrawn] = useState<string | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
-  const enrol = useRef(oneEnrolmentAtATime(enrolPublicCourse));
+  // Made once, on the first render: the one that holds a press while another is on its way.
+  const [enrol] = useState(() => oneEnrolmentAtATime(enrolPublicCourse));
 
   useEffect(() => {
     const controller = new AbortController();
@@ -298,7 +305,7 @@ export function PublicCourseList({
     });
 
   const add = async (course: PublicCourse) => {
-    const adding = enrol.current(course.id);
+    const adding = enrol(course.id);
     if (!adding) return;
     setWorking(course.id);
     note(course.id, null);
@@ -306,11 +313,13 @@ export function PublicCourseList({
     const outcome = await adding;
     setWorking(null);
     switch (outcome.kind) {
-      case 'added':
-        setAdded((a) => new Map(a).set(course.id, outcome.courseId));
+      case 'added': {
+        const { courseId } = outcome;
+        if (courseId) setAdded((a) => new Map(a).set(course.id, courseId));
         note(course.id, { kind: 'added', text: outcome.text });
         onEnrolled();
         return;
+      }
       case 'withdrawn':
         // Not offered now, so not shown.
         setList((l) => (l ? l.filter((c) => c.id !== course.id) : l));
@@ -319,7 +328,6 @@ export function PublicCourseList({
         return;
       case 'error':
         note(course.id, { kind: 'error', text: outcome.text });
-        if (outcome.refresh) onEnrolled();
     }
   };
 
