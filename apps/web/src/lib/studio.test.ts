@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BUDGET_RECHECK_GAP_MS,
   BUDGET_RECHECK_MS,
   budgetLine,
   budgetOf,
@@ -9,6 +10,7 @@ import {
   fitImportSource,
   isRunning,
   isWorthPolling,
+  shouldRecheckBudget,
   MAX_TEXT_CHARS,
   MIN_TEXT_CHARS,
   POLL_FOR_MS,
@@ -450,5 +452,27 @@ describe('budgetRefusal', () => {
   it('asks again often enough to see the room come back, and not so often it costs', () => {
     expect(BUDGET_RECHECK_MS).toBeGreaterThanOrEqual(30_000);
     expect(BUDGET_RECHECK_MS).toBeLessThanOrEqual(5 * 60_000);
+  });
+});
+
+describe('shouldRecheckBudget', () => {
+  it('asks the first time', () => {
+    expect(shouldRecheckBudget(1_000, null, false)).toBe(true);
+  });
+
+  // Coming back to the tab fires `visibilitychange` and `focus` together: one request.
+  it('does not ask twice for one return to the tab', () => {
+    expect(shouldRecheckBudget(1_000, 1_000, false)).toBe(false);
+    expect(shouldRecheckBudget(1_000 + BUDGET_RECHECK_GAP_MS - 1, 1_000, false)).toBe(false);
+    expect(shouldRecheckBudget(1_000 + BUDGET_RECHECK_GAP_MS, 1_000, false)).toBe(true);
+  });
+
+  it('does not ask while an ask is still out, however long ago it started', () => {
+    expect(shouldRecheckBudget(1_000_000, 1_000, true)).toBe(false);
+    expect(shouldRecheckBudget(1_000_000, null, true)).toBe(false);
+  });
+
+  it('leaves the minute poll alone', () => {
+    expect(BUDGET_RECHECK_GAP_MS).toBeLessThan(BUDGET_RECHECK_MS);
   });
 });

@@ -4,6 +4,7 @@ import { budgetOf, type BudgetState, type StudioJob, type StudioKind } from './s
 
 export {
   BUDGET_RECHECK_MS,
+  shouldRecheckBudget,
   budgetLine,
   budgetOf,
   budgetRefusal,
@@ -136,8 +137,9 @@ export async function requestPrivateSummary(input: {
  * refusal with a real reason — but swallowing the error here would also hide a broken
  * RPC from the console, so the fallback is at the screen and the throw stays.
  */
-export async function fetchBudgetState(): Promise<BudgetState> {
-  const { data, error } = await supabase.rpc('generation_budget_state');
+export async function fetchBudgetState(signal?: AbortSignal): Promise<BudgetState> {
+  const request = supabase.rpc('generation_budget_state');
+  const { data, error } = await (signal ? request.abortSignal(signal) : request);
   if (error) throw rpcError(error);
   return budgetOf(data);
 }

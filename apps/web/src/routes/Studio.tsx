@@ -31,6 +31,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   BUDGET_RECHECK_MS,
+  shouldRecheckBudget,
   budgetLine,
   budgetOf,
   budgetRefusal,
@@ -284,23 +285,38 @@ function StudioSummary({
    * there is. Asked every `BUDGET_RECHECK_MS` while the page is visible, and at once when
    * it is shown or focused again. A `spent` day is not asked again: nothing changes it
    * before midnight, and a poll against it would run all day.
+   *
+   * One ask at a time, and none within `BUDGET_RECHECK_GAP_MS` of the last: coming back
+   * to the tab fires `visibilitychange` and `focus` together. The ask still out when the
+   * screen leaves is aborted rather than left to answer nobody.
    */
   useEffect(() => {
     if (budget !== 'committed') return;
-    let live = true;
+    const controller = new AbortController();
+    let inFlight = false;
+    let lastAskedAt: number | null = null;
     const recheck = () => {
       if (document.visibilityState !== 'visible') return;
-      fetchBudgetState()
+      const now = Date.now();
+      if (!shouldRecheckBudget(now, lastAskedAt, inFlight)) return;
+      inFlight = true;
+      lastAskedAt = now;
+      fetchBudgetState(controller.signal)
         .then((state) => {
-          if (live) setBudget(state);
+          if (!controller.signal.aborted) setBudget(state);
         })
-        .catch((e: unknown) => console.error('Could not read the budget', e));
+        .catch((e: unknown) => {
+          if (!controller.signal.aborted) console.error('Could not read the budget', e);
+        })
+        .finally(() => {
+          inFlight = false;
+        });
     };
     const timer = setInterval(recheck, BUDGET_RECHECK_MS);
     document.addEventListener('visibilitychange', recheck);
     window.addEventListener('focus', recheck);
     return () => {
-      live = false;
+      controller.abort();
       clearInterval(timer);
       document.removeEventListener('visibilitychange', recheck);
       window.removeEventListener('focus', recheck);

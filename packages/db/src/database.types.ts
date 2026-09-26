@@ -4315,6 +4315,7 @@ export type Database = {
       generate_mfa_recovery_codes: { Args: never; Returns: string[] }
       generation_budget_state: { Args: never; Returns: string }
       generation_secret: { Args: { p_name: string }; Returns: string }
+      generation_waiting: { Args: never; Returns: Record<string, unknown> }
       generation_waiting_cents: { Args: never; Returns: number }
       get_catalogue: { Args: never; Returns: Json }
       get_daily_pulls: { Args: { p_day: string }; Returns: Json }

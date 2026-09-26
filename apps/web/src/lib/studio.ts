@@ -428,6 +428,28 @@ export function budgetOf(value: unknown): BudgetState {
 export const BUDGET_RECHECK_MS = 60_000;
 
 /**
+ * The least time between two of those asks, whatever prompts them.
+ *
+ * Coming back to the tab fires `visibilitychange` and `focus` together, and a reader
+ * clicking in and out of the window fires `focus` every time — each of them a request
+ * against a state that changes over minutes.
+ */
+export const BUDGET_RECHECK_GAP_MS = 10_000;
+
+/**
+ * Whether a screen showing `committed` should ask for the budget again now: not while an
+ * ask is still out, and not within `BUDGET_RECHECK_GAP_MS` of the last one.
+ */
+export function shouldRecheckBudget(
+  now: number,
+  lastAskedAt: number | null,
+  inFlight: boolean,
+): boolean {
+  if (inFlight) return false;
+  return lastAskedAt === null || now - lastAskedAt >= BUDGET_RECHECK_GAP_MS;
+}
+
+/**
  * What a refusal from `enqueue_generation_job` says about the day, if anything.
  *
  * The door refuses a day in two ways, both `53400`: spent (the money is gone until

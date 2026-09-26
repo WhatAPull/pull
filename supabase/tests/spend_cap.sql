@@ -456,6 +456,37 @@ begin
     raise exception 'an unknown jobKind was accepted; the pipeline would never run it.';
   end if;
 
+  -- Nothing to summarise: no text and no URL. `resolve_identity` would fail it for
+  -- nothing, so it was free to submit (20260926220000). A `work_id` is not a source, and
+  -- neither is blank text or a text that is not a string.
+  declare
+    empty jsonb;
+    said  text;
+  begin
+    foreach empty in array array[
+      '{"title":"Nothing"}'::jsonb,
+      '{"title":"Blank","text":"   ","url":""}'::jsonb,
+      '{"title":"A number","text":42}'::jsonb,
+      jsonb_build_object('title', 'Only a work', 'work_id', theirs::text)
+    ] loop
+      said := null;
+      begin
+        perform public.enqueue_generation_job(empty);
+      exception when invalid_parameter_value then
+        said := sqlerrm;
+      end;
+      if said is distinct from 'the generation target must carry text or a URL to summarise' then
+        raise exception 'a target with nothing to summarise (%) was answered with %',
+          empty, coalesce(said, 'a job');
+      end if;
+    end loop;
+  end;
+  -- And a URL alone is something to summarise: it is what the catalogue sends.
+  if (public.enqueue_generation_job('{"title":"A page","url":"https://example.test/a"}'::jsonb)
+        ->> 'jobId') is null then
+    raise exception 'a target with only a URL was refused';
+  end if;
+
   refused := false;
   begin
     perform public.enqueue_generation_job(
@@ -687,9 +718,20 @@ begin
   end if;
 end $fn$;
 
-/* A job for somebody else, staged as the owner in a state that is not a start. */
+/*
+ * A job for somebody else, staged as the owner in a state that is not a start, with its
+ * message on the `generation` queue as `p_queue` says:
+ *
+ *   due        sent to start now, as the door sends a reader's first three
+ *   staggered  sent with the stagger's delay, not yet visible
+ *   parked     sent back into a budget wait, `budgetWaits > 0`, not yet visible
+ *   none       no message at all, as a stranded job has
+ *
+ * A finished job gets no message whatever `p_queue` says.
+ */
 create or replace function pg_temp.door_stage(
-  p_requester uuid, p_kind text, p_status text, p_state text default 'nothing'
+  p_requester uuid, p_kind text, p_status text, p_state text default 'nothing',
+  p_queue text default 'due'
 ) returns uuid
 language plpgsql as $fn$
 declare
@@ -701,6 +743,22 @@ begin
   values (p_requester, p_kind, '{"text":"x"}'::jsonb, p_status::public.job_status,
           case when p_status in ('succeeded', 'failed', 'cancelled') then now() end)
   returning id into job;
+  if p_status in ('queued', 'running') then
+    case p_queue
+      when 'due' then
+        perform pgmq.send('generation',
+                          jsonb_build_object('jobId', job, 'step', 'resolve_identity'), 0);
+      when 'staggered' then
+        perform pgmq.send('generation',
+                          jsonb_build_object('jobId', job, 'step', 'resolve_identity'), 300);
+      when 'parked' then
+        perform pgmq.send('generation',
+                          jsonb_build_object('jobId', job, 'step', 'synthesize',
+                                             'waits', 0, 'budgetWaits', 3), 900);
+      when 'none' then null;
+      else raise exception 'no such queue state: %', p_queue;
+    end case;
+  end if;
   case p_state
     when 'nothing' then null;
     -- A provider's 429: an attempt ledgered, at nothing.
@@ -985,20 +1043,36 @@ begin
     if sqlerrm is distinct from 'probe done' then raise; end if;
   end;
 
-  -- 5. No reader's summaries hold more than three jobs' worth of the day. Eleven of them
-  --    waiting -- what one account can queue in a minute, each failing for nothing when it
-  --    runs -- count as three, so on a day with room for five a second reader gets the
-  --    other two. Counted in full they would close the door on everyone for hours.
-  begin
-    perform pg_temp.door_day(cap - 5 * least_);
-    for i in 1..11 loop
-      perform pg_temp.door_stage(other, 'canonical_summary', 'queued');
-    end loop;
-    perform pg_temp.door_admits_exactly(reader, 2, 'beside one reader''s eleven');
-    raise exception using errcode = 'P0001', message = 'probe done';
-  exception when raise_exception then
-    if sqlerrm is distinct from 'probe done' then raise; end if;
-  end;
+  -- 5. No reader's summaries hold more than three jobs' worth of the day, of whichever
+  --    kinds. Eleven of them due -- what one account can queue in a minute, each failing
+  --    for nothing when it runs -- count as three, and so do six canonical and six private
+  --    together, and so do five parked on the budget: on a day with room for five a second
+  --    reader gets the other two. Counted in full, or three per kind, they would close the
+  --    door on everyone.
+  foreach kind in array array['eleven canonical', 'six canonical and six private',
+                              'five parked'] loop
+    begin
+      perform pg_temp.door_day(cap - 5 * least_);
+      if kind = 'eleven canonical' then
+        for i in 1..11 loop
+          perform pg_temp.door_stage(other, 'canonical_summary', 'queued');
+        end loop;
+      elsif kind = 'five parked' then
+        for i in 1..5 loop
+          perform pg_temp.door_stage(other, 'private_summary', 'running', 'nothing', 'parked');
+        end loop;
+      else
+        for i in 1..6 loop
+          perform pg_temp.door_stage(other, 'canonical_summary', 'queued');
+          perform pg_temp.door_stage(other, 'private_summary', 'queued');
+        end loop;
+      end if;
+      perform pg_temp.door_admits_exactly(reader, 2, 'beside one reader''s ' || kind);
+      raise exception using errcode = 'P0001', message = 'probe done';
+    exception when raise_exception then
+      if sqlerrm is distinct from 'probe done' then raise; end if;
+    end;
+  end loop;
   --    And on an otherwise empty day, a reader beside those eleven is simply admitted, and
   --    is told there is room.
   begin
@@ -1075,35 +1149,135 @@ begin
     if sqlerrm is distinct from 'probe done' then raise; end if;
   end;
 
-  -- 7. `low` is four fifths of the day spent OR COMMITTED. A day spent a job short of it,
-  --    with one job waiting, is low; the same day without the waiting job is open.
+  -- 7. `low` is four fifths of the day spent, due or parked. A day spent a job short of
+  --    it, with one job due or one parked, is low; the same day with neither is open.
+  foreach state in array array['due', 'parked'] loop
+    begin
+      perform pg_temp.door_day(ceil(cap * 0.8) - least_);
+      perform set_config('role', 'authenticated', true);
+      perform set_config('request.jwt.claims',
+        json_build_object('sub', reader, 'role', 'authenticated')::text, true);
+      if public.generation_budget_state() is distinct from 'open' then
+        raise exception 'a day spent short of four fifths, with nothing waiting, reads %',
+          public.generation_budget_state();
+      end if;
+      perform pg_temp.door_stage(other, 'canonical_summary', 'running', 'nothing', state);
+      perform set_config('role', 'authenticated', true);
+      if public.generation_budget_state() is distinct from 'low' then
+        raise exception
+          'a day with four fifths of it spent or % reads %. The warning has to come from '
+          'what the day has agreed to, not only from what it has spent.',
+          state, public.generation_budget_state();
+      end if;
+      raise exception using errcode = 'P0001', message = 'probe done';
+    exception when raise_exception then
+      if sqlerrm is distinct from 'probe done' then raise; end if;
+    end;
+  end loop;
+
+  -- 8. A job still in its stagger delay holds nothing. The door sends a reader's fourth
+  --    job and later ones with a delay, and until the message is visible no worker can
+  --    start the job, so it cannot spend. The same goes for a job with no message at
+  --    all, which is stranded. On a day with room for two, either one leaves room for
+  --    two. Once its message is due, the job counts and leaves room for one.
+  foreach state in array array['staggered', 'none'] loop
+    begin
+      perform pg_temp.door_day(cap - 2 * least_);
+      perform pg_temp.door_stage(other, 'private_summary', 'queued', 'nothing', state);
+      perform pg_temp.door_admits_exactly(reader, 2, 'beside a job ' || state);
+      raise exception using errcode = 'P0001', message = 'probe done';
+    exception when raise_exception then
+      if sqlerrm is distinct from 'probe done' then raise; end if;
+    end;
+  end loop;
   begin
-    perform pg_temp.door_day(ceil(cap * 0.8) - least_);
+    perform pg_temp.door_day(cap - 2 * least_);
+    job := pg_temp.door_stage(other, 'private_summary', 'queued', 'nothing', 'staggered');
+    update pgmq.q_generation q set vt = clock_timestamp() - interval '1 second'
+     where q.message ->> 'jobId' = job::text;
+    perform pg_temp.door_admits_exactly(reader, 1, 'beside a staggered job now due');
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+  --    And a message already DELIVERED is a job a worker is on, even though the read has
+  --    pushed its visibility into the future.
+  begin
+    perform pg_temp.door_day(cap - 2 * least_);
+    job := pg_temp.door_stage(other, 'private_summary', 'running', 'nothing', 'staggered');
+    update pgmq.q_generation q set read_ct = 1
+     where q.message ->> 'jobId' = job::text;
+    perform pg_temp.door_admits_exactly(reader, 1, 'beside a job a worker is on');
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+
+  -- 9. Four accounts cannot close an empty day between them. Each has its three fast jobs
+  --    failed and eight more in the stagger, empty. Counted, that was 204 cents of
+  --    "waiting" and every fifth reader refused for four hours. Not yet due, it is nothing.
+  begin
+    perform pg_temp.door_day(0);
+    for r in 1..4 loop
+      job := extensions.gen_random_uuid();
+      insert into auth.users (id, instance_id, aud, role, email, encrypted_password,
+                              email_confirmed_at, created_at, updated_at,
+                              raw_app_meta_data, raw_user_meta_data, is_anonymous)
+      values (job, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+              'door-four' || left(job::text, 8) || '@example.test', '', now(), now(), now(),
+              '{"provider":"email","providers":["email"]}'::jsonb, '{}'::jsonb, false);
+      for i in 1..3 loop
+        perform pg_temp.door_stage(job, 'private_summary', 'failed');
+      end loop;
+      for i in 1..8 loop
+        perform pg_temp.door_stage(job, 'private_summary', 'queued', 'nothing', 'staggered');
+      end loop;
+    end loop;
     perform set_config('role', 'authenticated', true);
     perform set_config('request.jwt.claims',
       json_build_object('sub', reader, 'role', 'authenticated')::text, true);
     if public.generation_budget_state() is distinct from 'open' then
-      raise exception 'a day spent short of four fifths, with nothing waiting, reads %',
+      raise exception 'four accounts'' staggered jobs made an empty day read %',
         public.generation_budget_state();
     end if;
-    perform pg_temp.door_stage(other, 'canonical_summary', 'queued');
-    perform set_config('role', 'authenticated', true);
-    if public.generation_budget_state() is distinct from 'low' then
-      raise exception
-        'a day with four fifths of it spent or committed reads %. The warning has to come '
-        'from what the day has agreed to, not only from what it has spent.',
-        public.generation_budget_state();
+    if not pg_temp.door_admits('A fifth reader') then
+      raise exception 'four accounts'' staggered jobs closed an empty day to a fifth reader';
     end if;
     raise exception using errcode = 'P0001', message = 'probe done';
   exception when raise_exception then
     if sqlerrm is distinct from 'probe done' then raise; end if;
   end;
 
-  -- 8. The catalogue's jobs are not a reader's, and do not close the door to one. More
-  --    of them queued than the whole day could fund, plus one that has attempted and been
-  --    ledgered at nothing, leave a day with room for two admitting exactly two. The
-  --    reservation, not the door, is what stops them and the readers together passing the
-  --    cap.
+  -- 10. A job PARKED on the budget counts, whether or not its message is due, and when it
+  --     is what closes the door the day is SPENT, not committed: its reservation has been
+  --     refused, and nothing that runs today gives that room back. With room left by spend
+  --     and the parked job for exactly one more job, one is admitted and the day is then
+  --     committed by it. A cent more spent, and the parked job closes the day: spent, with
+  --     the midnight sentence.
+  begin
+    perform pg_temp.door_day(cap - 2 * least_);
+    perform pg_temp.door_stage(other, 'private_summary', 'running', 'nothing', 'parked');
+    perform pg_temp.door_admits_exactly(reader, 1, 'beside a parked job, one room left',
+                                        'committed');
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+  begin
+    perform pg_temp.door_day(cap - 2 * least_ + 1);
+    perform pg_temp.door_stage(other, 'private_summary', 'running', 'nothing', 'parked');
+    perform pg_temp.door_admits_exactly(reader, 0, 'beside a parked job, a cent short',
+                                        'spent');
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+
+  -- 11. The catalogue's jobs are not a reader's, and do not close the door to one. More
+  --     of them queued than the whole day could fund, plus one that has attempted and been
+  --     ledgered at nothing, leave a day with room for two admitting exactly two. The
+  --     reservation, not the door, is what stops them and the readers together passing the
+  --     cap.
   begin
     perform pg_temp.door_day(cap - 2 * least_);
     for i in 1..(floor(cap / least_)::int + 1) loop
@@ -1116,8 +1290,8 @@ begin
     if sqlerrm is distinct from 'probe done' then raise; end if;
   end;
 
-  -- 9. A replay is still a replay on a full day. It is answered before the day is asked,
-  --    because it spends nothing: it returns the job that was already admitted.
+  -- 12. A replay is still a replay on a full day. It is answered before the day is asked,
+  --     because it spends nothing: it returns the job that was already admitted.
   begin
     perform pg_temp.door_day(cap - least_);
     perform set_config('role', 'authenticated', true);
@@ -1154,9 +1328,9 @@ begin
     if sqlerrm is distinct from 'probe done' then raise; end if;
   end;
 
-  raise notice 'spend_cap.sql: the door counts what readers asked for and it has not '
-    'started, once, at the least it reserves and at most three jobs'' worth a reader, and '
-    'says whether the day is spent or only committed';
+  raise notice 'spend_cap.sql: the door counts what readers asked for and is due or parked, '
+    'once, at the least it reserves and at most three jobs'' worth a reader, and says '
+    'whether the day is spent or only committed';
 end $$;
 
 -- ------------------------------------------- 8. a spent day refuses at the door

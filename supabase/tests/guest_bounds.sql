@@ -213,7 +213,7 @@ begin
   -- free to recreate, so a per-requester quota bounds nothing.
   refused := false;
   begin
-    perform public.enqueue_generation_job('{"kind":"work","title":"Anything"}'::jsonb);
+    perform public.enqueue_generation_job('{"kind":"work","title":"Anything","text":"x"}'::jsonb);
   exception when invalid_authorization_specification then
     refused := true;
   end;
@@ -323,7 +323,7 @@ begin
       'signed-in reader holding one.';
   end if;
 
-  queued := public.enqueue_generation_job('{"kind":"work","title":"Anything"}'::jsonb);
+  queued := public.enqueue_generation_job('{"kind":"work","title":"Anything","text":"x"}'::jsonb);
   if queued ->> 'jobId' is null then
     raise exception 'a signed-in reader could not enqueue generation (got %).', queued;
   end if;
@@ -342,7 +342,7 @@ begin
   -- the free allowance and must be immediate; job 5 is past it and must be delayed by
   -- more than job 4 was, which is what makes the delay a throughput limit rather than a
   -- constant; and the ceiling must refuse.
-  queued := public.enqueue_generation_job('{"kind":"work","title":"Second"}'::jsonb);
+  queued := public.enqueue_generation_job('{"kind":"work","title":"Second","text":"x"}'::jsonb);
   if (queued ->> 'delaySeconds')::int <> 0 then
     raise exception
       'the second job of the day was delayed by %s; the first three are the free '
@@ -356,7 +356,7 @@ begin
 
   -- Up to the ceiling. Jobs 3..50 -- two are already in from the calls above.
   for i in 3..50 loop
-    delayed := public.enqueue_generation_job('{"kind":"work","title":"Filler"}'::jsonb);
+    delayed := public.enqueue_generation_job('{"kind":"work","title":"Filler","text":"x"}'::jsonb);
     if i = 4 then
       first_delay := (delayed ->> 'delaySeconds')::int;
     elsif i = 5 then
@@ -371,7 +371,7 @@ begin
 
   refused := false;
   begin
-    perform public.enqueue_generation_job('{"kind":"work","title":"One too many"}'::jsonb);
+    perform public.enqueue_generation_job('{"kind":"work","title":"One too many","text":"x"}'::jsonb);
   exception when check_violation then
     refused := true;
   end;

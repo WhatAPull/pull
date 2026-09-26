@@ -187,39 +187,60 @@ spend_today() + generation_waiting_cents() + min_job_cents() > daily_spend_cap_c
 ```
 
 and `generation_budget_state()` applies the same test. **Readers' admitted, unstarted jobs
-are counted; the catalogue's are not.** `generation_waiting_cents()` counts every job a
-reader asked for (`requester_id is not null`) that is queued or running with nothing charged
-to it today (`cost_cents > 0`, because an attempt ledgered at nothing such as a 429 is not a
-start) and nothing held for it today. A job that has started counts at what it holds or has
-been charged, which `spend_today()` already includes.
+are counted once they are due; the catalogue's are not.** `generation_waiting()` (and
+`generation_waiting_cents()`, its sum) starts from every job a reader asked for
+(`requester_id is not null`) that is queued or running with nothing charged to it today
+(`cost_cents > 0`, because an attempt ledgered at nothing such as a 429 is not a start) and
+nothing held for it today. A job that has started counts at what it holds or has been
+charged, which `spend_today()` already includes. Of the rest, it reads the `generation`
+queue (`20260926220000`):
 
-**No reader holds more than three jobs' worth of the day.** A reader's waiting summaries
-count at `min_job_cents()` each, for at most three of them (`20260926210000`). Three is the
-fast allowance. Counted in full, eleven submits from one account that each fail for nothing
-when they run closed the door on everyone for as long as they sat in the stagger. A reader's
-waiting study courses count at `study_min_job_cents()` each, together no more than their
-study share can still fund. A reader is never refused for having jobs waiting: the quota
-stays three fast, then a widening stagger, fifty in total. Their jobs past the third are not
-counted, and wait their turn when they run.
+| The job's messages                                  | Counted as | Why                                                                      |
+| --------------------------------------------------- | ---------- | ------------------------------------------------------------------------ |
+| one carries `budgetWaits > 0`                       | parked     | its reservation was refused, and it waits for a day that can fund it     |
+| one is visible now, or already delivered            | due        | a worker can start it now, or has                                        |
+| all still delayed (the stagger, a held-source wait) | nothing    | it cannot spend before it runs, and when it comes due the door counts it |
+| none at all                                         | nothing    | it is stranded, and the sweep fails it                                   |
+
+**No reader holds more than three jobs' worth of the day.** A reader's parked and due
+summaries, of both kinds together, count at `min_job_cents()` each for at most three of them
+(`20260926210000`). Three is the fast allowance. A reader's courses count at
+`study_min_job_cents()` each, together no more than their study share can still fund. A
+reader is never refused for having jobs waiting: the quota stays three fast, then a
+widening stagger, fifty in total.
+
+**A target with nothing to summarise is refused at the door**: no text and no URL (22023,
+"the generation target must carry text or a URL to summarise"). `resolve_identity` used to
+fail it for nothing, which made it free to submit. A `work_id` is not a source. The Studio
+always sends text and the catalogue always sends a URL.
+
+**What is left.** A reader's due jobs are their fast ones, at most three, and they start
+within moments of being admitted. So one account can hold at most three jobs' worth of the
+day, and only until the worker picks those jobs up. A bad URL is still free to submit and
+fails at `acquire` for nothing, so an account can repeat this three jobs at a time, and
+enough accounts together can keep the door `committed` for those moments. The reservation
+bounds the day whatever the door admits.
 
 The door is an estimate. A large source reserves more than the floor, a started job's
-remaining steps are not counted, and a reader's jobs past their third are not counted
-either. Two readers at the door at the same moment can each miss the other's job, because
-the count runs under the requester's lock and not the budget's. The reservation is what
-holds the cap exactly.
+remaining steps are not counted, and neither are a reader's jobs past their third or jobs
+not yet due. Two readers at the door at the same moment can each miss the other's job,
+because the count runs under the requester's lock and not the budget's. The reservation is
+what holds the cap exactly.
 
 The door refuses a day in **two** ways, and `generation_budget_state()` names both:
 
-| State       | When                                                                        | The reader is told                                                |
-| ----------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `spent`     | `spend_today() + min_job_cents() > cap`: spend alone leaves no room         | Summaries resume at 00:00 UTC                                     |
-| `committed` | spend leaves room, and the waiting jobs take it (53400, DETAIL `committed`) | Try again in a little while; the Studio asks again while it lasts |
-| `low`       | four fifths of the day spent or committed                                   | Nearly used up                                                    |
-| `open`      | otherwise                                                                   | There is room                                                     |
+| State       | When                                                                                | The reader is told                                                |
+| ----------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `spent`     | spend alone, or spend and parked jobs together, leave no room for `min_job_cents()` | Summaries resume at 00:00 UTC                                     |
+| `committed` | otherwise, and the jobs that are due take the room (53400, DETAIL `committed`)      | Try again in a little while; the Studio asks again while it lasts |
+| `low`       | four fifths of the day spent, parked or due                                         | Nearly used up                                                    |
+| `open`      | otherwise                                                                           | There is room                                                     |
 
-A committed day reopens as the jobs waiting on it run, and one that fails early hands its
-share straight back, so it promises no hour. The Studio re-reads the state every minute
-while it shows `committed`, and when the page is shown again.
+A committed day reopens as the jobs that are due run, and one that fails early hands its
+share straight back, so it promises no hour. Parked jobs are different: they wait for a day
+that can fund them, so a day they close is spent. The Studio re-reads the state every
+minute while it shows `committed`, and when the page is shown again, at most once every ten
+seconds.
 
 The study door, `study_enqueue_course`, still tests spend alone (`spend_today() +
 study_min_job_cents() > cap`) until a follow-up aligns it with this one, after the study
