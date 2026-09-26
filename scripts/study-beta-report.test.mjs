@@ -162,7 +162,7 @@ test('refuses to guess the switch without its one row', () => {
   assert.throws(() => renderReport({ status: [], ...empty }), /answered 0 rows/);
 });
 
-test('connects read-only, in UTC, past the operator’s psqlrc, with TLS off loopback', () => {
+test('connects past the operator’s psqlrc and PG* variables, with TLS off loopback', () => {
   const parent = { PGHOST: 'elsewhere', PSQLRC: '/tmp/rc', PGPASSFILE: '/tmp/p', HOME: '/h' };
   const local = connection('postgresql://postgres:pw@127.0.0.1:54322/postgres', parent);
   assert.deepEqual(local.args, [
@@ -229,7 +229,7 @@ test('reads every section in one statement, one snapshot, read-only and in UTC',
   assert.doesNotMatch(sql, /v\.uncovered|json_agg\(s\), '\[\]'\) from ops\.study_beta_status/);
   assert.match(
     sql,
-    /case when not v\.open_to_all then public\.study_beta_unrepresented\(\s*\(select coalesce\(jsonb_agg\(m\), '\[\]'\) from mix m\)\)/,
+    /case when not v\.open_to_all then public\.study_beta_unrepresented\(\s*\(select coalesce\(jsonb_agg\(m\), '\[\]'\) from mix m\)\) end as uncovered/,
   );
   assert.match(sql, /ops\.study_daily v\s+where v\.day >= \(now\(\) - interval '7 days'\)::date/);
   assert.match(

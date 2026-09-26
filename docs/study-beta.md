@@ -11,9 +11,12 @@ loosens none of the bounds law 2 names: the global daily ceiling, each reader's 
 study spend, and the per-reader job counts bound a day, open or not. It adds one: study
 courses, every reader's together, are held to `study_daily_cap_cents()` -- 100 cents, half
 the day -- at the door and at each reservation, so an open beta cannot leave the catalogue's
-generation nothing. The door asks that a whole course can still be funded --
-`study_min_job_cents()`, 31 cents -- so that ceiling admits about three courses a day for
-every reader together: opening widens who may ask, not how many courses a day can make.
+generation nothing. The door refuses once less than `study_min_job_cents()` (31 cents, a
+course's reservation at its output ceilings) of the 100 remains, counting what is billed and
+what is held for calls in flight: the ceiling bounds what study courses spend in a day, not
+how many are made -- as many as their billed cost allows, which is usually more than three,
+while one long course can bill up to its reader's share. Opening widens who may ask, not what
+a day can spend.
 
 ## The release gate
 
@@ -27,8 +30,10 @@ run: the prompt, schema and model that extracted its claims (`study_claims`), an
 assembled its courses (`study_generations.assembly_provenance`). An edit to either prompt is
 a new pipeline.
 
-1. Run the fixture through the pipeline and export it:
-   `node scripts/study-eval-export.mjs --manifest m.json --reviews r.json --jobs ... > run.json`.
+1. Run the fixture through the pipeline and export it from the database it ran against --
+   `DATABASE_URL` names it, and without one the export reads the local stack:
+   `DATABASE_URL=... node scripts/study-eval-export.mjs --manifest m.json --reviews r.json --jobs ... > run.json`.
+   Exporting the same run again writes the same file, so its digest can be checked later.
 2. Evaluate it: `node scripts/study-eval.mjs run.json > report.json`.
 3. Record it, as the database owner (the SQL editor, or psql with the owner's password),
    pasting the report between the dollar quotes, which a quote inside it cannot close:
@@ -36,10 +41,12 @@ a new pipeline.
    ```sql
    insert into public.study_release_gates (recorded_by, fixture_digest, report, note)
    values ('<operator>', '<sha256 of run.json>', $report$<report.json>$report$::jsonb,
-           '<what was run>');
+           '<what was run>')
+   returning id, passed, ran_at;
    ```
 
-`passed` is computed on insert by `study_gate_passes`, from the report's gates **and** the
+The insert answers with the gate's id, which opening takes, whether it passed, and when its
+run was made. `passed` is computed on insert by `study_gate_passes`, from the report's gates **and** the
 counts behind them -- each a whole number, not below zero -- never taken from the writer: a
 report whose gates say ready while its counts fall short does not pass. The run's date
 (`ranAt`, the last preparation in it, in UTC as the export writes it:

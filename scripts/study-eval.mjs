@@ -61,14 +61,20 @@ function utcTime(value) {
     : null;
 }
 
-/** One stage of a pipeline: the prompt's and the schema's hashes, and the model. */
+/**
+ * One stage of a pipeline: the prompt's and the schema's hashes, and the model -- as the
+ * database holds a gate to them (`study_gate_passes`): lowercase hex, and a model of one to a
+ * hundred characters, counted as Postgres counts them. Looser here, a run called ready would
+ * be recorded as a gate that did not pass.
+ */
 function namedStage(stage) {
   return (
     stage != null &&
     /^[0-9a-f]{64}$/.test(stage.promptHash ?? '') &&
     /^[0-9a-f]{64}$/.test(stage.schemaHash ?? '') &&
     typeof stage.model === 'string' &&
-    stage.model.length > 0
+    [...stage.model].length >= 1 &&
+    [...stage.model].length <= 100
   );
 }
 
@@ -237,6 +243,8 @@ export function evaluateStudyRun(run) {
       [...providerAttempts].every((id) => attempts.has(id)),
     singlePipeline:
       pipeline !== null && namedStage(pipeline.extract) && namedStage(pipeline.assemble),
+    // A run with no time the database would take cannot be recorded as a gate at all.
+    timed: ranAt !== null,
   };
   gates.ready = Object.values(gates).every(Boolean);
 

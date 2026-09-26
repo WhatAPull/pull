@@ -322,9 +322,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       stdio: ['pipe', 'pipe', 'pipe'],
     });
   } catch (e) {
-    const said = String(e.stderr ?? e.message)
-      .trim()
-      .split('\n')[0];
+    // What psql said, or -- when it said nothing, as when it could not be started -- why not:
+    // neither carries the password, which is only ever in psql's environment.
+    const said =
+      String(e.stderr ?? '')
+        .trim()
+        .split('\n')[0] || e.message;
     process.stderr.write(
       `study-beta-report: the database refused or could not be reached: ${said}\n`,
     );

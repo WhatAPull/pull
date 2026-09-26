@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { connection } from './study-beta-report.mjs';
 
 /*
  * Export a study generation run in the shape `scripts/study-eval.mjs` reads.
@@ -29,8 +30,13 @@ import { pathToFileURL } from 'node:url';
  *   { "sources": [{ "id": "qualified-trial", "versionIds": ["..."], "rights": "self-authored",
  *                   "categories": ["notes", "qualified"] }] }
  *
- * Reads with `psql` against DATABASE_URL (the local stack by default). It exports ids,
- * statuses and costs -- never source text, and never a reader's answers.
+ * Reads with `psql` against DATABASE_URL (the local stack by default; the hosted database's
+ * owner URL for a release gate, docs/study-beta.md). It exports ids, statuses and costs --
+ * never source text, and never a reader's answers. psql is run as the beta report runs it
+ * (`connection`): the password in its environment, never its arguments, so no error it prints
+ * carries it; no ~/.psqlrc, whose `\timing` line would not parse as JSON; none of the
+ * operator's PG* variables; and TLS asked for off loopback. Every aggregate is ordered, so
+ * exporting the same run again writes the same file, and the same digest.
  */
 
 function sameSet(a, b) {
@@ -137,11 +143,22 @@ export function buildStudyEvalRun({ manifest, generations, items, calls, ledger,
   };
 }
 
-function psqlJson(sql) {
-  const url = process.env.DATABASE_URL ?? 'postgresql://postgres:postgres@127.0.0.1:54322/postgres';
-  const out = execFileSync('psql', [url, '-v', 'ON_ERROR_STOP=1', '-Atq', '-c', sql], {
-    encoding: 'utf8',
-  }).trim();
+function psqlJson(psql, sql) {
+  let out;
+  try {
+    out = execFileSync('psql', [...psql.args, '-v', 'ON_ERROR_STOP=1', '-Atq', '-c', sql], {
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      env: psql.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+  } catch (e) {
+    const said =
+      String(e.stderr ?? '')
+        .trim()
+        .split('\n')[0] || e.message;
+    throw new Error(`the database refused or could not be reached: ${said}`);
+  }
   return JSON.parse(out || '[]');
 }
 
@@ -159,6 +176,16 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     );
     process.exit(2);
   }
+  let psql;
+  try {
+    psql = connection(
+      process.env.DATABASE_URL ?? 'postgresql://postgres:postgres@127.0.0.1:54322/postgres',
+      process.env,
+    );
+  } catch (e) {
+    process.stderr.write(`study-eval-export: ${e.message}\n`);
+    process.exit(2);
+  }
   const jobs = jobList.split(',').map((j) => j.trim());
   if (!jobs.every((j) => /^[0-9a-f-]{36}$/.test(j))) {
     throw new Error('--jobs takes comma-separated job uuids');
@@ -168,10 +195,23 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   const reviewsPath = argument('--reviews');
   const reviews = reviewsPath ? JSON.parse(readFileSync(reviewsPath, 'utf8')) : {};
 
-  const run = buildStudyEvalRun({
+  let run;
+  try {
+    run = exportRun(psql, manifest, reviews, inList);
+  } catch (e) {
+    process.stderr.write(`study-eval-export: ${e.message}\n`);
+    process.exit(3);
+  }
+  process.stdout.write(JSON.stringify(run, null, 2) + '\n');
+}
+
+function exportRun(psql, manifest, reviews, inList) {
+  return buildStudyEvalRun({
     manifest,
     reviews,
-    generations: psqlJson(`
+    generations: psqlJson(
+      psql,
+      `
       select coalesce(json_agg(json_build_object(
         'generationId', g.id, 'jobId', g.job_id,
         'provenance', g.assembly_provenance,
@@ -182,25 +222,38 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         -- UTC, so the lexical comparison above is a comparison of times.
         'assembledAt', to_char(g.assembled_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
         'versionIds', (select json_agg(s.source_version_id order by s.position)
-                       from public.study_generation_sources s where s.generation_id = g.id))), '[]')
-      from public.study_generations g where g.job_id in (${inList});`),
-    items: psqlJson(`
+                       from public.study_generation_sources s where s.generation_id = g.id))
+        order by g.id), '[]')
+      from public.study_generations g where g.job_id in (${inList});`,
+    ),
+    items: psqlJson(
+      psql,
+      `
       select coalesce(json_agg(json_build_object(
         'id', i.id, 'generationId', i.generation_id, 'status', i.status,
         'authoredBy', i.authored_by,
         'decided', (select l.to_status from public.study_status_log l
                     where l.item_id = i.id and l.reason = 'validation'
-                    order by l.at desc, l.id desc limit 1))), '[]')
+                    order by l.at desc, l.id desc limit 1))
+        order by i.id), '[]')
       from public.study_items i join public.study_generations g on g.id = i.generation_id
-      where g.job_id in (${inList});`),
-    calls: psqlJson(`
-      select coalesce(json_agg(json_build_object('id', pc.id, 'jobId', pc.job_id)), '[]')
-      from public.provider_calls pc where pc.job_id in (${inList});`),
-    ledger: psqlJson(`
+      where g.job_id in (${inList});`,
+    ),
+    calls: psqlJson(
+      psql,
+      `
+      select coalesce(json_agg(json_build_object('id', pc.id, 'jobId', pc.job_id)
+        order by pc.id), '[]')
+      from public.provider_calls pc where pc.job_id in (${inList});`,
+    ),
+    ledger: psqlJson(
+      psql,
+      `
       select coalesce(json_agg(json_build_object(
         'id', cl.id, 'jobId', cl.job_id, 'step', cl.operation,
-        'providerCallId', cl.provider_call_id, 'costCents', cl.cost_cents)), '[]')
-      from public.cost_ledger cl where cl.job_id in (${inList});`),
+        'providerCallId', cl.provider_call_id, 'costCents', cl.cost_cents)
+        order by cl.id), '[]')
+      from public.cost_ledger cl where cl.job_id in (${inList});`,
+    ),
   });
-  process.stdout.write(JSON.stringify(run, null, 2) + '\n');
 }

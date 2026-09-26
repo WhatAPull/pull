@@ -110,6 +110,20 @@ test('says which pipelines made the run, once each, and when its last course was
     assert.equal(again.pipelines.length, 2);
     assert.equal(evaluateStudyRun(again).gates.singlePipeline, false);
   }
+  // A course not yet assembled was made by no pipeline yet: it adds none, and does not date
+  // the run.
+  const partial = buildStudyEvalRun({
+    manifest,
+    generations: [
+      { ...generations[0], provenance: a, extraction: [e], assembledAt: '2026-09-20T10:00:00Z' },
+      { ...generations[1], provenance: null, extraction: [{ ...e, model: 'f' }] },
+    ],
+    items,
+    calls,
+    ledger,
+  });
+  assert.deepEqual(partial.pipelines, [{ extract: e, assemble: a }]);
+  assert.equal(partial.ranAt, '2026-09-20T10:00:00Z');
   // A course with no claims recorded says nothing of its extraction, and passes no gate.
   const unnamed = buildStudyEvalRun({
     manifest,
