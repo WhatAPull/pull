@@ -16,11 +16,13 @@
 -- 2. ANALYSIS, NOT REPRODUCTION (law 4). Only validated claims, lessons and questions are
 --    published, and the source itself is not: what goes out are the evidence spans the claims
 --    quote, merged where they overlap or lie within 200 characters of each other into one
---    quotation, each quotation at most 300 characters, together at most a tenth of the source;
---    and a work's courses on offer quote it at most 20,000 characters between them. They become
+--    quotation, each quotation at most 300 characters. Every course published from a work --
+--    a withdrawn one too, whose readers keep their copies -- counts towards what the work's
+--    courses quote between them: of each registered text, at most a tenth, and of the work,
+--    at most 20,000 characters, a passage two courses both quote counted once. They become
 --    the course's excerpts, and the evidence points into them. The course's own text -- its
---    lessons, claims, questions, overview -- may not repeat twelve words in a row of the source
---    from outside those quotations.
+--    lessons, claims, questions, overview -- may not repeat twelve words in a row of the
+--    source from outside those quotations.
 -- 3. ONE PREPARATION, MANY READERS -- the cost law pointing the right way again. Enrolling
 --    (`enrol_public_course`) copies the published snapshot into the reader's own study tables:
 --    no model call, no job, nothing against their allowance. Everything per reader then works
@@ -90,9 +92,19 @@ create table public.public_study_courses (
   overview         text check (overview is null or char_length(overview) <= 2000),
   objectives       text[] not null default '{}' check (cardinality(objectives) <= 6),
   recap            text check (recap is null or char_length(recap) <= 2000),
-  -- What the reader's copy of the excerpts is called, and the excerpts themselves.
+  -- What the reader's copy of the excerpts is called, and the excerpts themselves: at most
+  -- 20,000 characters quoted -- a tenth of each source, of at most 200,000 characters between
+  -- them (publish_study_course) -- with a blank line between each two of at most 1,200
+  -- quotations: 400 claims of up to three spans.
   excerpt_title    text not null check (char_length(excerpt_title) between 1 and 200),
-  excerpts         text not null check (char_length(excerpts) between 1 and 20000),
+  excerpts         text not null check (char_length(excerpts) between 1 and 24000),
+  -- Each quotation, in the excerpts' order: the registered text it quotes (`sha256`, of that
+  -- text, and `chars`, its length), where in that text (`from`, `to`), and where in the
+  -- excerpts (`at`), in characters. What a work's courses quote between them is counted from
+  -- these -- the source versions may be deleted after publishing -- and a reader's copy of
+  -- the excerpts is cut into its quotations by them.
+  quotations       jsonb not null
+                   check (jsonb_typeof(quotations) = 'array' and jsonb_array_length(quotations) > 0),
   snapshot         jsonb not null
                    check (jsonb_typeof(snapshot) = 'object' and pg_column_size(snapshot) <= 2097152),
   -- Lesson titles, objectives and minutes by unit: what the catalogue shows before enrolling.
@@ -180,6 +192,16 @@ alter table public.study_source_versions
   add constraint study_source_versions_format_check check (format in
     ('paste', 'text', 'markdown', 'pdf', 'docx', 'image_ocr', 'pdf_ocr', 'highlights',
      'public_course'));
+-- Where each quotation lies in the reader's copy of the excerpts: [from, to) pairs, in
+-- characters and in order, copied from the published course when the reader enrolled. A
+-- quotation may hold a blank line of its own, so the text alone cannot say where one ends.
+-- Only a copy of excerpts has them.
+alter table public.study_source_versions
+  add column quotations jsonb;
+alter table public.study_source_versions
+  add constraint study_source_versions_quotations_check
+    check ((format = 'public_course') = (quotations is not null)
+           and (quotations is null or jsonb_typeof(quotations) = 'array'));
 -- A reader's excerpts by the public course they came from: how an enrolment finds the copy it
 -- keeps, and how removing the copies finds every reader's.
 create index study_source_versions_public_course_idx
@@ -223,10 +245,12 @@ alter table public.study_items
  * Where a reader's copy came from -- the work, and its rights in words -- for the reader who
  * owns a copy of that course, and nobody else: the catalogue is how anyone else learns of a
  * public course. The rights are said only while they hold: `public domain` or `licensed`,
- * and null for anything else, so a work whose rights came into question claims none.
+ * and null for anything else, so a work whose rights came into question claims none. And
+ * whether the course is still on offer -- not withdrawn, its work's rights holding -- which
+ * is whether a copy deleted could be added again.
  */
 create function public.public_study_course_origin(p_id uuid)
-returns table (work_id uuid, work_title text, rights_label text)
+returns table (work_id uuid, work_title text, rights_label text, on_offer boolean)
 language sql
 stable
 security definer
@@ -234,7 +258,8 @@ set search_path = ''
 as $fn$
   select w.id, w.title,
          case w.rights_status when 'public_domain' then 'public domain'
-                              when 'licensed' then 'licensed' end
+                              when 'licensed' then 'licensed' end,
+         p.withdrawn_at is null and w.rights_status in ('public_domain', 'licensed')
   from public.public_study_courses p
   join public.works w on w.id = p.work_id
   where p.id = p_id
@@ -318,11 +343,14 @@ revoke all on function public.study_word_runs(text, int) from public, anon, auth
  *   42501 `unregistered` a source of the generation is not registered to that work
  *   22023 `too_large`   more than 400 validated claims or 300 questions
  *   22023 `quotes`      a quotation over 300 characters -- spans that overlap or lie within 200
- *                       characters of each other are one quotation, gap and all -- or together
- *                       over a tenth of the source, or the work's courses on offer over 20,000
- *                       characters of excerpts between them
+ *                       characters of each other are one quotation, gap and all -- or, with
+ *                       what every course published from the work quotes, withdrawn or not,
+ *                       over a tenth of a registered text or 20,000 characters of the work
  *   22023 `copied`      the course's own text repeats twelve words in a row of the source from
  *                       outside its quotations
+ *
+ * Of the course's disagreements, only one whose claims are all published goes with it: one
+ * about a claim held back would say what the course does not.
  *
  * The work's row is locked, FOR NO KEY UPDATE, before its rights are read and its quotations
  * counted: two publications of one work queue there, so neither counts without the other,
@@ -353,19 +381,22 @@ declare
   gen          public.study_generations%rowtype;
   rights       public.rights_status;
   work_title   text;
-  source_chars bigint;
   run_         record;
   src          record;
   runs         jsonb := '[]'::jsonb;
+  quotations   jsonb := '[]'::jsonb;
   excerpts     text := '';
   quoted       int := 0;
-  offered      bigint;
+  work_quoted  bigint;
+  text_quoted  bigint;
+  text_chars   bigint;
   unquoted     text[] := '{}';
   last_end     int;
   claims       jsonb;
   lessons      jsonb;
   items        jsonb;
   outline      jsonb;
+  disagreements jsonb;
   copied       text;
   new_id       uuid;
 begin
@@ -433,13 +464,18 @@ begin
 
   -- The quotations: the validated claims' evidence spans, merged where they overlap or lie
   -- closer than `quotation_gap` -- a gap that short is published with them, and a reader would
-  -- have the passage either way -- in the source's order. Each is the source's own text.
-  select coalesce(sum(char_length(v.extracted_text)), 0) into source_chars
-  from public.study_generation_sources gs
-  join public.study_source_versions v on v.id = gs.source_version_id
-  where gs.generation_id = gen.id;
+  -- have the passage either way -- in the source's order. Each is the source's own text, and
+  -- is recorded against that text by its hash: a version saved again with the same text is
+  -- the same text.
   for run_ in
-    with spans as (
+    with texts as materialized (
+      select v.id, encode(sha256(convert_to(v.extracted_text, 'UTF8')), 'hex') as text_hash,
+             char_length(v.extracted_text) as chars
+      from public.study_generation_sources gs
+      join public.study_source_versions v on v.id = gs.source_version_id
+      where gs.generation_id = gen.id
+    ),
+    spans as (
       select distinct gs.position, c.source_version_id as version_id,
              e.start_offset as s, e.end_offset as t
       from public.study_claims c
@@ -459,11 +495,16 @@ begin
     numbered as (
       select o.*, sum(o.opens) over (partition by o.version_id order by o.s, o.t) as run_no
       from opened o
+    ),
+    merged as (
+      select n.position, n.version_id, min(n.s) as s, max(n.t) as t
+      from numbered n
+      group by n.position, n.version_id, n.run_no
     )
-    select n.position, n.version_id, min(n.s) as s, max(n.t) as t
-    from numbered n
-    group by n.position, n.version_id, n.run_no
-    order by n.position, min(n.s)
+    select m.position, m.version_id, m.s, m.t, x.text_hash, x.chars
+    from merged m
+    join texts x on x.id = m.version_id
+    order by m.position, m.s
   loop
     if run_.t - run_.s > max_quotation then
       raise exception 'a quotation is % characters, counting what lies between spans closer than '
@@ -475,21 +516,57 @@ begin
     end if;
     runs := runs || jsonb_build_object('v', run_.version_id, 's', run_.s, 't', run_.t,
                                        'at', char_length(excerpts));
+    quotations := quotations || jsonb_build_object('sha256', run_.text_hash, 'chars', run_.chars,
+                                                   'from', run_.s, 'to', run_.t,
+                                                   'at', char_length(excerpts));
     excerpts := excerpts || (select substr(v.extracted_text, run_.s + 1, run_.t - run_.s)
                              from public.study_source_versions v where v.id = run_.version_id);
     quoted := quoted + (run_.t - run_.s);
   end loop;
-  if quoted = 0 or quoted * 10 > source_chars then
-    raise exception 'the quotations total % characters of a % character source; the limit is a '
-                    'tenth', quoted, source_chars
+  if quoted = 0 then
+    raise exception 'a public course quotes the work it teaches, and this one quotes none of it'
       using errcode = '22023', detail = 'quotes';
   end if;
-  select coalesce(sum(char_length(p.excerpts)), 0) into offered
-  from public.public_study_courses p
-  where p.work_id = p_work_id and p.withdrawn_at is null;
-  if offered + char_length(excerpts) > max_work then
-    raise exception 'this work''s courses on offer would quote % characters of it; the limit is %',
-      offered + char_length(excerpts), max_work
+
+  -- What the work's courses would quote between them: this one's quotations with those of
+  -- every course published from the work -- withdrawn too, since its readers keep their
+  -- copies -- merged by registered text, so a passage two courses quote is counted once and
+  -- publishing the same passages again takes nothing more. Checked against a tenth of each
+  -- text, the most-quoted for its length, and against the work's 20,000 characters.
+  with ranges as (
+    select q ->> 'sha256' as text_hash, (q ->> 'chars')::bigint as chars,
+           int4range((q ->> 'from')::int, (q ->> 'to')::int) as r
+    from public.public_study_courses p
+    cross join jsonb_array_elements(p.quotations) as q
+    where p.work_id = p_work_id
+    union all
+    select q ->> 'sha256', (q ->> 'chars')::bigint,
+           int4range((q ->> 'from')::int, (q ->> 'to')::int)
+    from jsonb_array_elements(quotations) as q
+  ),
+  by_text as (
+    select x.text_hash, max(x.chars) as chars, range_agg(x.r) as quoted
+    from ranges x
+    group by x.text_hash
+  ),
+  measured as (
+    select b.chars,
+           (select sum(upper(piece) - lower(piece)) from unnest(b.quoted) as piece) as quoted
+    from by_text b
+  )
+  select sum(m.quoted),
+         (array_agg(m.quoted order by m.quoted::numeric / greatest(m.chars, 1) desc))[1],
+         (array_agg(m.chars order by m.quoted::numeric / greatest(m.chars, 1) desc))[1]
+    into work_quoted, text_quoted, text_chars
+  from measured m;
+  if text_quoted * 10 > text_chars then
+    raise exception 'the work''s courses would quote % characters of a % character text between '
+                    'them; the limit is a tenth', text_quoted, text_chars
+      using errcode = '22023', detail = 'quotes';
+  end if;
+  if work_quoted > max_work then
+    raise exception 'the work''s courses would quote % characters of it between them; the limit is %',
+      work_quoted, max_work
       using errcode = '22023', detail = 'quotes';
   end if;
 
@@ -587,6 +664,16 @@ begin
                     join public.study_claims c on c.id = ic.claim_id
                     where ic.item_id = i.id and c.status <> 'validated');
 
+  -- Nor is a disagreement, unless every claim it is between is published: one about a claim
+  -- held back would say, in the course's voice, what the reviewer took out of it.
+  select coalesce(jsonb_agg(x.d order by x.n), '[]'::jsonb) into disagreements
+  from jsonb_array_elements(gen.disagreements) with ordinality as x(d, n)
+  where jsonb_typeof(x.d -> 'claimKeys') = 'array'
+    and jsonb_array_length(x.d -> 'claimKeys') > 0
+    and not exists (select 1 from jsonb_array_elements_text(x.d -> 'claimKeys') as k(claim_key)
+                    where not exists (select 1 from jsonb_array_elements(claims) as c
+                                      where c ->> 'key' = k.claim_key));
+
   -- Analysis, not reproduction: every word the course says of its own -- all the snapshot's
   -- text but the evidence, which is quotation -- against the source outside its quotations.
   select f.run into copied
@@ -594,7 +681,7 @@ begin
     select distinct r.run
     from jsonb_path_query(
            jsonb_build_array(gen.title, gen.goal, gen.overview, to_jsonb(gen.objectives),
-                             gen.recap, gen.disagreements, gen.withheld, lessons, items,
+                             gen.recap, disagreements, gen.withheld, lessons, items,
                              (select coalesce(jsonb_agg(c - 'evidence'), '[]'::jsonb)
                               from jsonb_array_elements(claims) as c)),
            'strict $.**') as j
@@ -612,12 +699,13 @@ begin
 
   insert into public.public_study_courses
     (slug, work_id, title, goal, overview, objectives, recap, excerpt_title, excerpts,
-     snapshot, outline, lesson_count, question_count, from_generation, reviewed_by, review_note)
+     quotations, snapshot, outline, lesson_count, question_count, from_generation, reviewed_by,
+     review_note)
   values
     (p_slug, p_work_id, gen.title, gen.goal, gen.overview, gen.objectives, gen.recap,
-     left('Excerpts: ' || work_title, 200), excerpts,
+     left('Excerpts: ' || work_title, 200), excerpts, quotations,
      jsonb_build_object('claims', claims, 'lessons', lessons, 'items', items,
-                        'disagreements', gen.disagreements, 'withheld', gen.withheld),
+                        'disagreements', disagreements, 'withheld', gen.withheld),
      outline, jsonb_array_length(lessons), jsonb_array_length(items), gen.id,
      btrim(p_reviewed_by), p_note)
   returning id into new_id;
@@ -749,7 +837,9 @@ grant execute on function public.remove_public_course_copies(uuid, int) to servi
 
 /*
  * The published courses of cleared works, newest first, for a signed-in reader: the app
- * offers them on /courses, which a visitor is not shown.
+ * offers them on /courses, which neither a visitor nor a guest is shown. A guest is refused
+ * as a visitor is (42501): a public course is copied into an account, and a guest session
+ * is not one. The service role reads the table itself.
  */
 create function public.list_public_study_courses()
 returns table (
@@ -767,21 +857,28 @@ returns table (
   rights_status  public.rights_status,
   published_at   timestamptz
 )
-language sql
+language plpgsql
 stable
 security definer
 set search_path = ''
 as $fn$
+begin
+  if not exists (select 1 from auth.users u
+                 where u.id = (select auth.uid()) and u.is_anonymous is not true) then
+    raise exception 'the public courses are offered to a signed-in reader' using errcode = '42501';
+  end if;
+  return query
   select p.id, p.slug, p.title, p.goal, p.overview, p.objectives, p.lesson_count,
          p.question_count, w.id, w.title, w.kind, w.rights_status, p.published_at
   from public.public_study_courses p
   join public.works w on w.id = p.work_id
   where p.withdrawn_at is null and w.rights_status in ('public_domain', 'licensed')
   order by p.published_at desc, p.id
-  limit 200
+  limit 200;
+end
 $fn$;
 
-/* One published course by its slug, with its outline, for a signed-in reader. */
+/* One published course by its slug, with its outline, for a signed-in reader, as the list is. */
 create function public.get_public_study_course(p_slug text)
 returns table (
   id             uuid,
@@ -800,24 +897,31 @@ returns table (
   rights_status  public.rights_status,
   published_at   timestamptz
 )
-language sql
+language plpgsql
 stable
 security definer
 set search_path = ''
 as $fn$
+begin
+  if not exists (select 1 from auth.users u
+                 where u.id = (select auth.uid()) and u.is_anonymous is not true) then
+    raise exception 'the public courses are offered to a signed-in reader' using errcode = '42501';
+  end if;
+  return query
   select p.id, p.slug, p.title, p.goal, p.overview, p.objectives, p.recap, p.outline,
          p.lesson_count, p.question_count, w.id, w.title, w.kind, w.rights_status,
          p.published_at
   from public.public_study_courses p
   join public.works w on w.id = p.work_id
   where p.slug = p_slug and p.withdrawn_at is null
-    and w.rights_status in ('public_domain', 'licensed')
+    and w.rights_status in ('public_domain', 'licensed');
+end
 $fn$;
 
-revoke all on function public.list_public_study_courses() from public, anon;
-revoke all on function public.get_public_study_course(text) from public, anon;
-grant execute on function public.list_public_study_courses() to authenticated, service_role;
-grant execute on function public.get_public_study_course(text) to authenticated, service_role;
+revoke all on function public.list_public_study_courses() from public, anon, service_role;
+revoke all on function public.get_public_study_course(text) from public, anon, service_role;
+grant execute on function public.list_public_study_courses() to authenticated;
+grant execute on function public.get_public_study_course(text) to authenticated;
 
 -- ------------------------------------------------------------------ 6. enrolling
 
@@ -888,7 +992,8 @@ begin
       using errcode = '54000';
   end if;
 
-  -- The reader's copy of the excerpts: kept after its course is deleted, and used again.
+  -- The reader's copy of the excerpts: kept after its course is deleted, and used again. With
+  -- where each quotation lies in it, which the text alone does not say.
   select v.source_id, v.id into v_source, v_version
   from public.study_source_versions v
   where v.origin_label = marker and v.owner_id = uid and v.format = 'public_course'
@@ -899,10 +1004,14 @@ begin
     values (uid, 1) returning id into v_source;
     insert into public.study_source_versions
       (source_id, owner_id, version_no, client_mutation_id, title, format, origin_label,
-       extracted_text)
+       extracted_text, quotations)
     values
       (v_source, uid, 1, extensions.gen_random_uuid(), pc.excerpt_title, 'public_course', marker,
-       pc.excerpts)
+       pc.excerpts,
+       (select jsonb_agg(jsonb_build_array((q ->> 'at')::int,
+                                           (q ->> 'at')::int + (q ->> 'to')::int - (q ->> 'from')::int)
+                         order by (q ->> 'at')::int)
+        from jsonb_array_elements(pc.quotations) as q))
     returning id into v_version;
   end if;
 
@@ -1023,7 +1132,10 @@ grant execute on function public.enrol_public_course(uuid) to authenticated;
 
 /*
  * As 20260925190000, with where a public course's copy came from: the public course, its
- * work, and the work's rights in words while they hold (`public_study_course_origin`).
+ * work, the work's rights in words while they hold, and whether the course is still on offer
+ * (`public_study_course_origin`). The work's id only while the reader can open the work's
+ * page -- read here as the reader, so under the policy that page is read under: a work is
+ * listed while a summary of it is readable, and publishing a course does not need one.
  */
 create or replace view public.study_course_overview with (security_invoker = true) as
 -- Materialized: the proven set is computed once per query, not once per course.
@@ -1088,8 +1200,10 @@ select
     as latest_settled,
   c.public_course_id,
   origin.rights_label as public_course_label,
-  origin.work_id as public_course_work_id,
-  origin.work_title as public_course_work_title
+  case when exists (select 1 from public.works w where w.id = origin.work_id)
+       then origin.work_id end as public_course_work_id,
+  origin.work_title as public_course_work_title,
+  coalesce(origin.on_offer, false) as public_course_on_offer
 from public.study_courses c
 left join lateral (
   select g.* from public.study_generations g
@@ -1119,7 +1233,7 @@ left join lateral (
   limit 1
 ) as latest on true
 left join lateral (
-  select o.work_id, o.work_title, o.rights_label
+  select o.work_id, o.work_title, o.rights_label, o.on_offer
   from public.public_study_course_origin(c.public_course_id) as o
   where c.public_course_id is not null
 ) as origin on true;
@@ -1895,8 +2009,9 @@ $fn$;
  * counted, one enrolment would read as a course prepared, a generation validated, questions
  * passed. So each view leaves a copy out, and a reader's answers, reading, reports and
  * corrections in one: they are about the project's course, not about what the pipeline
- * prepared. The status view needs nothing: a copy is never assembled, so it has no
- * provenance to be off the gate by.
+ * prepared. The status view needs nothing: it counts only a generation with an
+ * `assembly_provenance`, and enrolling -- which stamps `assembled_at` but asks no model --
+ * writes none, so a copy has no provenance to be off the gate by.
  */
 
 create or replace view ops.study_beta_mix as

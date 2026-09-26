@@ -318,10 +318,11 @@ other signed-in destinations give, and a visitor with sign-in.
 
 ## Lock order
 
-Five rules keep the writers here from deadlocking with each other and with deletion; every
+Six rules keep the writers here from deadlocking with each other and with deletion; every
 order below was reproduced as a deadlock with real sessions before it was in place. In
 short: the account row, then (adding a public course) that course and its work, then the
-reader's study lock, then their sources, then a course.
+reader's study lock -- several readers' in owner-id order -- then their sources, then a
+course.
 
 - **The account row first.** Saving a source locks the reader's `auth.users` row and then
   the source; deleting the account locks the row before anything it cascades to. So
@@ -386,9 +387,23 @@ reader's study lock, then their sources, then a course.
   `delete_my_account`; and an enrolment that key-shared the account row deadlocked with
   `delete_my_account`.
 
+- **Several readers' study locks in owner-id order.** Anything that takes more than one
+  reader's study lock in a transaction takes them in owner-id order, as
+  `remove_public_course_copies` does. That includes a purge of several accounts: deleting
+  them takes each one's lock as its row goes, in whatever order the statement reaches them,
+  so take the locks first, in id order, and then delete. A purge that deleted b and then a
+  deadlocked with a removal of copies that held a's lock and waited for b's.
+
 **Deleting many accounts in one statement** takes one study lock for each account with study
 sources, and every one of them is held in Postgres's shared lock table until the statement
-commits. Purge accounts in batches of a few hundred, not in one statement.
+commits. Purge accounts in batches of a few hundred, not in one statement, and take each
+batch's study locks in owner-id order before deleting it:
+
+```sql
+select pg_advisory_xact_lock(pg_catalog.hashtextextended('study_progress:' || b.id::text, 0))
+from (select id from auth.users where <this batch> order by id) as b;
+delete from auth.users where <this batch>;
+```
 
 ## Errors
 

@@ -63,11 +63,12 @@ and reviewers should reject it on that basis alone.
    `rights_status` is `public_domain` or `licensed`; reviewed by a person, and published as
    a snapshot by the service role alone (`publish_study_course`). Its quotations are capped
    in the schema — spans within 200 characters of each other are one quotation, of at most
-   300 characters; a course quotes at most a tenth of the registered text; a work's courses
-   on offer quote it at most 20,000 characters between them — and its own words may not
-   repeat twelve in a row of the text outside them. The source itself is never published
-   (law 4). What the schema cannot check is that the registered text is the whole work, or
-   that a close paraphrase is not a condensation: the review is the control for those.
+   300 characters; the courses published from a work, withdrawn or not, quote between them
+   at most a tenth of each registered text and 20,000 characters of the work, a passage
+   quoted twice counted once — and its own words may not repeat twelve in a row of the text
+   outside them. The source itself is never published (law 4). What the schema cannot
+   check is that the registered text is the whole work, or that a close paraphrase is not a
+   condensation: the review is the control for those.
    Readers add it by copy (`enrol_public_course`): no model call and nothing spent, so one
    preparation serves every reader — the ratio above pointing the right way again. A
    reader's own course made public is still the thing this law forbids. See

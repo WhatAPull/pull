@@ -1675,6 +1675,7 @@ export type Database = {
           overview: string | null
           published_at: string
           question_count: number
+          quotations: Json
           recap: string | null
           review_note: string | null
           reviewed_by: string
@@ -1697,6 +1698,7 @@ export type Database = {
           overview?: string | null
           published_at?: string
           question_count: number
+          quotations: Json
           recap?: string | null
           review_note?: string | null
           reviewed_by: string
@@ -1719,6 +1721,7 @@ export type Database = {
           overview?: string | null
           published_at?: string
           question_count?: number
+          quotations?: Json
           recap?: string | null
           review_note?: string | null
           reviewed_by?: string
@@ -3521,6 +3524,7 @@ export type Database = {
           id: string
           origin_label: string | null
           owner_id: string
+          quotations: Json | null
           source_id: string
           title: string
           version_no: number
@@ -3534,6 +3538,7 @@ export type Database = {
           id?: string
           origin_label?: string | null
           owner_id: string
+          quotations?: Json | null
           source_id: string
           title: string
           version_no: number
@@ -3547,6 +3552,7 @@ export type Database = {
           id?: string
           origin_label?: string | null
           owner_id?: string
+          quotations?: Json | null
           source_id?: string
           title?: string
           version_no?: number
@@ -4122,6 +4128,7 @@ export type Database = {
           preparing: boolean | null
           public_course_id: string | null
           public_course_label: string | null
+          public_course_on_offer: boolean | null
           public_course_work_id: string | null
           public_course_work_title: string | null
           question_count: number | null
@@ -4847,6 +4854,7 @@ export type Database = {
       public_study_course_origin: {
         Args: { p_id: string }
         Returns: {
+          on_offer: boolean
           rights_label: string
           work_id: string
           work_title: string

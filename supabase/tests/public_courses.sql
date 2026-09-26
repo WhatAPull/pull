@@ -113,7 +113,8 @@ $fn$;
 
 /*
  * Prepare a course as `p_owner` from `p_versions` -- or prepare `p_course` again -- persist
- * `p_payload` as its text, validate it and finish its job: the generation.
+ * `p_payload` as its text, validate it and finish its job: the generation. The payload's
+ * `course` fields are added to a title and an objective.
  */
 create or replace function pg_temp.prepare(
   p_owner uuid, p_versions uuid[], p_payload jsonb, p_course uuid default null
@@ -132,7 +133,8 @@ begin
   perform pg_temp.become_worker();
   perform public.persist_study_course(job, p_payload || jsonb_build_object(
     'course', jsonb_build_object('title', 'Immediate versus delayed',
-                                 'objectives', jsonb_build_array('Explain the contrast.')),
+                                 'objectives', jsonb_build_array('Explain the contrast.'))
+              || coalesce(p_payload -> 'course', '{}'::jsonb),
     'provenance', jsonb_build_object('promptHash', repeat('a', 64),
                                      'schemaHash', repeat('b', 64), 'model', 'm')));
   perform public.validate_study_course(job);
@@ -205,11 +207,15 @@ declare
                     'history of the study and its setting in the lab. ', 30);
   -- The note and as much again: a source whose tenth is more than 300 characters.
   longer    text;
+  -- Twelve words in a row of the passage the course does not quote, cased and punctuated
+  -- otherwise: "on at length about the history of the study and its setting".
+  repeated  text := 'Why does it go ON AT LENGTH, about the history of the study -- and its setting?';
   pd_work   uuid;
   lic_work  uuid;
   own_work  uuid;
   rev_work  uuid;
   day_work  uuid;
+  short_work uuid;
   v         uuid;
   v2        uuid;
   v_other   uuid;
@@ -257,12 +263,14 @@ begin
     ('paper', 'A licensed paper', 'test-public-course-licensed', 'licensed'),
     ('essay', 'A reader''s own essay', 'test-public-course-own', 'user_owned'),
     ('essay', 'An unresolved essay', 'test-public-course-review', 'review_required'),
-    ('paper', 'A paper for the day''s limit', 'test-public-course-day', 'public_domain');
+    ('paper', 'A paper for the day''s limit', 'test-public-course-day', 'public_domain'),
+    ('essay', 'A short licensed essay', 'test-public-course-short', 'licensed');
   select id into pd_work from public.works where slug = 'test-public-course-pd';
   select id into lic_work from public.works where slug = 'test-public-course-licensed';
   select id into own_work from public.works where slug = 'test-public-course-own';
   select id into rev_work from public.works where slug = 'test-public-course-review';
   select id into day_work from public.works where slug = 'test-public-course-day';
+  select id into short_work from public.works where slug = 'test-public-course-short';
   longer := note || repeat('The passage went on at length about the history of the study and '
                            'its setting in the lab. ', 30);
 
@@ -275,8 +283,18 @@ begin
   course := (r ->> 'courseId')::uuid;
   perform pg_temp.become_worker();
   perform public.persist_study_course((r ->> 'jobId')::uuid, jsonb_build_object(
-    'course', jsonb_build_object('title', 'Immediate versus delayed',
-                                 'objectives', jsonb_build_array('Explain the contrast.')),
+    -- Its overview shares eleven words in a row with the passage it does not quote -- "on at
+    -- length about the history of the study and its" -- which is not twelve. Two disagreements:
+    -- one between claims that are published, one naming the claim the review holds back.
+    'course', jsonb_build_object(
+      'title', 'Immediate versus delayed',
+      'objectives', jsonb_build_array('Explain the contrast.'),
+      'overview', 'The note goes on at length about the history of the study and its lab.',
+      'disagreements', jsonb_build_array(
+        jsonb_build_object('claimKeys', jsonb_build_array('s1c1', 's1c2'),
+                           'description', 'Early on restudying wins; later the test does.'),
+        jsonb_build_object('claimKeys', jsonb_build_array('s1c2', 's1c3'),
+                           'description', 'What the students read is said to decide it.'))),
     'claims', jsonb_build_array(
       pg_temp.claim('s1c1', v, 'At five minutes, restudying beat the recall test.', note, 83, 40),
       pg_temp.claim('s1c2', v, 'After a week, the recall test group remembered more.', note, 169, 56),
@@ -400,19 +418,36 @@ begin
   perform pg_temp.as_owner();
   update public.study_source_versions set extracted_text = note where id = v;
 
-  -- The work's courses on offer quote it at most 20,000 characters between them; a withdrawn
-  -- course's excerpts are not on offer.
+  -- A work's courses quote it at most 20,000 characters between them -- a withdrawn course's
+  -- too, whose readers keep their copies. A course deleted -- withdrawn, and with no copies
+  -- left -- no longer counts. The filler quotes under a tenth of another text of the work.
   insert into public.public_study_courses
-    (slug, work_id, title, goal, excerpt_title, excerpts, snapshot, outline, lesson_count,
-     question_count, reviewed_by)
-  values ('test-filler', pd_work, 'Filler', 'Filler', 'Filler', repeat('x', 19900), '{}', '[]', 1,
-          0, 'Public courses test')
+    (slug, work_id, title, goal, excerpt_title, excerpts, quotations, snapshot, outline,
+     lesson_count, question_count, reviewed_by)
+  values ('test-filler', pd_work, 'Filler', 'Filler', 'Filler', repeat('x', 19900),
+          jsonb_build_array(jsonb_build_object('sha256', repeat('0', 64), 'chars', 200000,
+                                               'from', 0, 'to', 19900, 'at', 0)),
+          '{}', '[]', 1, 0, 'Public courses test')
   returning id into filler;
   perform pg_temp.become_worker();
   perform pg_temp.expect('22023 quotes',
     format('select public.publish_study_course(%L, %L, %L, %L)', gen, pd_work, 'test-work-cap', 'R'),
     'a work''s courses were published quoting it over 20,000 characters');
   perform public.withdraw_public_study_course(filler, 'Public courses test', 'Only filler.');
+  perform pg_temp.expect('22023 quotes',
+    format('select public.publish_study_course(%L, %L, %L, %L)', gen, pd_work, 'test-work-cap', 'R'),
+    'a withdrawn course''s quotations were not counted');
+  perform pg_temp.as_owner();
+  delete from public.public_study_courses where id = filler;
+  -- A withdrawn course of another work, for the catalogue and enrolling to refuse below.
+  insert into public.public_study_courses
+    (slug, work_id, title, goal, excerpt_title, excerpts, quotations, snapshot, outline,
+     lesson_count, question_count, reviewed_by, withdrawn_at, withdrawn_reason)
+  values ('test-filler', day_work, 'Filler', 'Filler', 'Filler', 'x',
+          jsonb_build_array(jsonb_build_object('sha256', repeat('0', 64), 'chars', 200000,
+                                               'from', 0, 'to', 1, 'at', 0)),
+          '{}', '[]', 1, 0, 'Public courses test', now(), 'Only filler.')
+  returning id into filler;
 
   -- The course's own words may not repeat the source outside its quotations -- twelve words in
   -- a row of the passage that is not quoted -- but may repeat what it quotes.
@@ -426,6 +461,28 @@ begin
   perform pg_temp.become_reader(curator);
   l2 := public.revise_study_lesson(l2, '{"explanation": "On final tests two days and one week '
                                        'later, the group that had taken the recall test did better."}');
+  -- ...nor in a question, a claim or the overview, whatever its case and punctuation: each in a
+  -- course of its own, from the same text.
+  v2 := pg_temp.save(curator, note);
+  perform pg_temp.as_owner();
+  insert into public.study_curated_sources (source_version_id, work_id, registered_by)
+  values (v2, pd_work, 'Public courses test');
+  foreach s in array array['question', 'claim', 'overview'] loop
+    gen2 := pg_temp.prepare(curator, array[v2], jsonb_build_object(
+      'course', case when s = 'overview' then jsonb_build_object('overview', repeated)
+                     else '{}'::jsonb end,
+      'claims', jsonb_build_array(pg_temp.claim('s1c1', v2,
+        case when s = 'claim' then repeated else 'Restudying won early.' end, note, 83, 40)),
+      'lessons', jsonb_build_array(pg_temp.lesson('l1', 1, array['s1c1'])),
+      'items', jsonb_build_array(pg_temp.q('q1', 'l1',
+        case when s = 'question' then repeated else 'Which group won early?' end,
+        'The restudy group', array['s1c1']))));
+    perform pg_temp.become_worker();
+    perform pg_temp.expect('22023 copied',
+      format('select public.publish_study_course(%L, %L, %L, %L)', gen2, pd_work,
+             'test-copied-' || s, 'R'),
+      format('a course repeating the unquoted source in its %s was published', s));
+  end loop;
 
   -- ---------------------------------------------------------------- publishing
   perform pg_temp.become_worker();
@@ -443,6 +500,20 @@ begin
   -- gap and all; the held-back claim's span, 38 characters before it, is not quoted at all.
   if pc.excerpts is distinct from substr(note, 84, 142) then
     raise exception 'the excerpts are %', pc.excerpts;
+  end if;
+  -- And what it quotes is recorded against the text, by its hash: where in it, and where in
+  -- the excerpts.
+  if pc.quotations is distinct from jsonb_build_array(jsonb_build_object(
+       'sha256', encode(sha256(convert_to(note, 'UTF8')), 'hex'), 'chars', char_length(note),
+       'from', 83, 'to', 225, 'at', 0)) then
+    raise exception 'the quotations are recorded as %', pc.quotations;
+  end if;
+  -- Only the disagreement between two published claims goes with it; the one naming the claim
+  -- held back does not.
+  if pc.snapshot -> 'disagreements' is distinct from jsonb_build_array(jsonb_build_object(
+       'claimKeys', jsonb_build_array('s1c1', 's1c2'),
+       'description', 'Early on restudying wins; later the test does.')) then
+    raise exception 'the published disagreements are %', pc.snapshot -> 'disagreements';
   end if;
   if pc.from_generation is distinct from gen or pc.work_id is distinct from pd_work
      or pc.lesson_count <> 2 or pc.question_count <> 2
@@ -544,6 +615,46 @@ begin
          cross join jsonb_array_elements(c -> 'evidence') e) is distinct from '0,90' then
     raise exception 'two far spans were not two excerpts: % / %', pc.excerpts, pc.snapshot -> 'claims';
   end if;
+  if (select string_agg(format('%s-%s@%s', q ->> 'from', q ->> 'to', q ->> 'at'), ',')
+      from jsonb_array_elements(pc.quotations) q) is distinct from '227-315@0,583-671@90' then
+    raise exception 'the two quotations are recorded as %', pc.quotations;
+  end if;
+
+  -- Every course published from a work counts towards what its courses quote between them:
+  -- here a tenth of the note, 289 of its 2,897 characters, which three courses of 88 each stay
+  -- within and a fourth would not -- each prepared from a version of its own of the same text.
+  -- Passages already quoted take nothing more.
+  for d in 0..3 loop
+    v2 := pg_temp.save(curator, note);
+    perform pg_temp.as_owner();
+    insert into public.study_curated_sources (source_version_id, work_id, registered_by)
+    values (v2, short_work, 'Public courses test');
+    gen2 := pg_temp.prepare(curator, array[v2], jsonb_build_object(
+      'claims', jsonb_build_array(
+        pg_temp.claim('s1c1', v2, 'The passage described the setting.', note, 227 + d * 4 * 89, 88)),
+      'lessons', jsonb_build_array(pg_temp.lesson('l1', 1, array['s1c1'])),
+      'items', '[]'::jsonb));
+    perform pg_temp.become_worker();
+    s := pg_temp.refusal(format('select public.publish_study_course(%L, %L, %L, %L)', gen2,
+                                short_work, 'test-short-' || d, 'R'));
+    if s is distinct from (case when d < 3 then 'ok' else '22023 quotes' end) then
+      raise exception 'course % of a short text, each quoting 88 characters of it: %', d + 1, s;
+    end if;
+  end loop;
+  v2 := pg_temp.save(curator, note);
+  perform pg_temp.as_owner();
+  insert into public.study_curated_sources (source_version_id, work_id, registered_by)
+  values (v2, short_work, 'Public courses test');
+  gen2 := pg_temp.prepare(curator, array[v2], jsonb_build_object(
+    'claims', jsonb_build_array(
+      pg_temp.claim('s1c1', v2, 'The passage described the setting.', note, 227, 88),
+      pg_temp.claim('s1c2', v2, 'It described it again.', note, 227 + 8 * 89, 88)),
+    'lessons', jsonb_build_array(pg_temp.lesson('l1', 1, array['s1c1', 's1c2'])),
+    'items', '[]'::jsonb));
+  perform pg_temp.become_worker();
+  perform pg_temp.expect('ok',
+    format('select public.publish_study_course(%L, %L, %L, %L)', gen2, short_work, 'test-short-again', 'R'),
+    'a course quoting only passages already quoted was refused');
 
   -- ---------------------------------------------------------------- the catalogue
   -- Signed-in readers only.
@@ -554,6 +665,14 @@ begin
     'a visitor read a public course');
   perform pg_temp.expect('42501', 'select 1 from public.public_study_courses',
     'a visitor read the published table');
+  -- A guest is answered as a visitor is: a public course is copied into an account.
+  perform pg_temp.become_reader(guest);
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', guest, 'role', 'authenticated', 'is_anonymous', true)::text, true);
+  perform pg_temp.expect('42501', 'select 1 from public.list_public_study_courses()',
+    'a guest listed the public courses');
+  perform pg_temp.expect('42501', 'select 1 from public.get_public_study_course(''test-licensed'')',
+    'a guest read a public course');
   perform pg_temp.become_reader(other);
   if (select count(*) from public.list_public_study_courses()
       where id = pub and work_id = pd_work and work_title = 'Test-enhanced learning'
@@ -638,13 +757,35 @@ begin
   if not exists (select 1 from public.study_course_overview
                  where course_id = copy and generation_id = copy_gen
                    and public_course_id = pub and public_course_label = 'public domain'
-                   and public_course_work_id = pd_work
+                   and public_course_on_offer
                    and public_course_work_title = 'Test-enhanced learning'
                    and title = 'Immediate versus delayed'
                    and lesson_count = 2 and question_count = 2 and claim_count = 2
                    and not preparing and not held_back and not update_available) then
     raise exception 'the copy does not read as a prepared course: %',
       (select to_jsonb(o) from public.study_course_overview o where o.course_id = copy);
+  end if;
+  -- The work is linked to only while its page can be opened: while a summary of it is readable.
+  if (select public_course_work_id from public.study_course_overview where course_id = copy)
+     is not null then
+    raise exception 'a copy linked to a work nobody can open';
+  end if;
+  perform pg_temp.as_owner();
+  insert into public.summaries (work_id, title, status, visibility, published_at)
+  values (pd_work, 'Test-enhanced learning', 'published', 'public', now());
+  perform pg_temp.become_reader(reader);
+  if (select public_course_work_id from public.study_course_overview where course_id = copy)
+     is distinct from pd_work then
+    raise exception 'a copy did not link to its work once the work could be opened';
+  end if;
+  perform pg_temp.as_owner();
+  delete from public.summaries where work_id = pd_work;
+  perform pg_temp.become_reader(reader);
+  -- The disagreement it was published with, and no other.
+  if (select jsonb_agg(x.dis ->> 'description') from public.study_course_overview o,
+        jsonb_array_elements(o.disagreements) as x(dis) where o.course_id = copy)
+     is distinct from '["Early on restudying wins; later the test does."]'::jsonb then
+    raise exception 'the copy''s disagreements are not the published one';
   end if;
   if (select count(*) from public.study_course_outline(copy)) <> 2
      or (select count(*) from public.study_course_questions(copy)) <> 2 then
@@ -697,7 +838,9 @@ begin
                and substr(sv.extracted_text, e.start_offset + 1, e.end_offset - e.start_offset)
                    is distinct from e.span_text)
      or (select extracted_text from public.study_source_versions where id = excerpt)
-        is distinct from substr(note, 84, 142) then
+        is distinct from substr(note, 84, 142)
+     or (select quotations from public.study_source_versions where id = excerpt)
+        is distinct from '[[0, 142]]'::jsonb then
     raise exception 'the copied evidence does not point at its excerpt';
   end if;
   -- The copy's questions prove recall like any course's -- the project's correction as the
@@ -841,7 +984,9 @@ begin
      or (select public_course_label from public.study_course_overview where course_id = copy)
         is not null
      or (select public_course_work_title from public.study_course_overview where course_id = copy)
-        is distinct from 'Test-enhanced learning' then
+        is distinct from 'Test-enhanced learning'
+     or (select public_course_on_offer from public.study_course_overview where course_id = copy)
+        is not false then
     raise exception 'a course of a work under rights review stayed in the catalogue or kept its rights';
   end if;
   perform pg_temp.become_reader(other);
@@ -857,8 +1002,10 @@ begin
   perform pg_temp.as_owner();
   update public.works set rights_status = 'licensed' where id = pd_work;
   perform pg_temp.become_reader(reader);
-  if (select rights_label from public.public_study_course_origin(pub)) is distinct from 'licensed' then
-    raise exception 'a licensed work''s course did not say so';
+  if (select rights_label from public.public_study_course_origin(pub)) is distinct from 'licensed'
+     or (select public_course_on_offer from public.study_course_overview where course_id = copy)
+        is not true then
+    raise exception 'a licensed work''s course did not say so, or is not on offer again';
   end if;
   perform pg_temp.as_owner();
   update public.works set rights_status = 'public_domain' where id = pd_work;
@@ -869,11 +1016,11 @@ begin
   select * into pc from public.public_study_courses where id = pub;
   for d in 1..21 loop
     insert into public.public_study_courses
-      (slug, work_id, title, goal, overview, objectives, recap, excerpt_title, excerpts, snapshot,
-       outline, lesson_count, question_count, reviewed_by)
+      (slug, work_id, title, goal, overview, objectives, recap, excerpt_title, excerpts,
+       quotations, snapshot, outline, lesson_count, question_count, reviewed_by)
     values (format('test-day-%s', d), day_work, pc.title, pc.goal, pc.overview, pc.objectives,
-            pc.recap, pc.excerpt_title, pc.excerpts, pc.snapshot, pc.outline, pc.lesson_count,
-            pc.question_count, 'Public courses test')
+            pc.recap, pc.excerpt_title, pc.excerpts, pc.quotations, pc.snapshot, pc.outline,
+            pc.lesson_count, pc.question_count, 'Public courses test')
     returning id into item;
     day_ids := day_ids || item;
   end loop;
@@ -978,6 +1125,13 @@ begin
      or exists (select 1 from public.get_public_study_course('test-immediate-versus-delayed')) then
     raise exception 'a withdrawn course stayed in the catalogue';
   end if;
+  -- A copy says its course is no longer offered: deleted, it could not be added again.
+  perform pg_temp.become_reader(reader);
+  if (select public_course_on_offer from public.study_course_overview where course_id = copy)
+     is not false then
+    raise exception 'a copy of a withdrawn course read as still on offer';
+  end if;
+  perform pg_temp.become_reader(other);
   perform pg_temp.expect('P0002', format('select public.enrol_public_course(%L)', pub),
     'a withdrawn course was enrolled in');
   -- The copies go a reader at a time, with their excerpts; the log of enrolments stays.
@@ -1011,6 +1165,12 @@ begin
   -- ---------------------------------------------------------------- the account goes, the course stays
   perform pg_temp.become_reader(other);
   perform public.enrol_public_course(lic_pub);
+  -- Its copy of the excerpts says where each of the two quotations lies in it.
+  if (select v.quotations from public.study_source_versions v
+      where v.format = 'public_course' and v.origin_label = 'public_course:' || lic_pub)
+     is distinct from '[[0, 88], [90, 178]]'::jsonb then
+    raise exception 'a copy of two quotations does not say where each lies';
+  end if;
   perform pg_temp.as_owner();
   delete from auth.users where id = other;
   if exists (select 1 from public.study_courses where public_course_id = lic_pub)
