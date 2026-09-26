@@ -34,7 +34,8 @@
 --    cap, each reader's share of study spend, the per-reader job counts -- and, new here, a
 --    ceiling on study spend for all readers together (`study_daily_cap_cents()`, half the
 --    day), so opening the beta cannot leave the catalogue's generation with nothing. Its door
---    counts the courses already admitted and not yet started, not only what is spent.
+--    counts the courses already admitted and not yet started, not only what is spent -- each
+--    reader's for no more than what is left of their share.
 --
 -- 4. INSTRUMENTATION. An answer now records whether the study Delta counted every claim it
 --    tests as known just before it was given (`claims_known_before`), so false mastery --
@@ -472,7 +473,7 @@ declare
   owned      int;
   total      bigint;
   used       int;
-  waiting    bigint;
+  waiting    numeric;
   over       boolean;
   delay_for  int;
   new_job    uuid;
@@ -615,25 +616,43 @@ begin
       using errcode = '53400';
   end if;
   -- The study ceiling counts, besides what is charged and held, every course already admitted
-  -- that today's study spend does not see yet -- queued or running, with nothing charged to it
-  -- today and nothing held for it -- at the least a course reserves. Counting spend alone, eight
-  -- readers at an empty day were all admitted, and the five it could not fund waited out the
-  -- worker's day of budget waits and then failed. Under the reader's lock, not the budget's:
-  -- two readers at the door at once are each counted without the other, and the reservation,
-  -- under one lock for the whole budget, is what holds the ceiling exactly.
-  select count(*) into waiting
-  from public.generation_jobs j
-  where j.kind = 'study_course' and j.status in ('queued', 'running')
-    and not exists (
-      select 1 from public.cost_ledger cl
-      where cl.job_id = j.id
-        and cl.created_at >= date_trunc('day', (now() at time zone 'utc')) at time zone 'utc')
-    and not exists (
-      select 1 from public.budget_reservations br
-      where br.job_id = j.id and br.settled_at is null
-        and br.created_at >= now() - public.budget_reservation_ttl()
-        and br.created_at >= date_trunc('day', (now() at time zone 'utc')) at time zone 'utc');
-  if public.study_spend_today() + (waiting + 1) * public.study_min_job_cents()
+  -- that today's study spend does not see yet -- queued or running, with nothing it cost
+  -- charged today and nothing held for it -- at the least a course reserves. Counting spend
+  -- alone, eight readers at an empty day were all admitted, and the five it could not fund
+  -- waited out the worker's day of budget waits and then failed.
+  --
+  -- Two limits keep the count to what can actually be spent. An attempt ledgered at nothing,
+  -- a provider's 429 or a refused connection, is not a start: counted as one, a backlog after
+  -- an outage left the count and let the door past the ceiling. And one reader's waiting
+  -- courses count together for no more than what is left of their share of study spend,
+  -- which is all they can spend today whatever the ceiling holds: counted in full, one
+  -- reader's queue closed the door to everyone. Their courses past it are still admitted --
+  -- the reader's own check above reads their spend, not their queue -- and wait on the share.
+  --
+  -- Under the reader's lock, not the budget's: two readers at the door at once are each
+  -- counted without the other, and the reservation, under one lock for the whole budget, is
+  -- what holds the ceiling exactly.
+  select coalesce(sum(least(w.courses * public.study_min_job_cents(),
+                            greatest(public.study_requester_daily_cap_cents()
+                                     - public.study_requester_spend_today(w.requester_id), 0))),
+                  0)
+    into waiting
+  from (
+    select j.requester_id, count(*) as courses
+    from public.generation_jobs j
+    where j.kind = 'study_course' and j.status in ('queued', 'running')
+      and not exists (
+        select 1 from public.cost_ledger cl
+        where cl.job_id = j.id and cl.cost_cents > 0
+          and cl.created_at >= date_trunc('day', (now() at time zone 'utc')) at time zone 'utc')
+      and not exists (
+        select 1 from public.budget_reservations br
+        where br.job_id = j.id and br.settled_at is null
+          and br.created_at >= now() - public.budget_reservation_ttl()
+          and br.created_at >= date_trunc('day', (now() at time zone 'utc')) at time zone 'utc')
+    group by j.requester_id
+  ) as w;
+  if public.study_spend_today() + waiting + public.study_min_job_cents()
      > public.study_daily_cap_cents() then
     raise exception 'today''s study generation budget is spent. Study generation resumes at 00:00 UTC.'
       using errcode = '53400';
@@ -1074,9 +1093,10 @@ revoke all on function public.close_study_beta(text)
 
 /*
  * The beta's state: open or not, on which gate and how old its run is, whether admission
- * through it has lapsed, preparations since it first opened on that gate whose pipeline is
- * not the gate's, courses still queued for readers no longer admitted, how many readers are
- * allowlisted, and today's spend -- study and everything else -- against the caps.
+ * through it has lapsed, preparations since it first opened on that gate -- since it last
+ * stood open on another -- whose pipeline is not the gate's, courses still queued for
+ * readers no longer admitted, how many readers are allowlisted, and today's spend -- study
+ * and everything else -- against the caps.
  */
 create view ops.study_beta_status as
 select s.open_to_all,
@@ -1092,11 +1112,19 @@ select s.open_to_all,
        -- Off the gate's pipeline in either stage: assembled with another prompt, schema or
        -- model, or with a claim extracted with another. Counted from the first opening on the
        -- gate, in the log, not from the row's last change: opening again on the same gate had
-       -- set the count back to nothing.
+       -- set the count back to nothing. And only since the beta last stood open on another
+       -- gate: a course that gate covered is not off this one's pipeline for having been made
+       -- before the beta came back to it. Which came last is the log's order, not its clock:
+       -- moved away and back in one transaction, both are logged at the same time.
        (select count(*) from public.study_generations sg
         where s.open_to_all
           and sg.created_at >= (select min(l.at) from public.study_beta_log l
-                                where l.gate_id = s.gate_id and l.open_to_all)
+                                where l.gate_id = s.gate_id and l.open_to_all
+                                  and l.id > coalesce(
+                                    (select max(l2.id) from public.study_beta_log l2
+                                     where l2.open_to_all
+                                       and l2.gate_id is distinct from s.gate_id),
+                                    0))
           and sg.assembly_provenance is not null
           and ((sg.assembly_provenance ->> 'promptHash', sg.assembly_provenance ->> 'schemaHash',
                 sg.assembly_provenance ->> 'model')

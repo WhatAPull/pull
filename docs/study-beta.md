@@ -12,11 +12,20 @@ study spend, and the per-reader job counts bound a day, open or not. It adds one
 courses, every reader's together, are held to `study_daily_cap_cents()` -- 100 cents, half
 the day -- at the door and at each reservation, so an open beta cannot leave the catalogue's
 generation nothing. The door counts what is billed today, what is held for calls in flight,
-and every course already admitted that has neither yet -- queued, or running with nothing
-charged to it today and nothing held -- at `study_min_job_cents()` (31 cents, a course's
-reservation at its output ceilings), and refuses a course once that sum and the course's own
-31 would pass the 100: three courses can wait unstarted at once, and more are admitted as
-those bill, usually for less than they reserved. Two readers at the door at the same moment
+and every course already admitted that has neither yet -- queued or running, with nothing it
+cost charged today and nothing held (an attempt ledgered at nothing, such as a provider's
+429, is not a start) -- at `study_min_job_cents()` (31 cents, a course's reservation at its
+output ceilings), each reader's together at no more than what is left of their share of
+study spend (60 cents on a day they have spent nothing), which is all they can spend today;
+and it refuses a course once that sum and the course's own 31 would pass the 100. On an
+empty day, a course each from three readers fills it, as do two or more from one reader and
+one from another, and more are admitted as those bill, usually for less than they reserved.
+A reader's courses past what is left of their share add nothing to the count, so they can
+queue past it while the ceiling has room for what is left of their share and one course
+more -- a reader alone on an empty day, as far as the per-reader job counts allow. Those
+courses are admitted but may not start today: their reader's share, not the ceiling, holds
+them, since the reader's own check at the door reads what they have spent, not what they
+have queued. Two readers at the door at the same moment
 are each counted without the other, and a course is counted at its least only until it
 starts -- a long one can bill up to its reader's share, and a later step of one can wait for
 the day's budget -- so the door is an estimate, and the reservation, under one lock for the
@@ -93,8 +102,9 @@ Opening is refused with 55000 when the gate did not pass (`gate_failed`) or its 
 than thirty days old (`gate_stale`), and when the allowlisted beta so far leaves a kind of
 source or goal uncovered (`unrepresentative`), unless the operator gives a reason of at least
 twenty characters, which is logged. A trigger holds the row to both rules however it is
-changed: an `update` of `study_beta_settings` that opens it is refused for its gate (`gate`),
-and for its mix (`unrepresentative`) unless the reason is in `study.beta_override`, set in the
+changed: an `update` of `study_beta_settings` that opens it, or moves an open beta to another
+gate, is refused for its gate (`gate`), and for its mix (`unrepresentative`) unless the reason
+is in `study.beta_override`, set in the
 same transaction: `select set_config('study.beta_override', '<reason>', true)`. An open
 beta admits no one past the allowlist once its gate's run is sixty days old: it lapses
 rather than stay open on a pipeline reviewed two months before. Every change is logged in
@@ -106,10 +116,11 @@ reader it no longer admits still finishes, within that reader's share and the st
 ceiling, and `ops.study_beta_status` counts them. A change to the prompts, the schemas or the
 models, of extraction or of assembly, is a new pipeline: record a new gate before opening on
 it. The status view counts preparations assembled, or with a claim extracted, by a pipeline
-that is not the gate's, from the first time the beta opened on that gate -- opening on it
-again does not reset the count. It counts them and refuses none, so **close the beta before
-deploying a prompt, schema or model change**, and open it again on a gate for the new
-pipeline.
+that is not the gate's, from the first time the beta opened on that gate since it last stood
+open on another -- opening on it again does not reset the count, and a preparation made
+while another gate stood open is that gate's. It counts them and refuses none, so **close
+the beta before deploying a prompt, schema or model change**, and open it again on a gate
+for the new pipeline.
 
 ### A representative beta
 

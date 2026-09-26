@@ -153,13 +153,63 @@ exception when sqlstate '53400' then
 end $fn$;
 grant execute on function pg_temp.admits(uuid) to authenticated;
 
+/* A reader with an account and one note saved, which is what the door needs. As the owner. */
+create or replace function pg_temp.new_reader(p_note text)
+returns uuid language plpgsql as $fn$
+declare
+  r uuid := extensions.gen_random_uuid();
+begin
+  insert into auth.users
+    (id, instance_id, aud, role, email, encrypted_password,
+     email_confirmed_at, created_at, updated_at, is_anonymous,
+     raw_app_meta_data, raw_user_meta_data)
+  values
+    (r, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+     'study-beta-' || r || '@example.test', '', now(), now(), now(), false, '{}', '{}');
+  perform pg_temp.become_reader(r);
+  perform public.save_study_source_version('A note', 'paste', p_note,
+                                           extensions.gen_random_uuid());
+  perform pg_temp.as_owner();
+  return r;
+end $fn$;
+
+/* Knock at the study door once as a reader, with their note: whether it admitted a course. */
+create or replace function pg_temp.knock(p_reader uuid)
+returns boolean language plpgsql as $fn$
+declare
+  took boolean;
+begin
+  perform pg_temp.become_reader(p_reader);
+  took := pg_temp.admits((select v.id from public.study_source_versions v
+                          where v.owner_id = p_reader limit 1));
+  perform pg_temp.as_owner();
+  return took;
+end $fn$;
+
+/* Whether the door would admit a reader's course now: knocked, and undone. */
+create or replace function pg_temp.would_admit(p_reader uuid)
+returns boolean language plpgsql as $fn$
+declare
+  took boolean;
+begin
+  begin
+    took := pg_temp.knock(p_reader);
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+  return took;
+end $fn$;
+
 /*
- * Knock at the study door as a reader until it refuses, and say how many courses it admitted.
- * Each answer is held to the sum the door makes: admitted exactly while today's study spend,
- * every course waiting unstarted -- as many as given, and each this admits -- at the least a
+ * Knock at the study door once as each reader in turn until it refuses, and say how many
+ * courses it admitted. One course each, from readers with nothing spent or waiting, so every
+ * course is inside its reader's share and counts in full; each answer is held to the sum the
+ * door makes: admitted exactly while today's study spend, every course waiting unstarted --
+ * as many as given, each inside its reader's share, and each this admits -- at the least a
  * course reserves, and this course's own least fit in the ceiling. Called as the owner.
  */
-create or replace function pg_temp.fill(p_reader uuid, p_version uuid, p_waiting int)
+create or replace function pg_temp.fill(p_readers uuid[], p_waiting int)
 returns int language plpgsql as $fn$
 declare
   spent  numeric := public.study_spend_today();
@@ -168,17 +218,27 @@ declare
   n      int := 0;
   took   boolean;
 begin
-  perform pg_temp.become_reader(p_reader);
+  if least_ > public.study_requester_daily_cap_cents() then
+    raise exception 'a course''s least does not fit in a reader''s share';
+  end if;
   loop
-    took := pg_temp.admits(p_version);
+    if n >= cardinality(p_readers) then
+      raise exception 'the door admitted a course from every one of the % readers given', n;
+    end if;
+    if public.study_requester_spend_today(p_readers[n + 1]) <> 0
+       or exists (select 1 from public.generation_jobs j
+                  where j.requester_id = p_readers[n + 1]
+                    and j.status in ('queued', 'running')) then
+      raise exception 'fill was given a reader with something spent or waiting';
+    end if;
+    took := pg_temp.knock(p_readers[n + 1]);
     if took is distinct from (spent + (p_waiting + n + 1) * least_ <= cap) then
       raise exception 'the door % a course with % cents spent and % waiting unstarted',
         case when took then 'admitted' else 'refused' end, spent, p_waiting + n;
     end if;
-    exit when not took or n > 20;
+    exit when not took;
     n := n + 1;
   end loop;
-  perform pg_temp.as_owner();
   return n;
 end $fn$;
 
@@ -245,6 +305,14 @@ declare
   jobs      uuid[];
   waited    int;
   attempts  bigint;
+  readers   uuid[];
+  reader_x  uuid;
+  reader_y  uuid;
+  x_spent   numeric;
+  x_counts  numeric;
+  held      numeric;
+  gate_b    uuid;
+  moved     bigint;
 begin
   insert into auth.users
     (id, instance_id, aud, role, email, encrypted_password,
@@ -743,26 +811,38 @@ begin
     if sqlerrm is distinct from 'probe done' then raise; end if;
   end;
   -- And the door counts the courses it has admitted, not only what they have spent: one that
-  -- today's study spend does not see yet -- queued or running, nothing charged to it today and
-  -- nothing held -- is counted at its least, and the next course is refused exactly when that
-  -- sum passes the ceiling. With nothing spent, as many are admitted as the ceiling holds at
-  -- their least. Then, running, one charged 5 cents and one holding 5 are counted at what they
-  -- have, and one charged only yesterday, its hold today settled with no charge, still at its
-  -- least. Probed, and undone.
+  -- today's study spend does not see yet -- queued or running, nothing it cost charged today
+  -- and nothing held -- is counted at its least, and the next course is refused exactly when
+  -- that sum passes the ceiling. With nothing spent, as many are admitted as the ceiling holds
+  -- at their least, a course each from readers inside their shares. An attempt ledgered at
+  -- nothing -- a provider's 429, its hold settled with no charge -- is no start: that course
+  -- is still counted, and the next is still refused. Then, running, one charged 5 cents and
+  -- one holding 5 are counted at what they have, and the one charged only yesterday, besides
+  -- today's free attempt, still at its least. Probed, and undone.
   begin
     perform pg_temp.as_owner();
     update public.generation_jobs set status = 'cancelled'
      where kind = 'study_course' and status in ('queued', 'running');
-    waited := pg_temp.fill(outsider, (saved ->> 'versionId')::uuid, 0);
+    select array_agg(pg_temp.new_reader(note)) into readers
+    from generate_series(1, 2 * (floor(public.study_daily_cap_cents()
+                                       / public.study_min_job_cents())::int + 1));
+    waited := pg_temp.fill(readers, 0);
     if waited is distinct from floor(public.study_daily_cap_cents()
                                      / public.study_min_job_cents())::int
        or waited < 3 then
       raise exception 'with nothing spent the door admitted % courses', waited;
     end if;
-    select array_agg(j.id) into jobs
+    select array_agg(j.id order by array_position(readers, j.requester_id)) into jobs
     from public.generation_jobs j
-    where j.requester_id = outsider and j.kind = 'study_course' and j.status = 'queued';
+    where j.requester_id = any (readers) and j.kind = 'study_course' and j.status = 'queued';
     update public.generation_jobs set status = 'running' where id = any (jobs);
+    insert into public.cost_ledger (job_id, provider, operation, unit, quantity, cost_cents)
+    values (jobs[3], 'test', 'study_extract', 'call', 1, 0);
+    insert into public.budget_reservations (job_id, step, reserved_cents, settled_at)
+    values (jobs[3], 'study_extract', public.study_min_job_cents(), now());
+    if pg_temp.would_admit(readers[waited + 1]) then
+      raise exception 'a course whose one attempt today cost nothing left the door''s count';
+    end if;
     insert into public.cost_ledger (job_id, provider, operation, unit, quantity, cost_cents)
     values (jobs[1], 'test', 'study_extract', 'call', 1, 5);
     insert into public.budget_reservations (job_id, step, reserved_cents)
@@ -770,15 +850,74 @@ begin
     insert into public.cost_ledger
       (job_id, provider, operation, unit, quantity, cost_cents, created_at)
     values (jobs[3], 'test', 'study_extract', 'call', 1, 5, midnight - interval '1 second');
-    insert into public.budget_reservations (job_id, step, reserved_cents, settled_at)
-    values (jobs[3], 'study_extract', 5, now());
-    waited := pg_temp.fill(outsider, (saved ->> 'versionId')::uuid, cardinality(jobs) - 2);
+    waited := pg_temp.fill(readers[waited + 1:], cardinality(jobs) - 2);
     if waited is distinct from floor((public.study_daily_cap_cents() - public.study_spend_today())
                                      / public.study_min_job_cents())::int
                                - (cardinality(jobs) - 2)
        or waited < 1 then
       raise exception 'with the courses started the door admitted % more', waited;
     end if;
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+  -- One reader's queue counts at the door for no more than what is left of their share, which
+  -- is all it can spend today: counted in full, it closed the door to every other reader. One
+  -- reader queues three courses; then, with nothing spent, a third of their share spent on the
+  -- first, and all of it, the door counts theirs for exactly the least of those waiting at
+  -- their least and what is left of the share: a reader with nothing spent is admitted when
+  -- another's hold leaves exactly that count and one course's least of the ceiling, and
+  -- refused when it leaves a ten-thousandth of a cent less. Probed, and undone.
+  begin
+    perform pg_temp.as_owner();
+    update public.generation_jobs set status = 'cancelled'
+     where kind = 'study_course' and status in ('queued', 'running');
+    reader_x := pg_temp.new_reader(note);
+    reader_y := pg_temp.new_reader(note);
+    for i in 1..3 loop
+      if not pg_temp.knock(reader_x) then
+        raise exception 'one reader''s course % of three was refused at an empty door', i;
+      end if;
+    end loop;
+    select array_agg(j.id order by j.id) into jobs
+    from public.generation_jobs j
+    where j.requester_id = reader_x and j.kind = 'study_course' and j.status = 'queued';
+    -- Another reader's call in flight, whose hold fills the ceiling to the edge.
+    insert into public.generation_jobs (kind, requester_id, status)
+    values ('study_course', guest, 'running') returning id into other_job;
+    insert into public.budget_reservations (job_id, step, reserved_cents)
+    values (other_job, 'study_extract', 0);
+    foreach x_spent in array array[0, floor(public.study_requester_daily_cap_cents() / 3),
+                                   public.study_requester_daily_cap_cents()] loop
+      if x_spent > 0 then
+        update public.generation_jobs set status = 'running' where id = jobs[1];
+        insert into public.cost_ledger (job_id, provider, operation, unit, quantity, cost_cents)
+        values (jobs[1], 'test', 'study_assemble', 'call', 1,
+                x_spent - public.study_requester_spend_today(reader_x));
+      end if;
+      x_counts := least((case when x_spent > 0 then 2 else 3 end) * public.study_min_job_cents(),
+                        public.study_requester_daily_cap_cents() - x_spent);
+      if x_counts >= (case when x_spent > 0 then 2 else 3 end) * public.study_min_job_cents() then
+        raise exception 'the reader''s queue fits in their share, which this does not test';
+      end if;
+      update public.budget_reservations set reserved_cents = 0 where job_id = other_job;
+      held := public.study_daily_cap_cents() - public.study_min_job_cents()
+              - public.study_spend_today() - x_counts;
+      if held < 0 then
+        raise exception 'the ceiling has no room to probe the count with % spent', x_spent;
+      end if;
+      update public.budget_reservations set reserved_cents = held where job_id = other_job;
+      if not pg_temp.would_admit(reader_y) then
+        raise exception 'with % of a share spent, three courses queued counted for more than %',
+          x_spent, x_counts;
+      end if;
+      update public.budget_reservations set reserved_cents = held + 0.0001
+       where job_id = other_job;
+      if pg_temp.would_admit(reader_y) then
+        raise exception 'with % of a share spent, three courses queued counted for less than %',
+          x_spent, x_counts;
+      end if;
+    end loop;
     raise exception using errcode = 'P0001', message = 'probe done';
   exception when raise_exception then
     if sqlerrm is distinct from 'probe done' then raise; end if;
@@ -845,6 +984,85 @@ begin
      where assembly_provenance ->> 'model' = 'n';
     if (select preparations_off_gate from ops.study_beta_status) is distinct from 0 then
       raise exception 'a preparation from before the beta opened was counted off its gate';
+    end if;
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+  -- Moved to another gate and back, the count starts again at the return: a preparation
+  -- assembled on the other gate's pipeline while the beta stood open on it is that gate's, not
+  -- off this one's, and one assembled on neither since the return is off it. Opened on this
+  -- gate three hours ago, on the other two, and on this one again an hour ago; the first
+  -- prepared ninety minutes ago, the second half an hour. And which came last is the log's
+  -- order, not its clock: moved away and back in one transaction, both logged at one moment,
+  -- the count starts at the return and not at nothing. Probed, and undone.
+  begin
+    perform pg_temp.as_owner();
+    update public.generation_jobs set status = 'cancelled'
+     where kind = 'study_course' and status in ('queued', 'running');
+    insert into public.study_release_gates (recorded_by, fixture_digest, report)
+    values ('An operator', repeat('f', 64),
+            pg_temp.report(jsonb_build_object('pipeline',
+              jsonb_build_object('extract', pg_temp.stage('e'), 'assemble', pg_temp.stage('n')))))
+    returning id into gate_b;
+    perform public.open_study_beta(gate_b, 'An operator',
+                                   'Pilot cohort is small; scanned sources ship in the next wave.');
+    moved := (select max(id) from public.study_beta_log);
+    perform pg_temp.become_reader(outsider);
+    job := (public.enqueue_study_generation(array[(saved ->> 'versionId')::uuid],
+                                            'Prepare for a discussion',
+                                            extensions.gen_random_uuid(), true) ->> 'jobId')::uuid;
+    perform pg_temp.become_worker();
+    perform public.persist_study_course(job,
+      pg_temp.course((saved ->> 'versionId')::uuid, note, p_assemble => pg_temp.stage('n')));
+    if (select preparations_off_gate from ops.study_beta_status) is distinct from 0 then
+      raise exception 'a preparation on the other gate''s pipeline was counted off it';
+    end if;
+    perform pg_temp.as_owner();
+    update public.generation_jobs set status = 'succeeded' where id = job;
+    perform public.open_study_beta(good, 'An operator',
+                                   'Pilot cohort is small; scanned sources ship in the next wave.');
+    perform pg_temp.become_reader(outsider);
+    other_job := (public.enqueue_study_generation(array[(saved ->> 'versionId')::uuid],
+                                                  'Prepare for an assessment',
+                                                  extensions.gen_random_uuid(), true)
+                  ->> 'jobId')::uuid;
+    perform pg_temp.become_worker();
+    perform public.persist_study_course(other_job,
+      pg_temp.course((saved ->> 'versionId')::uuid, note, p_assemble => pg_temp.stage('o')));
+    perform pg_temp.as_owner();
+    update public.generation_jobs set status = 'succeeded' where id = other_job;
+    alter table public.study_beta_log disable trigger study_beta_log_appended;
+    update public.study_beta_log
+       set at = now() - case when id < moved then interval '3 hours'
+                             when id = moved then interval '2 hours'
+                             else interval '1 hour' end;
+    alter table public.study_beta_log enable trigger study_beta_log_appended;
+    update public.study_generations set created_at = now() - interval '90 minutes'
+     where job_id = job;
+    update public.study_generations set created_at = now() - interval '30 minutes'
+     where job_id = other_job;
+    if (select preparations_off_gate from ops.study_beta_status) is distinct from 1 then
+      raise exception 'moved to another gate and back, % preparations were counted off the '
+                      'gate, not the one on neither pipeline since the return',
+        (select preparations_off_gate from ops.study_beta_status);
+    end if;
+    perform public.open_study_beta(gate_b, 'An operator',
+                                   'Pilot cohort is small; scanned sources ship in the next wave.');
+    perform public.open_study_beta(good, 'An operator',
+                                   'Pilot cohort is small; scanned sources ship in the next wave.');
+    perform pg_temp.become_reader(outsider);
+    other_job := (public.enqueue_study_generation(array[(saved ->> 'versionId')::uuid],
+                                                  'Explain the argument',
+                                                  extensions.gen_random_uuid(), true)
+                  ->> 'jobId')::uuid;
+    perform pg_temp.become_worker();
+    perform public.persist_study_course(other_job,
+      pg_temp.course((saved ->> 'versionId')::uuid, note, p_assemble => pg_temp.stage('o')));
+    if (select preparations_off_gate from ops.study_beta_status) is distinct from 1 then
+      raise exception 'moved away and back in one transaction, % preparations were counted off '
+                      'the gate, not the one since the return',
+        (select preparations_off_gate from ops.study_beta_status);
     end if;
     raise exception using errcode = 'P0001', message = 'probe done';
   exception when raise_exception then
