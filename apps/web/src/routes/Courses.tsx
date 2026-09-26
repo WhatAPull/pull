@@ -4,7 +4,9 @@ import {
   courseProgressLabel,
   courseStatus,
   courseTitle,
+  coursesReadFailure,
   enrolledCopies,
+  publicCopyLabel,
   type CourseSummary,
 } from '../lib/study-course.js';
 import { COURSE_LIST_LIMIT, fetchCourses } from '../lib/study-course-api.js';
@@ -60,11 +62,10 @@ export function Courses({
       .catch((e: unknown) => {
         if (controller.signal.aborted) return;
         console.error('Courses request failed', e);
-        // A quiet refresh that fails leaves the list as it was: the copy is made either way,
-        // and its card offers the way in.
-        if (quietly) return;
+        const failure = coursesReadFailure(quietly, e);
+        if (failure === null) return;
         setOffline(isOfflineFailure(e));
-        setError(e instanceof Error ? e.message : String(e));
+        setError(failure);
         setSettled(true);
       });
     return () => controller.abort();
@@ -105,9 +106,7 @@ export function Courses({
       <h1>Study your own material.</h1>
       <p>
         A course is made from sources you saved in Studio: short lessons, each tied to the passages
-        of your text it rests on, in sessions of about ten minutes with a clear place to stop. You
-        can also add one of the public courses below, which we prepared from works in the public
-        domain or licensed to us.
+        of your text it rests on, in sessions of about ten minutes with a clear place to stop.
       </p>
       {courses.length === 0 ? (
         <>
@@ -135,13 +134,7 @@ export function Courses({
                   {courseTitle(c)}
                 </button>
                 <span className="courses__status">{statusLine(c)}</span>
-                {c.publicCourseId && (
-                  <p className="meta">
-                    {c.publicCourseWorkTitle
-                      ? `Public course · a course on ${c.publicCourseWorkTitle}`
-                      : 'Public course'}
-                  </p>
-                )}
+                {c.publicCourseId && <p className="meta">{publicCopyLabel(c)}</p>}
                 {c.title && <p className="meta">Goal: {c.goal}</p>}
               </li>
             ))}

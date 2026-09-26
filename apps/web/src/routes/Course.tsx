@@ -22,6 +22,7 @@ import {
   applyProgress,
   asSentence,
   awaitingPreparation,
+  contextWindow,
   courseProgressLabel,
   correctionRefusal,
   courseStatus,
@@ -34,8 +35,6 @@ import {
   lessonsLeft,
   nextLesson,
   draftUnsaved,
-  passageWindow,
-  excerptWindow,
   planAfterCorrection,
   planLessons,
   planSession,
@@ -54,6 +53,7 @@ import {
   type PlannedLesson,
   type LessonProgressKind,
   type ReportReason,
+  type SourceText,
 } from '../lib/study-course.js';
 import {
   deleteCourse,
@@ -159,7 +159,7 @@ export function Course({
   const [lessonError, setLessonError] = useState<string | null>(null);
   const [recorded, setRecorded] = useState<{ kind: LessonProgressKind; lessonId: string }[]>([]);
   const [progressNote, setProgressNote] = useState<string | null>(null);
-  const [texts, setTexts] = useState<Record<string, string>>({});
+  const [texts, setTexts] = useState<Record<string, SourceText>>({});
   // A source text that would not load, said as such rather than cached as empty for good.
   const [textFailed, setTextFailed] = useState<Record<string, string>>({});
   const [opened, setOpened] = useState<Record<string, boolean>>({});
@@ -602,7 +602,7 @@ export function Course({
         'correct',
         `Your correction to “${oldTitle}” was not saved.`,
         e,
-        correctionRefusal(sqlState(e), sqlDetail(e)),
+        correctionRefusal(sqlState(e), sqlDetail(e), Boolean(course?.publicCourseId)),
       );
     } finally {
       fixSettled();
@@ -797,7 +797,7 @@ export function Course({
       return rest;
     });
     fetchSourceText(version)
-      .then((text) => setTexts((t) => ({ ...t, [version]: text })))
+      .then((source) => setTexts((t) => ({ ...t, [version]: source })))
       .catch((e: unknown) =>
         setTextFailed((f) => ({
           ...f,
@@ -815,7 +815,7 @@ export function Course({
   const renderContext = (claim: LessonClaim, ordinal: number) => {
     const key = `${claim.claimId}:${ordinal}`;
     const evidence = claim.evidence.find((e) => e.ordinal === ordinal);
-    const text = texts[claim.versionId];
+    const source = texts[claim.versionId];
     const failed = textFailed[claim.versionId];
     const open = Boolean(opened[key]);
     // Only for a passage the reader opened: each is a walk over a text of up to 200,000
@@ -823,12 +823,7 @@ export function Course({
     // around a span but the quotation it is in: its text is the course's quotations, each a
     // separate passage of the work, so it shows that quotation and not its neighbours.
     const copy = Boolean(course?.publicCourseId);
-    const passage =
-      open && evidence && text
-        ? copy
-          ? excerptWindow(text, evidence)
-          : passageWindow(text, evidence)
-        : null;
+    const passage = open && evidence && source?.text ? contextWindow(copy, source, evidence) : null;
     return (
       <div>
         <button
@@ -848,7 +843,7 @@ export function Course({
         </button>
         {open && (
           <div id={`context-${key}`}>
-            {text === undefined ? (
+            {source === undefined ? (
               failed ? (
                 <p>{failed}</p>
               ) : (
@@ -1025,9 +1020,11 @@ export function Course({
           The course is deleted.
         </h1>
         <p>
-          {course?.publicCourseId
-            ? 'You can add it again from Courses; it starts over.'
-            : 'Its sources stay in Studio, and you can make a new course from them.'}
+          {!course?.publicCourseId
+            ? 'Its sources stay in Studio, and you can make a new course from them.'
+            : course.publicCourseOnOffer
+              ? 'You can add it again from Courses; it starts over.'
+              : 'It was no longer offered, so it cannot be added again.'}
         </p>
       </section>
     );
@@ -1038,7 +1035,10 @@ export function Course({
       <section className="stack measure">
         {back}
         <h1>No such course.</h1>
-        <p>It may have been deleted, or its last source was.</p>
+        <p>
+          It may have been deleted, or its last source was. A copy of a public course is also
+          removed if What a Pull withdraws the course over its rights.
+        </p>
       </section>
     );
   }
@@ -1059,6 +1059,7 @@ export function Course({
         key={view.itemIds.join(',')}
         userId={userId}
         courseId={courseId}
+        copy={course.publicCourseId !== null}
         itemIds={view.itemIds}
         mode={view.mode}
         heading={view.heading}
@@ -1280,9 +1281,8 @@ export function Course({
                 </p>
               ) : (
                 <p>
-                  Reading aloud needs a voice installed on this device, so that{' '}
-                  {course.publicCourseId ? 'the course' : 'your material'} is not sent to a speech
-                  service.
+                  Reading aloud needs a voice installed on this device, so that what you study is
+                  not sent to a speech service.
                 </p>
               ))}
             <details
@@ -1304,6 +1304,7 @@ export function Course({
                   claimReport === claim.claimId ? (
                     <ReportForm
                       kind="claim"
+                      copy={Boolean(course.publicCourseId)}
                       working={working}
                       sending={inFlight === `claim:${claim.claimId}`}
                       error={fixError}
@@ -1393,6 +1394,7 @@ export function Course({
               {fix === 'report' && (
                 <ReportForm
                   kind="lesson"
+                  copy={Boolean(course.publicCourseId)}
                   working={working}
                   sending={inFlight === 'report'}
                   error={fixError}
@@ -1575,10 +1577,14 @@ export function Course({
               {course.publicCourseWorkTitle ?? 'its work'}
             </a>
           ) : (
-            'a work no longer listed'
+            // A work without a page to open is named, not linked.
+            (course.publicCourseWorkTitle ?? 'a work no longer listed')
           )}
           {course.publicCourseLabel ? ` · ${course.publicCourseLabel}` : ''}
         </p>
+      )}
+      {course.publicCourseId && !course.publicCourseOnOffer && (
+        <p className="meta">No longer offered. Your copy stays yours.</p>
       )}
       {course.title && course.goal && <p className="meta">Goal: {course.goal}</p>}
       {noticeLine}
@@ -1780,9 +1786,11 @@ export function Course({
         <div className="stack" role="group" aria-labelledby="course-delete-warning">
           <p id="course-delete-warning" tabIndex={-1}>
             Deleting this course removes its lessons, its questions and your place in it.{' '}
-            {course.publicCourseId
-              ? 'You can add it again from Courses; it starts over.'
-              : 'Its sources stay in Studio, and you can make a new course from them.'}
+            {!course.publicCourseId
+              ? 'Its sources stay in Studio, and you can make a new course from them.'
+              : course.publicCourseOnOffer
+                ? 'You can add it again from Courses; it starts over.'
+                : 'It is no longer offered, so it cannot be added again: deleting it is for good.'}
           </p>
           <div className="course__actions">
             <button
@@ -1819,9 +1827,11 @@ export function Course({
         </p>
       )}
       <p className="meta">
-        {course.publicCourseId
-          ? 'Your copy is private to you: what you read and answer is yours alone. The course itself is published by What a Pull.'
-          : 'This course is private to you. It was made from your own material and is never published.'}
+        {!course.publicCourseId
+          ? 'This course is private to you. It was made from your own material and is never published.'
+          : course.publicCourseOnOffer
+            ? 'Your copy is private to you: what you read and answer is yours alone. The course itself is published by What a Pull.'
+            : 'Your copy is private to you: what you read and answer is yours alone. The course itself was published by What a Pull.'}
       </p>
     </section>
   );

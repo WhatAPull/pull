@@ -10,7 +10,9 @@ vi.mock('../lib/study-course-api.js', () => ({
   fetchPublicCourses: vi.fn(),
 }));
 
-const { PublicCourseCard } = await import('./PublicCourseList.js');
+const { PublicCourseCard, enrolOutcome, oneEnrolmentAtATime } =
+  await import('./PublicCourseList.js');
+const { rpcError, TRANSPORT_ERROR } = await import('../lib/rpc-error.js');
 
 const noop = () => undefined;
 const [course, single] = shapePublicCourses([
@@ -98,5 +100,78 @@ describe('PublicCourseCard', () => {
     );
     // The live region is there before anything is said in it.
     expect(card()).toContain('<p class="sr-only" role="status"></p>');
+  });
+});
+
+describe('adding a public course', () => {
+  it('says a copy made, and one the reader had, and hands back the copy', () => {
+    expect(enrolOutcome({ answer: { courseId: 'c1', replayed: false } })).toEqual({
+      kind: 'added',
+      courseId: 'c1',
+      text: 'Added to your courses.',
+    });
+    expect(enrolOutcome({ answer: { courseId: 'c1', replayed: true } })).toMatchObject({
+      kind: 'added',
+      text: 'Already in your courses.',
+    });
+  });
+
+  it('reads an answer naming no copy as a copy made, and asks for the reader’s list again', () => {
+    expect(enrolOutcome({ answer: null })).toEqual({
+      kind: 'error',
+      refresh: true,
+      text: 'The course was added, but its answer could not be read. It is among your courses above.',
+    });
+  });
+
+  it('takes a course withdrawn since the list loaded off the list, and says every other refusal', () => {
+    const refused = (code: string, message = 'refused') => ({
+      error: rpcError({ code, message, details: null, hint: null }),
+    });
+    expect(enrolOutcome(refused('P0002'))).toEqual({ kind: 'withdrawn' });
+    expect(enrolOutcome(refused('54000'))).toEqual({
+      kind: 'error',
+      refresh: false,
+      text: 'That is as many public courses as can be added in a day. More at 00:00 UTC.',
+    });
+    expect(enrolOutcome(refused('XX000', 'something went wrong'))).toMatchObject({
+      kind: 'error',
+      refresh: false,
+      text: 'Something went wrong',
+    });
+    // Offline, the request may have landed: it is not said to have failed.
+    const lost = new Error('TypeError: Failed to fetch');
+    lost.name = TRANSPORT_ERROR;
+    expect(enrolOutcome({ error: lost })).toEqual({
+      kind: 'error',
+      refresh: false,
+      text: 'That may not have reached your account — you look offline. Try again when you reconnect.',
+    });
+  });
+
+  it('adds one course at a time: a press while one is on its way does nothing', async () => {
+    let finish: (answer: { courseId: string; replayed: boolean }) => void = () => undefined;
+    const enrol = vi.fn(
+      () =>
+        new Promise<{ courseId: string; replayed: boolean }>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const add = oneEnrolmentAtATime(enrol);
+    const first = add('p1');
+    // Pressed again in the same frame, and another course's button too.
+    expect(add('p1')).toBeNull();
+    expect(add('p2')).toBeNull();
+    expect(enrol).toHaveBeenCalledTimes(1);
+    finish({ courseId: 'c1', replayed: false });
+    expect(await first).toMatchObject({ kind: 'added', courseId: 'c1' });
+    // Settled, the next press is heard -- and so after a refusal.
+    const refusing = oneEnrolmentAtATime(() => Promise.reject(new Error('no')));
+    expect(await refusing('p1')).toMatchObject({ kind: 'error' });
+    expect(refusing('p1')).not.toBeNull();
+    const second = add('p2');
+    expect(second).not.toBeNull();
+    finish({ courseId: 'c2', replayed: true });
+    expect(await second).toMatchObject({ kind: 'added', text: 'Already in your courses.' });
   });
 });

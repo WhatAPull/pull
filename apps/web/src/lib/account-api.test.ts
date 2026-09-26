@@ -208,6 +208,24 @@ describe('buildAccountExport', () => {
     }
     expect(out.incomplete).toEqual([]);
   });
+  it('takes every enrolment of a reader who added one public course more than a page of times', async () => {
+    // Keyed by its own id: keyed by the course, the walk would read a page of rows sharing one
+    // key, ask for the rows after it, and find none.
+    TABLES.set(
+      'study_public_enrolments',
+      Array.from({ length: 150 }, (_, i) => ({
+        id: `0000${String(i + 1).padStart(4, '0')}-0000-0000-0000-000000000000`,
+        owner_id: 'u1',
+        public_course_id: 'p1',
+        enrolled_at: '2026-09-26T00:00:00Z',
+      })),
+    );
+
+    const out = await buildAccountExport('u1', null);
+
+    expect(out.data['study_public_enrolments']).toHaveLength(150);
+    expect(out.incomplete).toEqual([]);
+  });
   it('walks the cached model output in small pages and still takes every row', async () => {
     TABLES.set(
       'study_stage_cache',

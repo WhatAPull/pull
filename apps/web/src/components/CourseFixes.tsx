@@ -12,8 +12,8 @@ import { useEffect, useId, useRef, useState } from 'react';
 import {
   LESSON_FIELD_LIMITS,
   REPORT_NOTE_LIMIT,
-  REPORT_REASONS,
   lessonDraftProblem,
+  reportReasons,
   type LessonDraft,
   type ReportKind,
   type ReportReason,
@@ -49,6 +49,7 @@ function Problem({ text }: { text: string | null }) {
 
 export function ReportForm({
   kind,
+  copy = false,
   working,
   sending = working,
   error,
@@ -56,6 +57,11 @@ export function ReportForm({
   onCancel,
 }: {
   kind: ReportKind;
+  /**
+   * In a copy of a public course: what is reported is the work's, not the reader's sources,
+   * and the report stays in their copy -- nobody at What a Pull reads it.
+   */
+  copy?: boolean;
   /** A change to the course is on its way, from this form or another: nothing here acts. */
   working: boolean;
   /** This form's own report is the one on its way. */
@@ -65,7 +71,7 @@ export function ReportForm({
   onCancel: () => void;
 }) {
   const id = useId();
-  const reasons = REPORT_REASONS[kind];
+  const reasons = reportReasons(kind, copy);
   const [reason, setReason] = useState<ReportReason | null>(null);
   const [note, setNote] = useState('');
   const [local, setLocal] = useState<string | null>(null);
@@ -115,7 +121,10 @@ export function ReportForm({
           onChange={(e) => setNote(e.target.value)}
         />
       </div>
-      <p>{REPORT_EFFECT[kind]}</p>
+      <p>
+        {REPORT_EFFECT[kind]}
+        {copy ? ' This stays in your copy; What a Pull does not see it.' : ''}
+      </p>
       <Problem text={local ?? error} />
       <div className="course__actions">
         <button type="button" className="btn btn--primary" aria-disabled={working} onClick={submit}>

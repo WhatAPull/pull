@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { StudyCourseBuilder } from '../components/StudyCourseBuilder.js';
 import { fetchImportedItems, fetchImportedWorks } from '../lib/import-api.js';
 import { isOfflineFailure } from '../lib/offline.js';
+import { sqlDetail, sqlState } from '../lib/rpc-error.js';
 import { mutationId } from '../lib/submission.js';
 import {
   fetchStudyUrlPreview,
@@ -28,6 +29,7 @@ import {
   MAX_STUDY_OCR_PAGES,
   MAX_STUDY_TEXT_CHARS,
   MAX_STUDY_TITLE_CHARS,
+  studySaveRefusal,
   type StudySourceFormat,
 } from '../lib/study-source.js';
 
@@ -465,9 +467,8 @@ export function StudyImport({
       setError(
         isOfflineFailure(cause)
           ? 'That may not have reached your account. Your text stays here; try Save again.'
-          : cause instanceof Error
-            ? cause.message
-            : 'The source could not be saved just now.',
+          : (studySaveRefusal(sqlState(cause), sqlDetail(cause)) ??
+              (cause instanceof Error ? cause.message : 'The source could not be saved just now.')),
       );
     } finally {
       saving.current = false;

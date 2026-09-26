@@ -6,13 +6,17 @@
  * database offers a reader and nothing else. See `docs/study-courses.md`.
  */
 import { rpcError, sqlState } from './rpc-error.js';
-import { isRecord } from './shape.js';
 import {
   shapeClaims,
   shapeCourseSummaries,
+  shapeEnrolment,
   shapePublicCourses,
   shapePublicOutline,
+  shapeSourceText,
+  type Enrolment,
   type PublicCourse,
+  type PublicOutlineUnit,
+  type SourceText,
   shapeCourseSummary,
   shapeLessonContent,
   shapeOutline,
@@ -70,8 +74,14 @@ export async function fetchPublicCourses(signal?: AbortSignal): Promise<PublicCo
   return shapePublicCourses(data);
 }
 
-/** A public course's outline, by its slug: what the reader would study before adding it. */
-export async function fetchPublicCourseOutline(slug: string, signal?: AbortSignal) {
+/**
+ * A public course's outline, by its slug: what the reader would study before adding it. Null
+ * for a course no longer offered.
+ */
+export async function fetchPublicCourseOutline(
+  slug: string,
+  signal?: AbortSignal,
+): Promise<PublicOutlineUnit[] | null> {
   const request = supabase.rpc('get_public_study_course', { p_slug: slug });
   const { data, error } = await (signal ? request.abortSignal(signal) : request);
   if (error) throw rpcError(error);
@@ -80,19 +90,15 @@ export async function fetchPublicCourseOutline(slug: string, signal?: AbortSigna
 
 /**
  * Copy a public course into the reader's courses, or find the copy they have (`replayed`).
- * No model is asked and nothing is spent: the course was prepared once, for everyone.
+ * No model is asked and nothing is spent: the course was prepared once, for everyone. Null
+ * for an answer that names no copy -- the copy was made all the same.
  */
-export async function enrolPublicCourse(
-  publicCourseId: string,
-): Promise<{ courseId: string; replayed: boolean }> {
+export async function enrolPublicCourse(publicCourseId: string): Promise<Enrolment | null> {
   const { data, error } = await supabase.rpc('enrol_public_course', {
     p_public_course_id: publicCourseId,
   });
   if (error) throw rpcError(error);
-  const courseId = isRecord(data) ? data.courseId : undefined;
-  if (typeof courseId !== 'string')
-    throw new Error('The course was added, but its answer was unreadable.');
-  return { courseId, replayed: isRecord(data) && data.replayed === true };
+  return shapeEnrolment(data);
 }
 
 /** A course id's shape. Anything else is no course, not a request Postgres refuses. */
@@ -220,15 +226,21 @@ export async function lessonShown(lessonId: string, signal?: AbortSignal): Promi
   return (data ?? []).length > 0;
 }
 
-/** The full text of one of the reader's source versions, to show a passage in context. */
-export async function fetchSourceText(versionId: string, signal?: AbortSignal): Promise<string> {
+/**
+ * The full text of one of the reader's source versions, to show a passage in context -- and,
+ * for a copy of a public course's excerpts, where each quotation lies in it.
+ */
+export async function fetchSourceText(
+  versionId: string,
+  signal?: AbortSignal,
+): Promise<SourceText> {
   const request = supabase
     .from('study_source_versions')
-    .select('extracted_text')
+    .select('extracted_text, quotations')
     .eq('id', versionId);
   const { data, error } = await (signal ? request.abortSignal(signal) : request);
   if (error) throw rpcError(error);
-  return data?.[0]?.extracted_text ?? '';
+  return shapeSourceText(data?.[0]);
 }
 
 export async function recordProgress(events: readonly ProgressEvent[]): Promise<ProgressResult> {

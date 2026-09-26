@@ -56,13 +56,19 @@ export interface CourseSummary {
   /** The newest generation was saved and validation settled it, whatever its job said. */
   latestSettled: boolean;
   /**
-   * The public course this is the reader's copy of; null for a course of their own. Its work,
-   * and the work's rights in words ('public domain', 'licensed') while they still hold.
+   * The public course this is the reader's copy of; null for a course of their own. Its work
+   * -- the id only while the work's page can be opened -- and the work's rights in words
+   * ('public domain', 'licensed') while they still hold.
    */
   publicCourseId: string | null;
   publicCourseLabel: string | null;
   publicCourseWorkId: string | null;
   publicCourseWorkTitle: string | null;
+  /**
+   * The public course is still offered: not withdrawn, and its work's rights hold. When it is
+   * not, the copy stays the reader's, but a copy deleted cannot be added again.
+   */
+  publicCourseOnOffer: boolean;
   updateAvailable: boolean;
   lessonCount: number;
   lessonsReadCount: number;
@@ -177,6 +183,7 @@ export function shapeCourseSummary(row: unknown): CourseSummary | null {
     publicCourseLabel: nullableStr(row.public_course_label),
     publicCourseWorkId: nullableStr(row.public_course_work_id),
     publicCourseWorkTitle: nullableStr(row.public_course_work_title),
+    publicCourseOnOffer: bool(row.public_course_on_offer),
     updateAvailable: bool(row.update_available),
     lessonCount: int(row.lesson_count),
     lessonsReadCount: int(row.lessons_read_count),
@@ -282,10 +289,14 @@ export interface PublicOutlineUnit {
   lessons: PublicOutlineLesson[];
 }
 
-/** A public course's outline, grouped into its units in order. */
-export function shapePublicOutline(data: unknown): PublicOutlineUnit[] {
+/**
+ * A public course's outline, grouped into its units in order; null when no course came back,
+ * which is a course no longer offered -- withdrawn, or its work's rights in question.
+ */
+export function shapePublicOutline(data: unknown): PublicOutlineUnit[] | null {
   const row = rows(data)[0];
-  const lessons = rows(row?.outline)
+  if (!row) return null;
+  const lessons = rows(row.outline)
     .map((l) => ({
       unitNo: int(l.unitNo),
       unitTitle: str(l.unitTitle),
@@ -302,6 +313,26 @@ export function shapePublicOutline(data: unknown): PublicOutlineUnit[] {
   return units;
 }
 
+/** How the reader's list of courses names a copy of a public course. */
+export function publicCopyLabel(
+  course: Pick<CourseSummary, 'publicCourseOnOffer' | 'publicCourseWorkTitle'>,
+): string {
+  if (!course.publicCourseOnOffer) return 'Public course · no longer offered';
+  return course.publicCourseWorkTitle
+    ? `Public course · a course on ${course.publicCourseWorkTitle}`
+    : 'Public course';
+}
+
+/**
+ * What a failed read of the reader's courses says: nothing, when it was the quiet read again
+ * after a public course was added below -- the list stays as it was, since the copy is made
+ * either way and its card offers the way in -- or the failure, which takes the list's place.
+ */
+export function coursesReadFailure(quietly: boolean, error: unknown): string | null {
+  if (quietly) return null;
+  return error instanceof Error ? error.message : String(error);
+}
+
 /** The reader's copy of each public course they have added, by the public course's id. */
 export function enrolledCopies(
   courses: readonly Pick<CourseSummary, 'courseId' | 'publicCourseId'>[],
@@ -309,6 +340,18 @@ export function enrolledCopies(
   const copies = new Map<string, string>();
   for (const c of courses) if (c.publicCourseId !== null) copies.set(c.publicCourseId, c.courseId);
   return copies;
+}
+
+/** What adding a public course answered: the reader's copy, and whether they had it already. */
+export interface Enrolment {
+  courseId: string;
+  replayed: boolean;
+}
+
+/** `enrol_public_course`'s answer; null when it names no copy, though the copy was made. */
+export function shapeEnrolment(data: unknown): Enrolment | null {
+  if (!isRecord(data) || typeof data.courseId !== 'string' || data.courseId === '') return null;
+  return { courseId: data.courseId, replayed: data.replayed === true };
 }
 
 /** What to say when adding a public course was refused; null for a refusal to say as sent. */
@@ -328,12 +371,44 @@ export function enrolRefusal(code: string | undefined): string | null {
 }
 
 /**
- * A span in its excerpt, for a copy of a public course: the copy's text is the course's
- * quotations, each a separate passage of the work, so the window stops at the quotation's
- * edges rather than running on into the next -- which the work does not follow it with.
+ * Where each quotation lies in a copy of a public course's excerpts: [from, to) in code
+ * points, as the database stores offsets. Anything else in the column is no range.
+ */
+export type QuotationRange = readonly [number, number];
+
+/** A source version's text as a lesson shows a passage in it: the text, and its quotations. */
+export interface SourceText {
+  text: string;
+  /** Only a copy of a public course's excerpts has them; empty for the reader's own text. */
+  quotations: readonly QuotationRange[];
+}
+
+export function shapeSourceText(row: unknown): SourceText {
+  const r = isRecord(row) ? row : {};
+  const quotations = (Array.isArray(r.quotations) ? r.quotations : []).flatMap(
+    (q): QuotationRange[] =>
+      Array.isArray(q) &&
+      q.length === 2 &&
+      Number.isInteger(q[0]) &&
+      Number.isInteger(q[1]) &&
+      (q[0] as number) >= 0 &&
+      (q[0] as number) < (q[1] as number)
+        ? [[q[0] as number, q[1] as number]]
+        : [],
+  );
+  return { text: str(r.extracted_text), quotations };
+}
+
+/**
+ * A span in its quotation, for a copy of a public course: the copy's text is the course's
+ * quotations, each a separate passage of the work, so the window is the whole of the one the
+ * span lies in -- cut where the copy says it begins and ends, since a quotation may hold a
+ * blank line of its own -- and never runs on into the next, which the work does not follow
+ * it with. Null when the span is in no one quotation, or is not the text there.
  */
 export function excerptWindow(
   text: string,
+  quotations: readonly QuotationRange[],
   evidence: Pick<Evidence, 'start' | 'end' | 'spanText'>,
 ): PassageWindow | null {
   const points = codePoints(text);
@@ -341,13 +416,9 @@ export function excerptWindow(
   if (start < 0 || end <= start || end > points.length) return null;
   const span = points.slice(start, end).join('');
   if (span !== evidence.spanText) return null;
-  // The blank lines that separate quotations, either side of the span, in code points.
-  const before = points.slice(0, start).join('');
-  const cut = before.lastIndexOf('\n\n');
-  const from = cut < 0 ? 0 : Array.from(before.slice(0, cut + 2)).length;
-  const after = points.slice(end).join('');
-  const next = after.indexOf('\n\n');
-  const to = next < 0 ? points.length : end + Array.from(after.slice(0, next)).length;
+  const quotation = quotations.find(([from, to]) => from <= start && end <= to);
+  if (!quotation || quotation[1] > points.length) return null;
+  const [from, to] = quotation;
   return {
     before: points.slice(from, start).join(''),
     span,
@@ -356,6 +427,20 @@ export function excerptWindow(
     clippedStart: true,
     clippedEnd: true,
   };
+}
+
+/**
+ * The window a lesson shows a passage in: in a copy of a public course, its whole quotation;
+ * in the reader's own text, the text around it.
+ */
+export function contextWindow(
+  copy: boolean,
+  source: SourceText,
+  evidence: Pick<Evidence, 'start' | 'end' | 'spanText'>,
+): PassageWindow | null {
+  return copy
+    ? excerptWindow(source.text, source.quotations, evidence)
+    : passageWindow(source.text, evidence);
 }
 
 export function shapeCourseSummaries(data: unknown): CourseSummary[] {
@@ -536,7 +621,9 @@ export function preparationRefusal(
     case '55000':
       if (detail === 'preparing') return 'A new version of this course is already being prepared.';
       if (detail === 'public') {
-        return 'This is a public course, copied into your courses; it is not prepared again from its excerpts.';
+        return again
+          ? 'This is a public course, copied into your courses: it is not prepared again.'
+          : 'A public course’s excerpts are the course’s own, not a source to prepare a course from. Choose sources of your own.';
       }
       if (detail === 'unchanged') {
         return 'None of this course’s sources has changed since it was last prepared, so it would come out the same. Save a newer version of a source in Studio first.';
@@ -1005,6 +1092,31 @@ export const REPORT_REASONS: Record<
   ],
 };
 
+/**
+ * The reasons as a copy of a public course offers them: its lessons, claims and questions are
+ * a work's, not the reader's sources, and a reason naming "my sources" names nothing there.
+ */
+const REPORT_REASONS_IN_A_COPY: Record<ReportKind, Partial<Record<ReportReason, string>>> = {
+  lesson: { unsupported: 'The work does not say this' },
+  item: {
+    unsupported: 'The work does not say this',
+    unanswerable: 'It cannot be answered from the work',
+  },
+  claim: { incorrect: 'This is not what the work says' },
+};
+
+/** The reasons to offer for a report on `kind`, in a copy of a public course or not. */
+export function reportReasons(
+  kind: ReportKind,
+  copy = false,
+): readonly { reason: ReportReason; label: string }[] {
+  if (!copy) return REPORT_REASONS[kind];
+  return REPORT_REASONS[kind].map((r) => ({
+    reason: r.reason,
+    label: REPORT_REASONS_IN_A_COPY[kind][r.reason] ?? r.label,
+  }));
+}
+
 export const REPORT_NOTE_LIMIT = 1000;
 
 /** A lesson's text as the reader corrects it. `example` may be empty; nothing else may. */
@@ -1089,6 +1201,12 @@ const CHECK_WORDS: Record<string, string> = {
   no_known_claims: 'It no longer rests on a claim from your sources.',
 };
 
+/** The two that name the reader's sources, as a copy of a public course says them. */
+const CHECK_WORDS_IN_A_COPY: Record<string, string> = {
+  unsourced_link: 'It links to a page the work does not mention.',
+  no_known_claims: 'It no longer rests on a claim from the work.',
+};
+
 /**
  * What to tell a reader whose correction was refused, from the SQLSTATE and DETAIL. A failed
  * check lists its reasons in the DETAIL, comma-separated. Null for a refusal this does not
@@ -1097,6 +1215,8 @@ const CHECK_WORDS: Record<string, string> = {
 export function correctionRefusal(
   code: string | undefined,
   detail: string | undefined,
+  /** A lesson of a copy of a public course, whose claims are the work's. */
+  copy = false,
 ): string | null {
   switch (code) {
     case '22023': {
@@ -1105,7 +1225,14 @@ export function correctionRefusal(
         .map((r) => r.trim())
         .filter(Boolean);
       if (reasons.length === 0) return null;
-      return reasons.map((r) => CHECK_WORDS[r] ?? `It did not pass a check (${r}).`).join(' ');
+      return reasons
+        .map(
+          (r) =>
+            (copy ? CHECK_WORDS_IN_A_COPY[r] : undefined) ??
+            CHECK_WORDS[r] ??
+            `It did not pass a check (${r}).`,
+        )
+        .join(' ');
     }
     case '55000':
       return 'This lesson has changed since you opened it. Go back to the course and open it again.';

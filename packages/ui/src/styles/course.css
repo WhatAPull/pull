@@ -40,6 +40,14 @@
 .public-course > * {
   margin: 0;
   min-width: 0;
+  /* A title or a work's name with no space in it breaks rather than widening the page. */
+  overflow-wrap: anywhere;
+}
+
+/* The public courses' heading heads cards whose titles are a step up from the body, so it is
+   a step above them rather than the course page's small subheading. */
+.public-courses > .course__subheading {
+  font-size: var(--step-3);
 }
 
 .courses__title,

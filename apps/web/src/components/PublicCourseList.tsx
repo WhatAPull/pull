@@ -13,6 +13,7 @@ import {
   lessonCountLabel,
   publicCourseSource,
   publishedLabel,
+  type Enrolment,
   type PublicCourse,
   type PublicOutlineUnit,
 } from '../lib/study-course.js';
@@ -25,29 +26,101 @@ import {
 /** What adding a course came to, said in its card. */
 export type CardNote = { kind: 'added' | 'error'; text: string };
 
-/** The lesson outline, loaded the first time the reader opens it. */
+/**
+ * What adding a course came to: a copy (made, or found); a course no longer offered; or a
+ * failure to say -- after which `refresh` asks for the reader's own list again, when the copy
+ * was made though its answer could not be read.
+ */
+export type EnrolOutcome =
+  | { kind: 'added'; courseId: string; text: string }
+  | { kind: 'withdrawn' }
+  | { kind: 'error'; text: string; refresh: boolean };
+
+export function enrolOutcome(
+  settled: { answer: Enrolment | null } | { error: unknown },
+): EnrolOutcome {
+  if ('error' in settled) {
+    const e = settled.error;
+    // Withdrawn since the list loaded, or its work's rights came into question.
+    if (sqlState(e) === 'P0002') return { kind: 'withdrawn' };
+    return {
+      kind: 'error',
+      refresh: false,
+      text: isOfflineFailure(e)
+        ? 'That may not have reached your account — you look offline. Try again when you reconnect.'
+        : (enrolRefusal(sqlState(e)) ?? asSentence(e instanceof Error ? e.message : String(e))),
+    };
+  }
+  if (!settled.answer) {
+    return {
+      kind: 'error',
+      refresh: true,
+      text: 'The course was added, but its answer could not be read. It is among your courses above.',
+    };
+  }
+  return {
+    kind: 'added',
+    courseId: settled.answer.courseId,
+    text: settled.answer.replayed ? 'Already in your courses.' : 'Added to your courses.',
+  };
+}
+
+/**
+ * Adding courses one at a time: a press while one is on its way does nothing, and answers
+ * null. Held at once, not on the next render -- a second press in the same frame reads state
+ * that has not caught up.
+ */
+export function oneEnrolmentAtATime(
+  enrol: (publicCourseId: string) => Promise<Enrolment | null>,
+): (publicCourseId: string) => Promise<EnrolOutcome> | null {
+  let busy = false;
+  return (publicCourseId) => {
+    if (busy) return null;
+    busy = true;
+    return enrol(publicCourseId)
+      .then(
+        (answer) => enrolOutcome({ answer }),
+        (error: unknown) => enrolOutcome({ error }),
+      )
+      .finally(() => {
+        busy = false;
+      });
+  };
+}
+
+/**
+ * The lesson outline, loaded the first time the reader opens it; a course no longer offered
+ * has none to show, and says so.
+ */
 function OutlineDetails({ slug, titleId }: { slug: string; titleId: string }) {
-  const [outline, setOutline] = useState<PublicOutlineUnit[] | null>(null);
+  const [outline, setOutline] = useState<PublicOutlineUnit[] | 'withdrawn' | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [asked, setAsked] = useState(false);
-  const loading = useRef(false);
+  const loading = useRef<AbortController | null>(null);
+
+  // Left, the request goes with the page.
+  useEffect(() => () => loading.current?.abort(), []);
 
   const load = () => {
     if (outline || loading.current) return;
-    loading.current = true;
+    const controller = new AbortController();
+    loading.current = controller;
     setAsked(true);
     setFailed(null);
-    fetchPublicCourseOutline(slug)
-      .then((units) => setOutline(units))
-      .catch((e: unknown) =>
+    fetchPublicCourseOutline(slug, controller.signal)
+      .then((units) => {
+        if (!controller.signal.aborted) setOutline(units ?? 'withdrawn');
+      })
+      .catch((e: unknown) => {
+        if (controller.signal.aborted) return;
         setFailed(
           isOfflineFailure(e)
             ? 'The outline needs a connection. Close this and try again when you reconnect.'
             : 'The outline could not be loaded just now. Close this and try again.',
-        ),
-      )
+        );
+      })
       .finally(() => {
-        loading.current = false;
+        if (loading.current === controller) loading.current = null;
       });
   };
 
@@ -59,7 +132,9 @@ function OutlineDetails({ slug, titleId }: { slug: string; titleId: string }) {
       }}
     >
       <summary aria-describedby={titleId}>Outline</summary>
-      {outline ? (
+      {outline === 'withdrawn' ? (
+        <p>This course is no longer offered.</p>
+      ) : outline ? (
         outline.length === 0 ? (
           <p>This course has no lessons to show now.</p>
         ) : (
@@ -196,8 +271,7 @@ export function PublicCourseList({
   const [added, setAdded] = useState<ReadonlyMap<string, string>>(new Map());
   const [withdrawn, setWithdrawn] = useState<string | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
-  // Held at once, not on the next render: a second press in the same frame reads stale state.
-  const inFlight = useRef(false);
+  const enrol = useRef(oneEnrolmentAtATime(enrolPublicCourse));
 
   useEffect(() => {
     const controller = new AbortController();
@@ -224,36 +298,28 @@ export function PublicCourseList({
     });
 
   const add = async (course: PublicCourse) => {
-    if (inFlight.current) return;
-    inFlight.current = true;
+    const adding = enrol.current(course.id);
+    if (!adding) return;
     setWorking(course.id);
     note(course.id, null);
     setWithdrawn(null);
-    try {
-      const { courseId, replayed } = await enrolPublicCourse(course.id);
-      setAdded((a) => new Map(a).set(course.id, courseId));
-      note(course.id, {
-        kind: 'added',
-        text: replayed ? 'Already in your courses.' : 'Added to your courses.',
-      });
-      onEnrolled();
-    } catch (e: unknown) {
-      if (sqlState(e) === 'P0002') {
-        // Withdrawn since the list loaded: it is not offered, so it is not shown.
+    const outcome = await adding;
+    setWorking(null);
+    switch (outcome.kind) {
+      case 'added':
+        setAdded((a) => new Map(a).set(course.id, outcome.courseId));
+        note(course.id, { kind: 'added', text: outcome.text });
+        onEnrolled();
+        return;
+      case 'withdrawn':
+        // Not offered now, so not shown.
         setList((l) => (l ? l.filter((c) => c.id !== course.id) : l));
         setWithdrawn(`“${course.title}” is no longer offered, so it is off this list.`);
         heading.current?.focus();
         return;
-      }
-      note(course.id, {
-        kind: 'error',
-        text: isOfflineFailure(e)
-          ? 'That has not reached your account — you look offline. Try again when you reconnect.'
-          : (enrolRefusal(sqlState(e)) ?? asSentence(e instanceof Error ? e.message : String(e))),
-      });
-    } finally {
-      inFlight.current = false;
-      setWorking(null);
+      case 'error':
+        note(course.id, { kind: 'error', text: outcome.text });
+        if (outcome.refresh) onEnrolled();
     }
   };
 
