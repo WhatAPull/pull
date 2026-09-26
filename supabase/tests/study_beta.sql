@@ -250,10 +250,14 @@ begin
     raise exception 'the beta opened on a stale gate';
   exception when sqlstate '55000' then null;
   end;
+  -- On no gate at all: the guard answers before the table's own constraint, which is there
+  -- for a write that reaches the row with the guard out of the way.
   begin
     update public.study_beta_settings set open_to_all = true, gate_id = null where id;
     raise exception 'the beta opened on no gate';
-  exception when check_violation then null;
+  exception when sqlstate '55000' then
+    get stacked diagnostics state = pg_exception_detail;
+    if state is distinct from 'gate' then raise exception 'no gate refused with %', state; end if;
   end;
   begin
     insert into public.study_beta_settings (id) values (true);
@@ -345,12 +349,18 @@ begin
   end if;
 
   -- Readers cannot see or move the flag, the gates or the log, or reach the operators' views.
+  -- Not even rows withheld by a policy: no reader holds a grant on them at all.
   perform pg_temp.become_reader(outsider);
-  if exists (select 1 from public.study_beta_settings)
-     or exists (select 1 from public.study_release_gates)
-     or exists (select 1 from public.study_beta_log) then
+  if has_table_privilege('authenticated', 'public.study_beta_settings', 'select')
+     or has_table_privilege('authenticated', 'public.study_release_gates', 'select')
+     or has_table_privilege('authenticated', 'public.study_beta_log', 'select') then
     raise exception 'a reader could read the beta''s settings, gates or log';
   end if;
+  begin
+    perform 1 from public.study_beta_settings;
+    raise exception 'a reader read the beta''s settings';
+  exception when insufficient_privilege then null;
+  end;
   begin
     perform public.open_study_beta(good, 'Me', 'I would like to open it for everyone please');
     raise exception 'a reader could open the beta';

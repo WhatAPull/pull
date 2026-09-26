@@ -2151,6 +2151,7 @@ export type Database = {
       study_answer_events: {
         Row: {
           answered_at: string
+          claims_known_before: boolean | null
           client_event_id: string
           correct: boolean
           grading: string
@@ -2163,6 +2164,7 @@ export type Database = {
         }
         Insert: {
           answered_at?: string
+          claims_known_before?: boolean | null
           client_event_id: string
           correct: boolean
           grading: string
@@ -2175,6 +2177,7 @@ export type Database = {
         }
         Update: {
           answered_at?: string
+          claims_known_before?: boolean | null
           client_event_id?: string
           correct?: boolean
           grading?: string
@@ -2199,6 +2202,73 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "study_visible_items"
             referencedColumns: ["id", "owner_id"]
+          },
+        ]
+      }
+      study_beta_log: {
+        Row: {
+          at: string
+          changed_by: string | null
+          gate_id: string | null
+          id: number
+          open_to_all: boolean
+          override_reason: string | null
+        }
+        Insert: {
+          at?: string
+          changed_by?: string | null
+          gate_id?: string | null
+          id?: never
+          open_to_all: boolean
+          override_reason?: string | null
+        }
+        Update: {
+          at?: string
+          changed_by?: string | null
+          gate_id?: string | null
+          id?: never
+          open_to_all?: boolean
+          override_reason?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "study_beta_log_gate_id_fkey"
+            columns: ["gate_id"]
+            isOneToOne: false
+            referencedRelation: "study_release_gates"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      study_beta_settings: {
+        Row: {
+          changed_at: string
+          changed_by: string | null
+          gate_id: string | null
+          id: boolean
+          open_to_all: boolean
+        }
+        Insert: {
+          changed_at?: string
+          changed_by?: string | null
+          gate_id?: string | null
+          id?: boolean
+          open_to_all?: boolean
+        }
+        Update: {
+          changed_at?: string
+          changed_by?: string | null
+          gate_id?: string | null
+          id?: boolean
+          open_to_all?: boolean
+        }
+        Relationships: [
+          {
+            foreignKeyName: "study_beta_settings_gate_id_fkey"
+            columns: ["gate_id"]
+            isOneToOne: false
+            referencedRelation: "study_release_gates"
+            referencedColumns: ["id"]
           },
         ]
       }
@@ -3058,6 +3128,36 @@ export type Database = {
             referencedColumns: ["id", "owner_id"]
           },
         ]
+      }
+      study_release_gates: {
+        Row: {
+          fixture_digest: string
+          id: string
+          note: string | null
+          passed: boolean
+          recorded_at: string
+          recorded_by: string
+          report: Json
+        }
+        Insert: {
+          fixture_digest: string
+          id?: string
+          note?: string | null
+          passed: boolean
+          recorded_at?: string
+          recorded_by: string
+          report: Json
+        }
+        Update: {
+          fixture_digest?: string
+          id?: string
+          note?: string | null
+          passed?: boolean
+          recorded_at?: string
+          recorded_by?: string
+          report?: Json
+        }
+        Relationships: []
       }
       study_reports: {
         Row: {
@@ -4318,6 +4418,7 @@ export type Database = {
         Args: { p_hash: string; p_job_id: string; p_lease?: string }
         Returns: string
       }
+      close_study_beta: { Args: { p_by: string }; Returns: Json }
       commit_import: {
         Args: {
           p_file_hash: string
@@ -4465,6 +4566,10 @@ export type Database = {
       }
       nearest_pulls: {
         Args: { p_k?: number; p_pull_id: string }
+        Returns: Json
+      }
+      open_study_beta: {
+        Args: { p_by: string; p_gate_id: string; p_override_reason?: string }
         Returns: Json
       }
       pause_path: { Args: { p_path_id: string }; Returns: Json }
@@ -4724,6 +4829,7 @@ export type Database = {
         Args: { p_event_id: string }
         Returns: boolean
       }
+      study_beta_unrepresented: { Args: never; Returns: string[] }
       study_blank: { Args: { p_text: string }; Returns: boolean }
       study_boundary_class: { Args: never; Returns: string }
       study_check_revision_quota: {
@@ -4744,6 +4850,10 @@ export type Database = {
           lapsed_at: string
           retrievability: number
         }[]
+      }
+      study_claim_known: {
+        Args: { p_at: string; p_claim: string; p_owner: string }
+        Returns: boolean
       }
       study_claim_problems: {
         Args: { p_claim_id: string; p_links: Json }
@@ -4819,6 +4929,9 @@ export type Database = {
       }
       study_fold: { Args: { p_text: string }; Returns: string }
       study_fold_strict: { Args: { p_text: string }; Returns: string }
+      study_format_family: { Args: { p_format: string }; Returns: string }
+      study_gate_passes: { Args: { p_report: Json }; Returns: boolean }
+      study_generation_admitted: { Args: { p_user: string }; Returns: boolean }
       study_generation_available: { Args: never; Returns: boolean }
       study_generation_awaiting_validation: {
         Args: { p_generation_id: string }
@@ -4829,6 +4942,7 @@ export type Database = {
         Returns: number
       }
       study_gives_away: { Args: { p_answer: string }; Returns: boolean }
+      study_goal_kind: { Args: { p_goal: string }; Returns: string }
       study_grade_response: {
         Args: {
           p_accepted: string[]
