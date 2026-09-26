@@ -46,6 +46,32 @@ function validateVerdict(value, name) {
   }
 }
 
+/*
+ * A run's time as the export writes it -- UTC, with a Z -- and a real one: not a word such as
+ * 'now', and not a day the calendar lacks, which Date.parse would roll into the next month.
+ * The database refuses a gate whose `ranAt` is anything else.
+ */
+const RAN_AT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/;
+
+function utcTime(value) {
+  if (typeof value !== 'string' || !RAN_AT.test(value)) return null;
+  const at = Date.parse(value);
+  return !Number.isNaN(at) && new Date(at).toISOString().slice(0, 19) === value.slice(0, 19)
+    ? value
+    : null;
+}
+
+/** One stage of a pipeline: the prompt's and the schema's hashes, and the model. */
+function namedStage(stage) {
+  return (
+    stage != null &&
+    /^[0-9a-f]{64}$/.test(stage.promptHash ?? '') &&
+    /^[0-9a-f]{64}$/.test(stage.schemaHash ?? '') &&
+    typeof stage.model === 'string' &&
+    stage.model.length > 0
+  );
+}
+
 function rate(part, whole) {
   return whole === 0 ? null : part / whole;
 }
@@ -111,11 +137,11 @@ export function evaluateStudyRun(run) {
     );
   }
 
-  // One pipeline for the whole run, and when it ran: what a release gate is a gate for.
+  // One pipeline for the whole run -- what extracted its claims and what assembled its
+  // courses -- and when it ran: what a release gate is a gate for.
   const pipelines = run?.pipelines == null ? [] : requireArray(run.pipelines, 'pipelines');
   const pipeline = pipelines.length === 1 ? pipelines[0] : null;
-  const ranAt =
-    typeof run?.ranAt === 'string' && !Number.isNaN(Date.parse(run.ranAt)) ? run.ranAt : null;
+  const ranAt = utcTime(run?.ranAt);
 
   let visibleItems = 0;
   let quarantinedItems = 0;
@@ -210,11 +236,7 @@ export function evaluateStudyRun(run) {
       providerAttempts.size === attempts.size &&
       [...providerAttempts].every((id) => attempts.has(id)),
     singlePipeline:
-      pipeline !== null &&
-      /^[0-9a-f]{64}$/.test(pipeline.promptHash ?? '') &&
-      /^[0-9a-f]{64}$/.test(pipeline.schemaHash ?? '') &&
-      typeof pipeline.model === 'string' &&
-      pipeline.model.length > 0,
+      pipeline !== null && namedStage(pipeline.extract) && namedStage(pipeline.assemble),
   };
   gates.ready = Object.values(gates).every(Boolean);
 

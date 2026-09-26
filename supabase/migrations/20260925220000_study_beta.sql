@@ -12,11 +12,11 @@
 -- 1. RELEASE GATES. `study_release_gates` records what the evaluator
 --    (`scripts/study-eval.mjs`) reported for a reviewed fixture run, with the digest of the
 --    run export kept outside the repository, the pipeline the run used (prompt, schema and
---    model) and when it ran. Whether it passed is computed here from the report's gates AND
---    its counts, never supplied: a report whose gates say ready while its counts say
---    otherwise does not pass. Rows are final, and a digest is recorded once. What the schema
---    checks is the report; that a person reviewed the run is the operator's word, recorded
---    with their name.
+--    model, for extraction and for assembly) and when it ran. Whether it passed is computed
+--    here from the report's gates AND its counts, never supplied: a report whose gates say
+--    ready while its counts say otherwise does not pass. Rows are final, and a run's report
+--    is recorded once. What the schema checks is the report; that a person reviewed the run
+--    is the operator's word, recorded with their name.
 --
 -- 2. ONE FLAG, WHICH OPENS ONLY ON A GATE. `study_beta_settings` is a single row. It can be
 --    set open only with a gate whose run passed in the last thirty days -- checked by a
@@ -54,7 +54,9 @@
  * sources with visible questions and 300 visible questions, every visible question reviewed
  * twice and found grounded and answerable, no material error, adversarial items present
  * and every one reviewed twice with none leaked, at most 3% ambiguous, no fixture category
- * missing, and one pipeline -- prompt, schema and model -- for the whole run.
+ * missing, and one pipeline for the whole run: the prompt, schema and model that extracted
+ * its claims, and those that assembled its courses. A prompt edit in either stage is a new
+ * pipeline, which a gate for the old one does not cover.
  */
 create function public.study_gate_passes(p_report jsonb)
 returns boolean
@@ -65,6 +67,7 @@ as $fn$
 declare
   gate    text;
   count_  text;
+  stage   text;
   counts  jsonb;
   visible numeric;
 begin
@@ -89,12 +92,15 @@ begin
       return false;
     end if;
   end loop;
-  if jsonb_typeof(p_report -> 'pipeline') is distinct from 'object'
-     or coalesce(p_report -> 'pipeline' ->> 'promptHash', '') !~ '^[0-9a-f]{64}$'
-     or coalesce(p_report -> 'pipeline' ->> 'schemaHash', '') !~ '^[0-9a-f]{64}$'
-     or coalesce(char_length(p_report -> 'pipeline' ->> 'model'), 0) not between 1 and 100 then
-    return false;
-  end if;
+  foreach stage in array array['extract', 'assemble'] loop
+    if jsonb_typeof(p_report -> 'pipeline' -> stage) is distinct from 'object'
+       or coalesce(p_report -> 'pipeline' -> stage ->> 'promptHash', '') !~ '^[0-9a-f]{64}$'
+       or coalesce(p_report -> 'pipeline' -> stage ->> 'schemaHash', '') !~ '^[0-9a-f]{64}$'
+       or coalesce(char_length(p_report -> 'pipeline' -> stage ->> 'model'), 0)
+          not between 1 and 100 then
+      return false;
+    end if;
+  end loop;
   if jsonb_typeof(p_report -> 'coverage' -> 'missing') is distinct from 'array' then
     return false;
   end if;
@@ -130,10 +136,15 @@ create table public.study_release_gates (
   ran_at         timestamptz not null,
   pipeline       jsonb not null check (jsonb_typeof(pipeline) = 'object'),
   passed         boolean not null,
-  note           text check (note is null or char_length(note) <= 1000),
-  -- One run, one gate: the same export recorded again would restart its clock.
-  constraint study_release_gates_one_per_run unique (fixture_digest)
+  note           text check (note is null or char_length(note) <= 1000)
 );
+
+-- A report of a run is recorded once. Recording it again could not restart its clock --
+-- `ran_at` is the run's, read from the report -- but would say twice what was said once. The
+-- same run evaluated again, after a fix to the evaluator, is a new report and is recorded
+-- beside the first; jsonb's text is canonical, so the same report hashes the same.
+create unique index study_release_gates_one_per_report
+  on public.study_release_gates (fixture_digest, md5(report::text));
 
 comment on table public.study_release_gates is
   'What the study evaluator reported for a human-reviewed fixture run. `passed` is computed '
@@ -155,11 +166,17 @@ begin
   if tg_op <> 'INSERT' then
     raise exception 'a release gate is final once recorded' using errcode = '55000';
   end if;
-  begin
-    new.ran_at := (new.report ->> 'ranAt')::timestamptz;
-  exception when others then
-    new.ran_at := null;
-  end;
+  -- A UTC time as the export writes it, and nothing else Postgres would read as one: not
+  -- 'now', 'today' or 'epoch', not an infinity, not a time without its zone.
+  new.ran_at := null;
+  if jsonb_typeof(new.report -> 'ranAt') = 'string'
+     and new.report ->> 'ranAt' ~ '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$' then
+    begin
+      new.ran_at := (new.report ->> 'ranAt')::timestamptz;
+    exception when others then
+      new.ran_at := null;
+    end;
+  end if;
   if new.ran_at is null or new.ran_at > now() + interval '5 minutes' then
     raise exception 'a release gate needs the time its run was made (ranAt), not in the future'
       using errcode = '22023';
@@ -906,9 +923,11 @@ group by 1, 2;
 
 /*
  * The kinds of source and goal the beta has not yet covered well enough to open: each needs
- * at least three courses from at least two readers.
+ * at least three courses from at least two readers. Of `ops.study_beta_mix`, or of its rows
+ * as JSON when given: the report has read the mix once already, and reading it costs a
+ * lookup of every course's current generation.
  */
-create function public.study_beta_unrepresented()
+create function public.study_beta_unrepresented(p_mix jsonb default null)
 returns text[]
 language sql
 stable
@@ -920,12 +939,19 @@ as $fn$
                ('format', 'scanned'), ('format', 'highlights'),
                ('goal', 'explain'), ('goal', 'discuss'), ('goal', 'remember'),
                ('goal', 'assess'), ('goal', 'own')) as w (dimension, value)
-  left join ops.study_beta_mix m on m.dimension = w.dimension and m.value = w.value
+  left join (
+    select m.dimension, m.value, m.courses, m.readers
+    from ops.study_beta_mix m
+    where p_mix is null
+    union all
+    select m.dimension, m.value, m.courses, m.readers
+    from jsonb_to_recordset(p_mix) as m (dimension text, value text, courses int, readers int)
+  ) as m on m.dimension = w.dimension and m.value = w.value
   where coalesce(m.courses, 0) < 3 or coalesce(m.readers, 0) < 2
 $fn$;
 
-revoke all on function public.study_beta_unrepresented() from public, anon, authenticated;
-grant execute on function public.study_beta_unrepresented() to service_role;
+revoke all on function public.study_beta_unrepresented(jsonb) from public, anon, authenticated;
+grant execute on function public.study_beta_unrepresented(jsonb) to service_role;
 
 /*
  * Open study courses to every reader with an account, on a release gate. Refused with 55000
@@ -1026,13 +1052,23 @@ select s.open_to_all,
        g.pipeline as gate_pipeline,
        s.open_to_all and not coalesce(g.ran_at > now() - interval '60 days', false)
          as admission_lapsed,
+       -- Off the gate's pipeline in either stage: assembled with another prompt, schema or
+       -- model, or with a claim extracted with another.
        (select count(*) from public.study_generations sg
         where s.open_to_all and sg.created_at >= s.changed_at
           and sg.assembly_provenance is not null
-          and (sg.assembly_provenance ->> 'promptHash', sg.assembly_provenance ->> 'schemaHash',
-               sg.assembly_provenance ->> 'model')
-              is distinct from (g.pipeline ->> 'promptHash', g.pipeline ->> 'schemaHash',
-                                g.pipeline ->> 'model'))::int as preparations_off_gate,
+          and ((sg.assembly_provenance ->> 'promptHash', sg.assembly_provenance ->> 'schemaHash',
+                sg.assembly_provenance ->> 'model')
+               is distinct from (g.pipeline -> 'assemble' ->> 'promptHash',
+                                 g.pipeline -> 'assemble' ->> 'schemaHash',
+                                 g.pipeline -> 'assemble' ->> 'model')
+               or exists (select 1 from public.study_claims c
+                          where c.generation_id = sg.id
+                            and (c.prompt_hash, c.schema_hash, c.model)
+                                is distinct from (g.pipeline -> 'extract' ->> 'promptHash',
+                                                  g.pipeline -> 'extract' ->> 'schemaHash',
+                                                  g.pipeline -> 'extract' ->> 'model'))))::int
+         as preparations_off_gate,
        (select count(*) from public.generation_jobs j
         where j.kind = 'study_course' and j.status = 'queued'
           and not public.study_generation_admitted(j.requester_id))::int
@@ -1046,6 +1082,11 @@ select s.open_to_all,
 from public.study_beta_settings s
 left join public.study_release_gates g on g.id = s.gate_id;
 
+-- A day or a week in these views is UTC's in every session: the time is read in UTC and then
+-- truncated. date_trunc's own zone argument is not enough -- it truncates in UTC but returns
+-- a timestamptz, which the cast to date reads in the session's zone, so a Monday's week was
+-- labelled Sunday in Los Angeles.
+
 /* Preparation, by UTC day: courses made, jobs by outcome, time to finish, and spend. */
 create view ops.study_daily as
 with jobs as (
@@ -1054,13 +1095,13 @@ with jobs as (
   where j.kind = 'study_course'
 ),
 spend as (
-  select date_trunc('day', l.created_at, 'UTC')::date as day, sum(l.cost_cents) as cents
+  select (l.created_at at time zone 'UTC')::date as day, sum(l.cost_cents) as cents
   from public.cost_ledger l
   join jobs j on j.id = l.job_id
   group by 1
 ),
 per_day as (
-  select date_trunc('day', j.created_at, 'UTC')::date as day,
+  select (j.created_at at time zone 'UTC')::date as day,
          count(*)::int as jobs,
          count(*) filter (where j.status = 'succeeded')::int as succeeded,
          count(*) filter (where j.status = 'failed')::int as failed,
@@ -1076,7 +1117,7 @@ per_day as (
   group by 1
 ),
 courses as (
-  select date_trunc('day', c.created_at, 'UTC')::date as day, count(*)::int as courses,
+  select (c.created_at at time zone 'UTC')::date as day, count(*)::int as courses,
          count(distinct c.owner_id)::int as readers
   from public.study_courses c
   group by 1
@@ -1099,7 +1140,7 @@ full join spend s on s.day = coalesce(p.day, c.day);
 /* What validation passed, by the UTC week the generation was made. */
 create view ops.study_validation_weekly as
 with gens as (
-  select g.id, date_trunc('week', g.created_at, 'UTC')::date as week, g.text_status
+  select g.id, date_trunc('week', g.created_at at time zone 'UTC')::date as week, g.text_status
   from public.study_generations g
 )
 select gens.week,
@@ -1157,7 +1198,7 @@ with every_answer as (
 answers as (
   select * from every_answer where counted
 )
-select date_trunc('week', a.answered_at, 'UTC')::date as week,
+select date_trunc('week', a.answered_at at time zone 'UTC')::date as week,
        count(*)::int as answers,
        count(distinct a.owner_id)::int as readers,
        count(*) filter (where a.correct and not a.hinted)::int as right_unhinted,
@@ -1178,7 +1219,7 @@ group by 1;
 /* Reading, reporting and correcting, by UTC week. */
 create view ops.study_trust_weekly as
 with shown as (
-  select date_trunc('week', p.recorded_at, 'UTC')::date as week,
+  select date_trunc('week', p.recorded_at at time zone 'UTC')::date as week,
          count(*) filter (where p.kind = 'lesson_shown')::int as lessons_shown,
          count(*) filter (where p.kind = 'lesson_read')::int as lessons_read,
          count(*) filter (where p.kind = 'lesson_skipped')::int as lessons_skipped,
@@ -1187,7 +1228,7 @@ with shown as (
   group by 1
 ),
 reports as (
-  select date_trunc('week', r.created_at, 'UTC')::date as week,
+  select date_trunc('week', r.created_at at time zone 'UTC')::date as week,
          count(*)::int as reports,
          count(*) filter (where r.lesson_id is not null)::int as lesson_reports,
          count(*) filter (where r.claim_id is not null)::int as claim_reports,
@@ -1199,13 +1240,14 @@ reports as (
 withdrawals as (
   -- The lesson, claim or question withdrawn; what rests on a withdrawn claim is logged as
   -- `claim_retired` and not counted again.
-  select date_trunc('week', s.at, 'UTC')::date as week, count(*)::int as withdrawn
+  select date_trunc('week', s.at at time zone 'UTC')::date as week, count(*)::int as withdrawn
   from public.study_status_log s
   where s.reason = 'retired'
   group by 1
 ),
 corrections as (
-  select date_trunc('week', x.created_at, 'UTC')::date as week, count(*)::int as corrected
+  select date_trunc('week', x.created_at at time zone 'UTC')::date as week,
+         count(*)::int as corrected
   from (select l.created_at from public.study_lessons l where l.authored_by = 'reader'
         union all
         select i.created_at from public.study_items i where i.authored_by = 'reader') as x

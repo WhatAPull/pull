@@ -191,22 +191,47 @@ describe('study generation evaluation', () => {
   });
 
   it('says what made the run and when, and is ready for one pipeline only', () => {
-    const one = { promptHash: 'a'.repeat(64), schemaHash: 'b'.repeat(64), model: 'm' };
-    const other = { ...one, model: 'n' };
+    const stage = { promptHash: 'a'.repeat(64), schemaHash: 'b'.repeat(64), model: 'm' };
+    const one = { extract: { ...stage, model: 'e' }, assemble: stage };
+    const other = { ...one, assemble: { ...stage, model: 'n' } };
     const report = evaluateStudyRun(
       run({ pipelines: [one], ranAt: '2026-09-20T10:00:00.000000Z' }),
     );
     assert.deepEqual(report.pipeline, one);
     assert.equal(report.ranAt, '2026-09-20T10:00:00.000000Z');
     assert.equal(report.gates.singlePipeline, true);
-    // Two pipelines in one run, none recorded, or one without its hashes: no gate for it.
+    // Two pipelines in one run, none recorded, or one that does not name both stages -- each
+    // with its hashes and a model: no gate for it.
+    const single = (pipeline) =>
+      evaluateStudyRun(run({ pipelines: [pipeline] })).gates.singlePipeline;
     assert.equal(evaluateStudyRun(run({ pipelines: [one, other] })).gates.singlePipeline, false);
     assert.equal(evaluateStudyRun(run()).gates.singlePipeline, false);
+    assert.equal(single(stage), false);
+    assert.equal(single({ assemble: stage }), false);
+    assert.equal(single({ extract: stage }), false);
+    assert.equal(single({ ...one, assemble: { ...stage, schemaHash: null } }), false);
+    assert.equal(single({ ...one, extract: { ...stage, promptHash: 'x' } }), false);
+    assert.equal(single({ ...one, assemble: { ...stage, model: '' } }), false);
+    assert.equal(single({ ...one, extract: { ...stage, model: undefined } }), false);
+    assert.equal(single({ ...one, assemble: { ...stage, model: 7 } }), false);
+    // A time is a UTC time as the export writes it, and a real one.
+    for (const word of [
+      'yesterday',
+      'now',
+      'today',
+      'epoch',
+      '-infinity',
+      '2026-09-20 10:00:00',
+      '2026-09-20T10:00:00',
+      '2026-09-20T10:00:00+00:00',
+      '2026-02-30T10:00:00Z',
+    ]) {
+      assert.equal(evaluateStudyRun(run({ ranAt: word })).ranAt, null, word);
+    }
     assert.equal(
-      evaluateStudyRun(run({ pipelines: [{ ...one, schemaHash: null }] })).gates.singlePipeline,
-      false,
+      evaluateStudyRun(run({ ranAt: '2026-09-20T10:00:00Z' })).ranAt,
+      '2026-09-20T10:00:00Z',
     );
-    assert.equal(evaluateStudyRun(run({ ranAt: 'yesterday' })).ranAt, null);
   });
 
   it('keeps failed provider attempts in cost and refuses an unledgered call', () => {

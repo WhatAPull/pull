@@ -775,13 +775,16 @@ const migrations = import.meta.glob('../../../../supabase/migrations/*.sql', {
   eager: true,
 }) as Record<string, string>;
 
+// Its definition, not a grant or a revoke that names it.
+const DEFINES_GOAL_KIND = /create\s+(or\s+replace\s+)?function\s+public\.study_goal_kind\s*\(/i;
+
 function goalKinds(): Map<string, string> {
   const latest = Object.keys(migrations)
     .sort()
-    .filter((path) => /function\s+public\.study_goal_kind\s*\(/i.test(migrations[path]!))
+    .filter((path) => DEFINES_GOAL_KIND.test(migrations[path]!))
     .at(-1);
   const sql = latest ? migrations[latest]! : '';
-  const start = sql.search(/function\s+public\.study_goal_kind\s*\(/i);
+  const start = sql.search(DEFINES_GOAL_KIND);
   const end = sql.indexOf('$fn$;', start);
   const body = start < 0 || end < 0 ? '' : sql.slice(start, end);
   const pairs = [...body.matchAll(/when\s+'([^']+)'\s+then\s+'([a-z]+)'/gi)];

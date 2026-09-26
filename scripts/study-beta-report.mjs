@@ -10,12 +10,13 @@
  * reader.
  *
  * On the hosted database this holds the owner's password, so it reads and nothing else: one
- * read-only transaction, one snapshot for every section, in UTC. psql is handed the URL's
- * parsed parts, never the URL; no PG* or PSQL* variable of the operator's reaches it, and
- * neither does their ~/.psqlrc, so nothing it would read on its own can point it elsewhere,
- * change what it prints, or change the time zone the views' days are in. No command line or
- * error it prints carries the password. TLS is asked for off loopback, and verified when
- * the URL says `sslmode=verify-full` with an `sslrootcert`.
+ * read-only transaction, one snapshot for every section, in UTC -- said by the statement
+ * itself, and again in PGOPTIONS, which a connection pooler need not pass on. psql is handed
+ * the URL's parsed parts, never the URL; no PG* or PSQL* variable of the operator's reaches
+ * it, and neither does their ~/.psqlrc, so nothing it would read on its own can point it
+ * elsewhere or change what it prints. No command line or error it prints carries the
+ * password. TLS is asked for off loopback, and verified when the URL says
+ * `sslmode=verify-full` with an `sslrootcert`.
  */
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
@@ -61,8 +62,10 @@ export function renderReport({ status, daily, validation, learning, trust, mix }
   const s = status[0];
   const open = yes(s.open_to_all);
   const uncovered = list(s.uncovered);
+  // Both stages of the gate's pipeline: what extracts the claims, and what assembles them.
+  const stage = (p) => (p ? `${p.model}, prompt ${String(p.promptHash).slice(0, 12)}…` : '–');
   const pipeline = s.gate_pipeline
-    ? `${s.gate_pipeline.model}, prompt ${String(s.gate_pipeline.promptHash).slice(0, 12)}…`
+    ? `extraction ${stage(s.gate_pipeline.extract)}; assembly ${stage(s.gate_pipeline.assemble)}`
     : '–';
   const lines = [];
   lines.push('# Study beta');
@@ -96,12 +99,15 @@ export function renderReport({ status, daily, validation, learning, trust, mix }
   lines.push(
     `Spend today: study ${Number(s.study_spend_today_cents ?? 0).toFixed(2)}¢ of its ${s.study_cap_cents ?? '–'}¢ ceiling, everything else ${Number(s.other_spend_today_cents ?? 0).toFixed(2)}¢; the day's ceiling is ${s.daily_cap_cents ?? '–'}¢ (law 2), open or not.`,
   );
-  lines.push('');
-  lines.push(
-    uncovered
-      ? `Not yet covered by the beta (each needs 3 courses from 2 readers): ${uncovered}.`
-      : 'Every kind of source and goal is covered.',
-  );
+  // What stands between a closed beta and opening; once open, the mix below says the rest.
+  if (!open) {
+    lines.push('');
+    lines.push(
+      uncovered
+        ? `Not yet covered by the beta (each needs 3 courses from 2 readers): ${uncovered}.`
+        : 'Every kind of source and goal is covered.',
+    );
+  }
   lines.push('');
   lines.push('## Preparation, by day');
   lines.push('');
@@ -244,18 +250,54 @@ export function flags(argv) {
   return out;
 }
 
-/** Every section in one query, so one snapshot: rows as JSON. */
+/*
+ * Every column of ops.study_beta_status but `uncovered`: the view would work that out from a
+ * reading of the mix of its own, and the mix costs a lookup of every course's current
+ * generation.
+ */
+const STATUS_COLUMNS = [
+  'open_to_all',
+  'changed_at',
+  'changed_by',
+  'gate_id',
+  'gate_ran_at',
+  'gate_age_days',
+  'gate_passed',
+  'gate_pipeline',
+  'admission_lapsed',
+  'preparations_off_gate',
+  'queued_for_readers_not_admitted',
+  'allowlisted_readers',
+  'study_spend_today_cents',
+  'study_cap_cents',
+  'other_spend_today_cents',
+  'daily_cap_cents',
+];
+
+/**
+ * Every section in one query, so one snapshot, in a read-only transaction in UTC: rows as
+ * JSON. The mix is read once, and what it leaves uncovered is worked out from that reading,
+ * only while the beta is closed.
+ */
 export function reportQuery({ days, weeks }) {
   const recent = (view, column, n) =>
     `(select coalesce(json_agg(v order by v.${column} desc), '[]') from ops.${view} v
       where v.${column} >= (now() - interval '${n} days')::date)`;
-  return `select json_build_object(
-    'status', (select coalesce(json_agg(s), '[]') from ops.study_beta_status s),
+  return `begin read only;
+set local time zone 'UTC';
+with mix as materialized (select m.* from ops.study_beta_mix m)
+select json_build_object(
+    'status', (select coalesce(json_agg(s), '[]') from (
+      select ${STATUS_COLUMNS.map((c) => `v.${c}`).join(', ')},
+             case when not v.open_to_all then public.study_beta_unrepresented(
+               (select coalesce(jsonb_agg(m), '[]') from mix m)) end as uncovered
+      from ops.study_beta_status v) s),
     'daily', ${recent('study_daily', 'day', days)},
     'validation', ${recent('study_validation_weekly', 'week', weeks * 7)},
     'learning', ${recent('study_learning_weekly', 'week', weeks * 7)},
     'trust', ${recent('study_trust_weekly', 'week', weeks * 7)},
-    'mix', (select coalesce(json_agg(m order by m.dimension, m.value), '[]') from ops.study_beta_mix m));`;
+    'mix', (select coalesce(json_agg(m order by m.dimension, m.value), '[]') from mix m));
+commit;`;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

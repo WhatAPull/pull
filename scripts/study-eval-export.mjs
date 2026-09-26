@@ -70,23 +70,28 @@ export function buildStudyEvalRun({ manifest, generations, items, calls, ledger,
   const providerAttemptIds = calls.filter((c) => sourceOfJob.has(c.jobId)).map((c) => c.id);
 
   /*
-   * What made the run, and when: the pipelines its preparations were assembled with --
-   * prompt, schema and model, as each generation recorded them -- and the last of them to
-   * be saved. A release gate is for one pipeline, and as fresh as its run.
+   * What made the run, and when: the pipelines its preparations were made with -- prompt,
+   * schema and model for each stage, the extraction's as each claim recorded it and the
+   * assembly's as each generation did -- and the last of them to be saved. A release gate is
+   * for one pipeline, and as fresh as its run: a generation whose claims were extracted two
+   * ways was made by two pipelines, and says so.
    */
+  const stage = (p) => ({
+    promptHash: p?.promptHash ?? null,
+    schemaHash: p?.schemaHash ?? null,
+    model: p?.model ?? null,
+  });
   const pipelines = [];
   let ranAt = null;
   for (const generation of generations) {
-    const p = generation.provenance ?? null;
-    const pipeline = p
-      ? {
-          promptHash: p.promptHash ?? null,
-          schemaHash: p.schemaHash ?? null,
-          model: p.model ?? null,
+    if (generation.provenance) {
+      const extractions = generation.extraction?.length ? generation.extraction : [null];
+      for (const extraction of extractions) {
+        const pipeline = { extract: stage(extraction), assemble: stage(generation.provenance) };
+        if (!pipelines.some((q) => JSON.stringify(q) === JSON.stringify(pipeline))) {
+          pipelines.push(pipeline);
         }
-      : null;
-    if (pipeline && !pipelines.some((q) => JSON.stringify(q) === JSON.stringify(pipeline))) {
-      pipelines.push(pipeline);
+      }
     }
     if (generation.assembledAt && (ranAt === null || generation.assembledAt > ranAt)) {
       ranAt = generation.assembledAt;
@@ -170,6 +175,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       select coalesce(json_agg(json_build_object(
         'generationId', g.id, 'jobId', g.job_id,
         'provenance', g.assembly_provenance,
+        'extraction', (select coalesce(jsonb_agg(distinct jsonb_build_object(
+                         'promptHash', c.prompt_hash, 'schemaHash', c.schema_hash,
+                         'model', c.model)), '[]')
+                       from public.study_claims c where c.generation_id = g.id),
         -- UTC, so the lexical comparison above is a comparison of times.
         'assembledAt', to_char(g.assembled_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
         'versionIds', (select json_agg(s.source_version_id order by s.position)

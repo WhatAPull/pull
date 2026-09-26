@@ -11,7 +11,9 @@ loosens none of the bounds law 2 names: the global daily ceiling, each reader's 
 study spend, and the per-reader job counts bound a day, open or not. It adds one: study
 courses, every reader's together, are held to `study_daily_cap_cents()` -- 100 cents, half
 the day -- at the door and at each reservation, so an open beta cannot leave the catalogue's
-generation nothing.
+generation nothing. The door asks that a whole course can still be funded --
+`study_min_job_cents()`, 31 cents -- so that ceiling admits about three courses a day for
+every reader together: opening widens who may ask, not how many courses a day can make.
 
 ## The release gate
 
@@ -20,32 +22,44 @@ of at least 24 source versions with visible questions and 300 visible questions,
 visible question reviewed twice and adjudicated, no material error in a visible answer
 key, every visible question grounded and answerable, at most 3% ambiguous questions,
 adversarial items present, each reviewed twice and none reaching a learner, every fixture
-category covered, a ledger entry for every provider attempt, and one pipeline -- prompt,
-schema and model -- for the whole run.
+category covered, a ledger entry for every provider attempt, and one pipeline for the whole
+run: the prompt, schema and model that extracted its claims (`study_claims`), and those that
+assembled its courses (`study_generations.assembly_provenance`). An edit to either prompt is
+a new pipeline.
 
 1. Run the fixture through the pipeline and export it:
    `node scripts/study-eval-export.mjs --manifest m.json --reviews r.json --jobs ... > run.json`.
 2. Evaluate it: `node scripts/study-eval.mjs run.json > report.json`.
-3. Record it, as the database owner (the SQL editor, or psql with the owner's password):
+3. Record it, as the database owner (the SQL editor, or psql with the owner's password),
+   pasting the report between the dollar quotes, which a quote inside it cannot close:
 
    ```sql
    insert into public.study_release_gates (recorded_by, fixture_digest, report, note)
-   values ('<operator>', '<sha256 of run.json>', '<report.json>'::jsonb, '<what was run>');
+   values ('<operator>', '<sha256 of run.json>', $report$<report.json>$report$::jsonb,
+           '<what was run>');
    ```
 
 `passed` is computed on insert by `study_gate_passes`, from the report's gates **and** the
 counts behind them -- each a whole number, not below zero -- never taken from the writer: a
 report whose gates say ready while its counts fall short does not pass. The run's date
-(`ranAt`, the last preparation in it) and pipeline come from the report, which the export
-takes from the generations themselves; a gate is as fresh as its run, not its recording. A
-gate is final once recorded, and a run's digest is recorded once. The run export and the
-reviewed material stay outside the public repository; the digest ties the record to them.
+(`ranAt`, the last preparation in it, in UTC as the export writes it:
+`2026-09-20T10:00:00.000000Z`) and pipeline come from the report, which the export takes
+from the generations and claims themselves; a gate is as fresh as its run, not its
+recording. A word Postgres reads as a time (`now`, `epoch`), an infinity, or a time without
+its zone is refused. A gate is final once recorded, and a run's report is recorded
+once: the same run evaluated again after a fix to the evaluator is a new report, recorded
+beside the first and as old as the run. The run export and the reviewed material stay
+outside the public repository; the digest ties the record to them.
 
 What the schema checks is the report. That a person reviewed the run is the operator's
 word, recorded with their name: the schema cannot see a review happen, and does not say it
-can. What it can do is keep the word to the people who hold the database owner's password:
-the gates, the switch and its log are written by the owner alone, not by the service role,
-whose key every Edge Function holds.
+can. What it can do is keep the word from the service role, whose key every Edge Function
+holds: the gates, the switch and its log are written by the database owner, `postgres`, and
+no one else. On the hosted project that is everyone with SQL access to it -- the dashboard's
+SQL editor, the Management API and the Supabase MCP server all run as `postgres`, as does
+psql with the owner's password -- so `study_beta_log.db_user` reads `postgres` for every one
+of them. It tells the owner's writes from another role's, not one person from another; who
+it was is the name they gave.
 
 ## The switch
 
@@ -71,9 +85,10 @@ Only the owner calls open and close.
 
 Closing is always allowed. It stops new courses at the door; a course already queued for a
 reader it no longer admits still finishes, within that reader's share and the study
-ceiling, and `ops.study_beta_status` counts them. A change to the prompts, the schema or the
-model is a new pipeline: record a new gate before opening on it; the status view counts
-preparations since opening whose pipeline is not the gate's.
+ceiling, and `ops.study_beta_status` counts them. A change to the prompts, the schemas or the
+models, of extraction or of assembly, is a new pipeline: record a new gate before opening on
+it; the status view counts preparations since opening assembled, or with a claim extracted,
+by a pipeline that is not the gate's.
 
 ### A representative beta
 
@@ -123,7 +138,9 @@ API. No row in them names a reader.
 | `ops.study_beta_mix`          | Courses with a current generation, by kind of source and goal, with distinct readers                                                                                                                                                                                                            |
 
 `node scripts/study-beta-report.mjs [--days 14] [--weeks 8]` prints them as Markdown, with
-`DATABASE_URL` pointing at the database. It reads in one read-only session, in UTC, and
-ignores the operator's `~/.psqlrc`. The hosted database needs TLS: the script asks for it,
+`DATABASE_URL` pointing at the database. It reads in one read-only transaction, in UTC --
+said by the statement itself, since a connection pooler need not pass on the connection's
+options -- and ignores the operator's `~/.psqlrc`. What the mix leaves uncovered it prints
+only while the beta is closed. The hosted database needs TLS: the script asks for it,
 and takes `sslmode` and `sslrootcert` from the URL -- `?sslmode=verify-full&sslrootcert=...`
 with Supabase's CA verifies the server, which `require` alone does not.

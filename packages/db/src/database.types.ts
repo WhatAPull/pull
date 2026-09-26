@@ -4838,7 +4838,7 @@ export type Database = {
         Args: { p_event_id: string }
         Returns: boolean
       }
-      study_beta_unrepresented: { Args: never; Returns: string[] }
+      study_beta_unrepresented: { Args: { p_mix?: Json }; Returns: string[] }
       study_blank: { Args: { p_text: string }; Returns: boolean }
       study_boundary_class: { Args: never; Returns: string }
       study_check_revision_quota: {

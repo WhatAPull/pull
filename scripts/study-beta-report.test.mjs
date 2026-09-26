@@ -20,10 +20,14 @@ const open = {
   gate_id: 'g1',
   gate_ran_at: '2026-09-19T08:00:00+00:00',
   gate_age_days: 7,
-  gate_pipeline: { model: 'gemini', promptHash: 'a'.repeat(64), schemaHash: 'b'.repeat(64) },
+  gate_pipeline: {
+    extract: { model: 'gemini', promptHash: 'c'.repeat(64), schemaHash: 'd'.repeat(64) },
+    assemble: { model: 'gemini', promptHash: 'a'.repeat(64), schemaHash: 'b'.repeat(64) },
+  },
   admission_lapsed: false,
   preparations_off_gate: 0,
-  uncovered: [],
+  // Worked out only while the beta is closed.
+  uncovered: null,
 };
 const empty = { daily: [], validation: [], learning: [], trust: [], mix: [] };
 
@@ -115,15 +119,28 @@ test('renders a closed beta, saying what it has not covered, and every section',
     renderReport({ status: [{ ...closed, allowlisted_readers: 1 }], ...empty }),
     /\(1 reader admitted\)/,
   );
+  assert.match(
+    renderReport({ status: [{ ...closed, uncovered: [] }], ...empty }),
+    /Every kind of source and goal is covered\./,
+  );
+});
+
+test('says of a closed beta that courses are still queued for readers it no longer admits', () => {
+  assert.doesNotMatch(renderReport({ status: [closed], ...empty }), /still queued/);
+  assert.match(
+    renderReport({ status: [{ ...closed, queued_for_readers_not_admitted: 2 }], ...empty }),
+    /2 courses are still queued for readers no longer admitted/,
+  );
 });
 
 test('renders an open beta: its gate, its run, and what has lapsed or drifted', () => {
   const md = renderReport({ status: [open], ...empty });
   assert.match(
     md,
-    /\*\*Open to every reader with an account\*\*, since 2026-09-20T10:00:00\+00:00 \(by An operator\), on release gate g1: a run of 2026-09-19T08:00:00\+00:00 \(7 days ago\), pipeline gemini, prompt aaaaaaaaaaaa…\./,
+    /\*\*Open to every reader with an account\*\*, since 2026-09-20T10:00:00\+00:00 \(by An operator\), on release gate g1: a run of 2026-09-19T08:00:00\+00:00 \(7 days ago\), pipeline extraction gemini, prompt cccccccccccc…; assembly gemini, prompt aaaaaaaaaaaa…\./,
   );
-  assert.match(md, /Every kind of source and goal is covered\./);
+  // Open, the coverage that stood between the beta and opening is not said again.
+  assert.doesNotMatch(md, /covered/);
   assert.doesNotMatch(md, /lapsed|other than the gate/);
   const drifted = renderReport({
     status: [
@@ -194,14 +211,24 @@ test('knows its flags, and says so of any other', () => {
   assert.throws(() => flags(['--days', '1.5']), /whole number/);
 });
 
-test('reads every section in one statement, one snapshot', () => {
+test('reads every section in one statement, one snapshot, read-only and in UTC', () => {
   const sql = reportQuery({ days: 7, weeks: 2 });
-  assert.equal(
-    sql
-      .trim()
-      .split(';')
-      .filter((s) => s.trim()).length,
-    1,
+  const statements = sql
+    .trim()
+    .split(';')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  // Said by the statement, not left to PGOPTIONS, which a pooler need not pass on.
+  assert.deepEqual(statements.slice(0, 2), ['begin read only', "set local time zone 'UTC'"]);
+  assert.equal(statements.at(-1), 'commit');
+  assert.equal(statements.length, 4);
+  // The mix is read once; the status view's own reading of it for `uncovered` is not asked
+  // for, and what is uncovered is worked out from that one reading while the beta is closed.
+  assert.equal(sql.match(/ops\.study_beta_mix/g).length, 1);
+  assert.doesNotMatch(sql, /v\.uncovered|json_agg\(s\), '\[\]'\) from ops\.study_beta_status/);
+  assert.match(
+    sql,
+    /case when not v\.open_to_all then public\.study_beta_unrepresented\(\s*\(select coalesce\(jsonb_agg\(m\), '\[\]'\) from mix m\)\)/,
   );
   assert.match(sql, /ops\.study_daily v\s+where v\.day >= \(now\(\) - interval '7 days'\)::date/);
   assert.match(

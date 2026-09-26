@@ -59,24 +59,37 @@ test('maps courses to fixture sources by their exact version set, in any order',
 });
 
 test('says which pipelines made the run, once each, and when its last course was saved', () => {
-  const p = { promptHash: 'a'.repeat(64), schemaHash: 'b'.repeat(64), model: 'm' };
+  const a = { promptHash: 'a'.repeat(64), schemaHash: 'b'.repeat(64), model: 'm' };
+  const e = { ...a, model: 'e' };
   const run = buildStudyEvalRun({
     manifest,
     generations: [
-      { ...generations[0], provenance: p, assembledAt: '2026-09-20T10:00:00.000000Z' },
-      { ...generations[1], provenance: { ...p }, assembledAt: '2026-09-21T09:00:00.000000Z' },
+      {
+        ...generations[0],
+        provenance: a,
+        extraction: [e],
+        assembledAt: '2026-09-20T10:00:00.000000Z',
+      },
+      {
+        ...generations[1],
+        provenance: { ...a },
+        extraction: [{ ...e }],
+        assembledAt: '2026-09-21T09:00:00.000000Z',
+      },
     ],
     items,
     calls,
     ledger,
   });
-  assert.deepEqual(run.pipelines, [p]);
+  // Both stages: what extracted the claims as well as what assembled the course.
+  assert.deepEqual(run.pipelines, [{ extract: e, assemble: a }]);
   assert.equal(run.ranAt, '2026-09-21T09:00:00.000000Z');
+  assert.equal(evaluateStudyRun(run).gates.singlePipeline, true);
   const two = buildStudyEvalRun({
     manifest,
     generations: [
-      { ...generations[0], provenance: p },
-      { ...generations[1], provenance: { ...p, model: 'n' } },
+      { ...generations[0], provenance: a, extraction: [e] },
+      { ...generations[1], provenance: { ...a, model: 'n' }, extraction: [e] },
     ],
     items,
     calls,
@@ -84,6 +97,31 @@ test('says which pipelines made the run, once each, and when its last course was
   });
   assert.equal(two.pipelines.length, 2);
   assert.equal(two.ranAt, null);
+  // An extraction prompt changed between two courses assembled alike is a second pipeline;
+  // so is one course whose claims were extracted two ways.
+  for (const split of [
+    [
+      { ...generations[0], provenance: a, extraction: [e] },
+      { ...generations[1], provenance: a, extraction: [{ ...e, promptHash: 'c'.repeat(64) }] },
+    ],
+    [{ ...generations[0], provenance: a, extraction: [e, { ...e, model: 'f' }] }],
+  ]) {
+    const again = buildStudyEvalRun({ manifest, generations: split, items, calls, ledger });
+    assert.equal(again.pipelines.length, 2);
+    assert.equal(evaluateStudyRun(again).gates.singlePipeline, false);
+  }
+  // A course with no claims recorded says nothing of its extraction, and passes no gate.
+  const unnamed = buildStudyEvalRun({
+    manifest,
+    generations: [{ ...generations[0], provenance: a, extraction: [] }],
+    items,
+    calls,
+    ledger,
+  });
+  assert.deepEqual(unnamed.pipelines, [
+    { extract: { promptHash: null, schemaHash: null, model: null }, assemble: a },
+  ]);
+  assert.equal(evaluateStudyRun(unnamed).gates.singlePipeline, false);
 });
 
 test('the evaluator certifies the ledger when journal and ledger agree', () => {

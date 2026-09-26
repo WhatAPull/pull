@@ -248,7 +248,8 @@ advances the path idempotently via `client_mutation_id`.
 `moderation_decisions` and the study beta's `study_release_gates`, `study_beta_settings` and
 `study_beta_log` have RLS enabled with a policy of `using (false)` —
 service-role only. That is deliberate, not an oversight: the invariant check
-requires _a_ policy to exist, not that it grants anything.
+requires _a_ policy to exist, not that it grants anything. The study beta's three are
+narrower still: the service role only reads them, and the database owner writes them.
 
 **The daily spend cap is a reservation, not a reading.** `budget_reservations` is
 keyed `(job_id, step)` and counts the calls standing behind that row: a step whose
