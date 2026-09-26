@@ -1266,7 +1266,8 @@ begin
 
     if proves then
       if m.last_success_at is null
-         or e.answered_at >= m.last_success_at + make_interval(secs => m.stability * 86400) then
+         or (m.last_outcome = 'success'
+             and e.answered_at >= m.last_success_at + make_interval(secs => m.stability * 86400)) then
         m.stability := least(730.0, m.stability * (2.0 + (1.0 - m.difficulty)));
       end if;
       m.last_outcome := 'success';
@@ -1312,12 +1313,9 @@ as $fn$
   with at as (select coalesce(p_at, now()) as t)
   select c.id,
          coalesce(m.last_outcome = 'success'
-                  and (p_at is null or m.last_success_at <= p_at)
-                  and public.retrievability(m.stability::real, m.last_success_at, r.t)
-                      > public.known_retrievability_floor()
+                  and r.recall > public.known_retrievability_floor()
                   and public.study_answer_proves_recall(m.last_success_id), false),
-         case when m.last_success_at is not null and (p_at is null or m.last_success_at <= p_at)
-              then public.retrievability(m.stability::real, m.last_success_at, r.t) end,
+         r.recall,
          case when m.last_outcome = 'lapse' then m.last_answered_at + interval '30 minutes'
               when m.last_success_at is not null
               then m.last_success_at + make_interval(secs => m.stability * 86400) end,
@@ -1326,8 +1324,16 @@ as $fn$
   from public.study_claims c
   cross join at
   left join public.study_claim_memory m on m.claim_id = c.id and m.owner_id = c.owner_id
+  -- Recall at the moment asked about, once: null before a success, or after it when asked
+  -- about the past.
   cross join lateral (
-    select least(at.t, m.last_success_at + make_interval(secs => m.stability * 86400 * 1000)) as t
+    select case when m.last_success_at is not null
+                     and (p_at is null or m.last_success_at <= p_at)
+                then public.retrievability(
+                       m.stability::real, m.last_success_at,
+                       least(at.t,
+                             m.last_success_at + make_interval(secs => m.stability * 86400 * 1000)))
+           end as recall
   ) as r
   cross join lateral (
     select coalesce(m.last_outcome = 'lapse', false)
@@ -1793,6 +1799,10 @@ begin
   if public.study_requester_spend_today(uid) + public.study_min_job_cents()
      > public.study_requester_daily_cap_cents() then
     raise exception 'your share of today''s study generation budget is spent. It resets at 00:00 UTC.'
+      using errcode = '53400';
+  end if;
+  if public.study_spend_today() + public.study_min_job_cents() > public.study_daily_cap_cents() then
+    raise exception 'today''s study generation budget is spent. Study generation resumes at 00:00 UTC.'
       using errcode = '53400';
   end if;
 
