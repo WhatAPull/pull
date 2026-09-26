@@ -1,6 +1,6 @@
 # Data model
 
-82 tables in `public`, created by the timestamped migrations in `supabase/migrations/`
+85 tables in `public`, created by the timestamped migrations in `supabase/migrations/`
 (`YYYYMMDDHHMMSS_name.sql`, applied in filename order). Every one has RLS enabled with
 at least one policy, every foreign key has a supporting index, and every
 `SECURITY DEFINER` function pins its `search_path`. CI check 4 replays the whole thing
@@ -26,6 +26,8 @@ User
  │                                                   the source they named
  ├── study_url_preview_daily_usage                ← the URL-preview quota
  ├── study_generation_access                      ← the course beta allowlist
+ ├── study_public_enrolments                      ← each public course the reader added; the
+ │                                                   daily limit counts these
  ├── study_courses ─── study_course_sources        ← a private course and the sources it
  │                                                   follows; separate from paths; each
  │                                                   generation below belongs to one
@@ -75,6 +77,8 @@ daily_pulls · daily_pull_selections · interleave_config · rate_limits
 blocked_email_domains                             ← refused at signup
 public_study_courses                              ← published from a rights-cleared work;
                                                     readers' courses copy it
+study_curators · study_curated_sources            ← who prepares a public course, and the
+                                                    text registered as the work's
 study_release_gates ─── study_beta_settings · study_beta_log   ← the study beta: a reviewed
                                                     release, the one switch, every change
 ```
@@ -156,7 +160,9 @@ skipped (`study_progress_events`) follows a lesson or question across the reader
 corrections; answers and proof stay with the version answered. A course goes with its last
 source, or through `delete_study_course`; its sources stay. It shares no key with the public
 `paths`, which are curated and keyed to public pulls. See
-[`study-courses.md`](./study-courses.md).
+[`study-courses.md`](./study-courses.md). A course with a `public_course_id` is a reader's
+copy of a public course: its generation has no job, its one source holds the course's
+excerpts, and it is never prepared again. See [`study-public-courses.md`](./study-public-courses.md).
 
 **A reader's own question lives in its own table.** `user_questions` rather than a row in
 `quiz_questions`, because the pipeline upserts canonical questions with
@@ -248,8 +254,9 @@ advances the path idempotently via `client_mutation_id`.
 
 **Cost data is not user-facing.** `cost_ledger`, `budget_reservations`,
 `moderation_decisions`, the study beta's `study_release_gates`, `study_beta_settings` and
-`study_beta_log`, and `public_study_courses` (whose snapshot carries answer keys; the catalogue
-is read through definer functions) have RLS enabled with a policy of `using (false)` —
+`study_beta_log`, and the public courses' `public_study_courses`, `study_curators` and
+`study_curated_sources` (a signed-in reader reads the catalogue through definer functions)
+have RLS enabled with a policy of `using (false)` —
 service-role only. That is deliberate, not an oversight: the invariant check
 requires _a_ policy to exist, not that it grants anything. The study beta's three are
 narrower still: the service role only reads them, and the database owner writes them.

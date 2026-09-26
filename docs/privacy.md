@@ -8,7 +8,12 @@ works in the public domain or licensed to us and checked by a person -- never fr
 reader saved. Adding one copies it into your account as one of your courses, with its short
 quotations from the work; from then on it is private to you and kept like your own courses,
 with the same record of what you read and answered. Adding one sends nothing to a model or
-anyone else, and deleting your account deletes your copy. See [What you create](#what-you-create).
+anyone else, and deleting your account deletes your copy. We also keep when you added each
+one, so that no more than twenty are added in a day; that record stays if you delete the
+copy, and goes with your account. **If we withdraw a public course because of a complaint
+about the rights in it, we may delete every reader's copy of it** -- and with yours go your
+answers to its questions, your place in it, and what your answers showed you remember of it.
+See [What you create](#what-you-create).
 
 The previous revision, effective 29 September, said that **study courses may open to every
 reader with an account, and we measure how well they teach.** Until then only readers we
@@ -204,6 +209,18 @@ your account is in the beta is recorded in
 `study_generation_access`, with any note we wrote when adding you — which you can read,
 and which is in your export.
 
+**Public study courses** are courses we publish ourselves, from works in the public domain or
+licensed to us, checked by a person. Adding one copies it into the tables above as one of
+your courses (`study_courses.public_course_id`), with its short quotations from the work as a
+source of its own that Studio does not list; nothing is sent to a model or anyone else. From
+then on your copy is private to you and kept like your own courses. A lesson or question we
+corrected before publishing is marked as ours, not yours. Each time you add one is recorded
+in `study_public_enrolments` -- which course, and when -- because no more than twenty may be
+added in a day; that record is readable by you, is in your export, stays if you delete the
+copy, and is deleted with your account. If we withdraw a course because of a complaint about
+the rights in it, we may delete every reader's copy, and with yours your answers to it, your
+place in it and what your answers showed you remember of it.
+
 A course also keeps its own history (`study_status_log`): each status every claim, lesson
 and question has had — checked, held back, reported, corrected, withdrawn — and when. If
 you report part of a course (`study_reports`), the report and any note you add (up to
@@ -258,6 +275,7 @@ This is the category most services describe vaguely, so here it is precisely:
 | Lessons and questions of a study course you were shown          | `study_progress_events`                                      | Remembers your place in the course; never counted as recall                                                                                |
 | Answers to your study courses' questions                        | `study_answer_events`                                        | What you practised, what you have shown you remember, and whether the course counted it as known when you answered; what you typed is kept |
 | How well you remember each claim of your study courses          | `study_claim_memory`                                         | Leaves out lessons you know, brings back ones you got wrong, schedules review                                                              |
+| When you added each public study course                         | `study_public_enrolments`                                    | Holds adding public courses to twenty a day; kept if you delete the copy, deleted with your account                                        |
 
 **Highlights you import are yours, and stay yours.** When you keep a Kindle or Readwise
 export, the text of each highlight is stored verbatim — that is the point of keeping it —
@@ -526,6 +544,11 @@ This removes the extracted text for that source, and every version of a study co
 every cached model output built from it, with their reports, history, answers and
 progress, without deleting your account; a course left with no sources goes too. You can
 also delete a study course and keep the sources it was built from.
+
+We delete your copy of a public study course only if we withdraw that course because of a
+complaint about the rights in it. Your answers to it, your place in it and what your answers
+showed you remember of it go with the copy; nothing else in your account is touched, and the
+record of when you added it stays until you delete your account.
 
 When you delete your account, deletion cascades from your user record through every table
 keyed to it: profile, preferences, stashes, saves, notes, highlights, history, impressions,

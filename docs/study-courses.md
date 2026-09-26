@@ -318,9 +318,10 @@ other signed-in destinations give, and a visitor with sign-in.
 
 ## Lock order
 
-Four rules keep the writers here from deadlocking with each other and with deletion; every
+Five rules keep the writers here from deadlocking with each other and with deletion; every
 order below was reproduced as a deadlock with real sessions before it was in place. In
-short: the account row, then the reader's study lock, then their sources, then a course.
+short: the account row, then (adding a public course) that course and its work, then the
+reader's study lock, then their sources, then a course.
 
 - **The account row first.** Saving a source locks the reader's `auth.users` row and then
   the source; deleting the account locks the row before anything it cascades to. So
@@ -369,6 +370,21 @@ short: the account row, then the reader's study lock, then their sources, then a
   and a lesson's correction or withdrawal (`revise_study_lesson`, `retire_study_content`)
   locks the lesson's questions in id order before it moves them. Locked in a batch's order or
   the table's, a batch of two answers deadlocked with either (20260925200000).
+
+- **Public courses keep the same order** (20260925230000,
+  [`study-public-courses.md`](./study-public-courses.md)). Adding one (`enrol_public_course`)
+  takes the account row FOR NO KEY UPDATE -- as `delete_my_account` does, so the two queue
+  there rather than one key-sharing past the other and meeting it at the study lock -- then
+  the public course and its work FOR SHARE, read open under that lock, then the reader's
+  study lock. Withdrawing locks the public course FOR UPDATE, so an enrolment in flight
+  finishes first and the next sees it withdrawn, and touches nobody's rows.
+  `remove_public_course_copies` takes each reader's study lock, in owner-id order, before any
+  row of theirs, and deletes their sources before their courses. Publishing locks the work
+  FOR NO KEY UPDATE, which an enrolment's share lock waits for. Before this order, removing
+  copies inside the withdrawal -- a row locked, then its reader's study lock waited for --
+  deadlocked with `delete_study_course`, with the reader adding the course again, and with
+  `delete_my_account`; and an enrolment that key-shared the account row deadlocked with
+  `delete_my_account`.
 
 **Deleting many accounts in one statement** takes one study lock for each account with study
 sources, and every one of them is held in Postgres's shared lock table until the statement

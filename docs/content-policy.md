@@ -102,11 +102,19 @@ getting this wrong breaks the funding model as well as the legal position.
 
 ## Public study courses
 
-A study course the project publishes is analysis of a work, not a copy of it: prepared from a
-work whose `rights_status` is `public_domain` or `licensed`, reviewed by a person, and quoting
-it only in capped excerpts -- 300 characters a quotation, and together a tenth of the source and
-20,000 characters -- which the schema refuses to exceed. The source itself is never published.
-A course can be withdrawn, and for a rights complaint every reader's copy with it. See
+A study course the project publishes is analysis of a work, not a copy of it: prepared by an
+account the project named as a curator, from text registered as the work's, of a work whose
+`rights_status` is `public_domain` or `licensed`; reviewed by a person; and quoting the work
+only in capped excerpts, which the schema refuses to exceed. Passages quoted within 200
+characters of each other count as one quotation, gap and all, and a quotation is at most 300
+characters; a course quotes at most a tenth of the text, and all of a work's courses on offer
+at most 20,000 characters of it between them. What the course says in its own words may not
+repeat twelve words in a row of the work from outside its quotations. The source itself is
+never published.
+
+The schema cannot tell a close paraphrase from analysis, nor whether the registered text is
+the whole work; the review is the control for those. A course can be withdrawn, and for a
+rights complaint every reader's copy removed after it. See
 [`study-public-courses.md`](./study-public-courses.md).
 
 ## Attribution

@@ -5,27 +5,80 @@
 -- this migration is the machinery that keeps it different (CLAUDE.md, law 2, "Public study
 -- courses"):
 --
--- 1. PREPARED BY THE PROJECT, FROM A CLEARED WORK. `publish_study_course` is the service
---    role's alone. It takes a course the project prepared (a curator's own generation, through
---    the ordinary door, ledgered) and a `works` row whose `rights_status` is `public_domain`
---    or `licensed` -- never `user_owned`, `review_required` or anything else -- and a
---    reviewer's name, and records a `moderation_decisions` row.
+-- 1. PREPARED BY THE PROJECT, FROM A CLEARED WORK -- AND NEVER FROM A READER'S MATERIAL.
+--    `publish_study_course` is the service role's alone. It takes the current generation of a
+--    course prepared by a CURATOR (`study_curators`, an account the service role named) from
+--    source versions the service role registered as the text of that very work
+--    (`study_curated_sources`), and a `works` row whose `rights_status` is `public_domain` or
+--    `licensed` -- never `user_owned`, `review_required` or anything else -- and a reviewer's
+--    name, and records a `moderation_decisions` row. A reader's course fails the first test,
+--    and a curator's course of anything but the registered text fails the second.
 -- 2. ANALYSIS, NOT REPRODUCTION (law 4). Only validated claims, lessons and questions are
 --    published, and the source itself is not: what goes out are the evidence spans the claims
---    quote, each at most 300 characters, together at most a tenth of the source and 20,000
---    characters. They become the course's excerpts, and the evidence points into them.
+--    quote, merged where they overlap or lie within 200 characters of each other into one
+--    quotation, each quotation at most 300 characters, together at most a tenth of the source;
+--    and a work's courses on offer quote it at most 20,000 characters between them. They become
+--    the course's excerpts, and the evidence points into them. The course's own text -- its
+--    lessons, claims, questions, overview -- may not repeat twelve words in a row of the source
+--    from outside those quotations.
 -- 3. ONE PREPARATION, MANY READERS -- the cost law pointing the right way again. Enrolling
 --    (`enrol_public_course`) copies the published snapshot into the reader's own study tables:
 --    no model call, no job, nothing against their allowance. Everything per reader then works
 --    unchanged -- progress, answers, proof, memory, reports and corrections, on their copy.
--- 4. A PUBLISHED COURSE DOES NOT CHANGE. A new version is a new row. Withdrawing one stops
---    new enrolments; for a rights complaint, the readers' copies can go with it.
+-- 4. A PUBLISHED COURSE DOES NOT CHANGE. A new version is a new row; the row itself refuses
+--    every change but its withdrawal. Withdrawing one stops new enrolments; for a rights
+--    complaint, `remove_public_course_copies` then deletes the readers' copies, a batch at a time.
 --
 -- The catalogue is read through two definer functions that return only published courses of
--- cleared works; the table itself is service-role only, since its snapshot carries answer
--- keys.
+-- cleared works, to signed-in readers; the table itself is service-role only, so that nothing
+-- about who published what, and no excerpt, is read around those two.
 
--- ------------------------------------------------------------------ 1. the published course
+-- ------------------------------------------------------------------ 1. curators
+
+/*
+ * The accounts that prepare public courses, named by the service role. A course is published
+ * only from a curator's own generation, so no reader's course can be.
+ */
+create table public.study_curators (
+  user_id  uuid primary key references auth.users (id) on delete cascade,
+  added_by text not null check (char_length(btrim(added_by)) between 1 and 200),
+  added_at timestamptz not null default now()
+);
+
+comment on table public.study_curators is
+  'Accounts whose study courses may be published as public courses. Service role only. '
+  'See 20260925230000.';
+
+alter table public.study_curators enable row level security;
+create policy study_curators_no_api_access on public.study_curators for select using (false);
+revoke all on public.study_curators from public, anon, authenticated;
+
+/*
+ * A curator's saved source version, registered by the service role as the text of a work --
+ * before the course is prepared from it. Publishing checks every source of the generation is
+ * registered to the work it is published from, so a course is published only from the text
+ * that was cleared, never from anything else a curator happened to save.
+ */
+create table public.study_curated_sources (
+  source_version_id uuid primary key
+                    references public.study_source_versions (id) on delete cascade,
+  work_id           uuid not null references public.works (id) on delete cascade,
+  registered_by     text not null check (char_length(btrim(registered_by)) between 1 and 200),
+  registered_at     timestamptz not null default now()
+);
+
+create index study_curated_sources_work_idx on public.study_curated_sources (work_id);
+
+comment on table public.study_curated_sources is
+  'A curator''s source version registered as the text of a rights-cleared work, before a '
+  'public course is prepared from it. Service role only. See 20260925230000.';
+
+alter table public.study_curated_sources enable row level security;
+create policy study_curated_sources_no_api_access on public.study_curated_sources
+  for select using (false);
+revoke all on public.study_curated_sources from public, anon, authenticated;
+
+-- ------------------------------------------------------------------ 2. the published course
 
 create table public.public_study_courses (
   id               uuid primary key default extensions.gen_random_uuid(),
@@ -46,7 +99,9 @@ create table public.public_study_courses (
   outline          jsonb not null check (jsonb_typeof(outline) = 'array'),
   lesson_count     int not null check (lesson_count > 0),
   question_count   int not null check (question_count >= 0),
-  from_generation  uuid,
+  -- The generation it was published from: once. Not a foreign key -- the published course
+  -- outlives the curator's working copy -- but never the source of two public courses.
+  from_generation  uuid unique,
   reviewed_by      text not null check (char_length(btrim(reviewed_by)) between 1 and 200),
   review_note      text check (review_note is null or char_length(review_note) <= 2000),
   published_at     timestamptz not null default now(),
@@ -61,43 +116,74 @@ create index public_study_courses_work_idx on public.public_study_courses (work_
 comment on table public.public_study_courses is
   'A study course the project published from a rights-cleared work: a snapshot of validated '
   'claims, lessons and questions over short excerpts. Readers enrol by copy '
-  '(enrol_public_course). Service role only; the catalogue is read through '
-  'list_public_study_courses() and get_public_study_course(). See 20260925230000.';
+  '(enrol_public_course). Never changes but to be withdrawn. Service role reads only; the '
+  'catalogue is read through list_public_study_courses() and get_public_study_course(). '
+  'See 20260925230000.';
 
 alter table public.public_study_courses enable row level security;
 create policy public_study_courses_no_api_access on public.public_study_courses
   for select using (false);
-revoke all on public.public_study_courses from public, anon, authenticated;
+-- Written only by the definer functions below, which run as the owner: the service role reads.
+revoke all on public.public_study_courses from public, anon, authenticated, service_role;
+grant select on public.public_study_courses to service_role;
 
-/* A published course the catalogue may show: not withdrawn, from a work still cleared. */
-create function public.public_study_course_open(p_id uuid)
-returns boolean
-language sql
-stable
-security definer
+/*
+ * A published course does not change. The one update allowed is its withdrawal, once:
+ * `withdrawn_at` and `withdrawn_reason` from null to set. An update that changes nothing
+ * passes, so a second withdrawal is not an error. It is deleted only once withdrawn (and the
+ * readers' copies, which refer to it, are gone), and never truncated.
+ */
+create function public.public_study_course_is_final()
+returns trigger
+language plpgsql
 set search_path = ''
 as $fn$
-  select exists (
-    select 1
-    from public.public_study_courses p
-    join public.works w on w.id = p.work_id
-    where p.id = p_id and p.withdrawn_at is null
-      and w.rights_status in ('public_domain', 'licensed')
-  )
+begin
+  if tg_op = 'TRUNCATE' then
+    raise exception 'published courses are not truncated' using errcode = '55000';
+  elsif tg_op = 'DELETE' then
+    if old.withdrawn_at is null then
+      raise exception 'a published course is withdrawn before it is deleted'
+        using errcode = '55000';
+    end if;
+    return old;
+  end if;
+  if (to_jsonb(new) - 'withdrawn_at' - 'withdrawn_reason')
+       is distinct from (to_jsonb(old) - 'withdrawn_at' - 'withdrawn_reason')
+     or (old.withdrawn_at is not null
+         and (new.withdrawn_at is distinct from old.withdrawn_at
+              or new.withdrawn_reason is distinct from old.withdrawn_reason)) then
+    raise exception 'a published course does not change; publish a new version'
+      using errcode = '55000';
+  end if;
+  return new;
+end
 $fn$;
 
-revoke all on function public.public_study_course_open(uuid) from public, anon, authenticated;
+revoke all on function public.public_study_course_is_final()
+  from public, anon, authenticated, service_role;
 
--- ------------------------------------------------------------------ 2. the reader's copy
+create trigger public_study_courses_are_final
+  before update or delete on public.public_study_courses
+  for each row execute function public.public_study_course_is_final();
+create trigger public_study_courses_not_truncated
+  before truncate on public.public_study_courses
+  for each statement execute function public.public_study_course_is_final();
+
+-- ------------------------------------------------------------------ 3. the reader's copy
 
 -- The reader's copy of a public course's excerpts: a source of its own format, which the
--- Studio does not list and nothing can save a version of (save_study_source_version accepts
--- only the formats a reader can upload).
+-- Studio does not list, nothing prepares a course from (study_enqueue_course), and nothing
+-- saves a version into (save_study_source_version).
 alter table public.study_source_versions
   drop constraint study_source_versions_format_check,
   add constraint study_source_versions_format_check check (format in
     ('paste', 'text', 'markdown', 'pdf', 'docx', 'image_ocr', 'pdf_ocr', 'highlights',
      'public_course'));
+-- A reader's excerpts by the public course they came from: how an enrolment finds the copy it
+-- keeps, and how removing the copies finds every reader's.
+create index study_source_versions_public_course_idx
+  on public.study_source_versions (origin_label, owner_id) where format = 'public_course';
 
 alter table public.study_courses
   add column public_course_id uuid references public.public_study_courses (id) on delete restrict;
@@ -116,32 +202,133 @@ alter table public.study_generations
            and (processing_consent_at is null) = (public_course_id is not null));
 create index study_generations_public_course_idx on public.study_generations (public_course_id);
 
-/* How a reader's copy names where it came from: "From <work> (public domain)". */
-create function public.public_study_course_label(p_id uuid)
-returns text
+/*
+ * A third author. A lesson or question a curator corrected before publishing is the
+ * reader's (`'reader'`) in the curator's course, with no prompt, schema or model behind it;
+ * copied into another reader's course it is not that reader's own words, and must not read
+ * as them: it is the project's (`'project'`). A person reviewed it and this reader did not
+ * write it, so -- like the model's -- an answer to it can prove recall, which a reader's own
+ * version never can. Its provenance is as a reader's: none.
+ */
+alter table public.study_lessons
+  drop constraint study_lessons_authored_by_check,
+  add constraint study_lessons_authored_by_check
+    check (authored_by in ('model', 'reader', 'project'));
+alter table public.study_items
+  drop constraint study_items_authored_by_check,
+  add constraint study_items_authored_by_check
+    check (authored_by in ('model', 'reader', 'project'));
+
+/*
+ * Where a reader's copy came from -- the work, and its rights in words -- for the reader who
+ * owns a copy of that course, and nobody else: the catalogue is how anyone else learns of a
+ * public course. The rights are said only while they hold: `public domain` or `licensed`,
+ * and null for anything else, so a work whose rights came into question claims none.
+ */
+create function public.public_study_course_origin(p_id uuid)
+returns table (work_id uuid, work_title text, rights_label text)
 language sql
 stable
 security definer
 set search_path = ''
 as $fn$
-  select 'From ' || w.title || ' (' ||
-         case w.rights_status when 'public_domain' then 'public domain' else 'licensed' end || ')'
+  select w.id, w.title,
+         case w.rights_status when 'public_domain' then 'public domain'
+                              when 'licensed' then 'licensed' end
   from public.public_study_courses p
   join public.works w on w.id = p.work_id
   where p.id = p_id
+    and exists (select 1 from public.study_courses c
+                where c.public_course_id = p.id and c.owner_id = (select auth.uid()))
 $fn$;
 
-revoke all on function public.public_study_course_label(uuid) from public, anon;
-grant execute on function public.public_study_course_label(uuid) to authenticated, service_role;
+revoke all on function public.public_study_course_origin(uuid) from public, anon;
+grant execute on function public.public_study_course_origin(uuid) to authenticated, service_role;
 
--- ------------------------------------------------------------------ 3. publishing
+/*
+ * Every public course a reader added, when: what the daily limit on enrolling counts. Kept
+ * whether or not the copy is -- deleting a copy and adding it again is another enrolment --
+ * and never written through the API. Deleted with the account.
+ */
+create table public.study_public_enrolments (
+  id               uuid primary key default extensions.gen_random_uuid(),
+  owner_id         uuid not null references auth.users (id) on delete cascade,
+  public_course_id uuid not null references public.public_study_courses (id) on delete cascade,
+  enrolled_at      timestamptz not null default now()
+);
+
+create index study_public_enrolments_owner_idx
+  on public.study_public_enrolments (owner_id, enrolled_at desc);
+create index study_public_enrolments_course_idx
+  on public.study_public_enrolments (public_course_id);
+
+comment on table public.study_public_enrolments is
+  'Each time a reader added a public course (enrol_public_course): the daily limit counts '
+  'these, not the copies they still have. Readable by its reader; written by definer '
+  'functions only. See 20260925230000.';
+
+alter table public.study_public_enrolments enable row level security;
+create policy study_public_enrolments_read_own on public.study_public_enrolments
+  for select to authenticated using (owner_id = (select auth.uid()));
+revoke all on public.study_public_enrolments from public, anon, authenticated, service_role;
+grant select on public.study_public_enrolments to authenticated, service_role;
+
+-- ------------------------------------------------------------------ 4. publishing
+
+/*
+ * The runs of `p_words` words in a text, lower-cased with everything but letters and digits
+ * read as a space: what "repeats the source" compares. Used when publishing, never on a read.
+ * A window over the words, so linear in the text: slicing one array of a 200,000-character
+ * source's words at every word took minutes.
+ */
+create function public.study_word_runs(p_text text, p_words int)
+returns table (run text)
+language sql
+immutable
+parallel safe
+set search_path = ''
+as $fn$
+  select x.run
+  from (
+    select string_agg(w.word, ' ') over win as run, count(*) over win as k
+    from regexp_split_to_table(
+           btrim(regexp_replace(lower(coalesce(p_text, '')), '[^[:alnum:]]+', ' ', 'g')), ' ')
+         with ordinality as w(word, n)
+    window win as (order by w.n rows between current row and p_words - 1 following)
+  ) as x
+  where x.k = p_words
+$fn$;
+
+revoke all on function public.study_word_runs(text, int) from public, anon, authenticated;
 
 /*
  * Publish a course the project prepared, from a rights-cleared work. Service role only.
- * Refused with 42501 `rights` for a work not public domain or licensed, 55000 `unvalidated`
- * for a generation whose text and lessons did not pass validation, 22023 `quotes` when a
- * quotation passes 300 characters or they together pass a tenth of the source or 20,000
- * characters, 22023 for a bad slug or reviewer, and P0002 for no such generation or work.
+ * Refused, in this order, with:
+ *
+ *   22023               a bad slug, or no reviewer named
+ *   P0002               no such generation
+ *   55000 `public`      the generation is a reader's copy of a public course
+ *   42501 `curator`     the generation's owner is not a curator
+ *   55000 `unvalidated` its text did not pass validation, validation passed no lesson in it,
+ *                       or no validated lesson would be published
+ *   55000 `superseded`  it is not its course's current generation
+ *   55000 `published`   it was published already
+ *   P0002               no such work
+ *   42501 `rights`      the work is not public domain or licensed
+ *   42501 `unregistered` a source of the generation is not registered to that work
+ *   22023 `too_large`   more than 400 validated claims or 300 questions
+ *   22023 `quotes`      a quotation over 300 characters -- spans that overlap or lie within 200
+ *                       characters of each other are one quotation, gap and all -- or together
+ *                       over a tenth of the source, or the work's courses on offer over 20,000
+ *                       characters of excerpts between them
+ *   22023 `copied`      the course's own text repeats twelve words in a row of the source from
+ *                       outside its quotations
+ *
+ * The work's row is locked, FOR NO KEY UPDATE, before its rights are read and its quotations
+ * counted: two publications of one work queue there, so neither counts without the other,
+ * and an enrolment -- which share-locks it -- waits for a publication rather than reading
+ * rights a publication is about to rely on. Not FOR UPDATE: a save or a summary of the work
+ * key-shares it, and has no reason to wait for a publication.
  */
 create function public.publish_study_course(
   p_generation_id uuid,
@@ -156,19 +343,30 @@ security definer
 set search_path = ''
 as $fn$
 declare
+  max_quotation constant int := 300;
+  quotation_gap constant int := 200;
+  max_work      constant int := 20000;
+  max_claims    constant int := 400;
+  max_items     constant int := 300;
+  copied_words  constant int := 12;
+
   gen          public.study_generations%rowtype;
   rights       public.rights_status;
   work_title   text;
   source_chars bigint;
-  seg          record;
+  run_         record;
+  src          record;
+  runs         jsonb := '[]'::jsonb;
   excerpts     text := '';
-  at_          int := 0;
   quoted       int := 0;
-  offsets      jsonb := '{}'::jsonb;
+  offered      bigint;
+  unquoted     text[] := '{}';
+  last_end     int;
   claims       jsonb;
   lessons      jsonb;
   items        jsonb;
   outline      jsonb;
+  copied       text;
   new_id       uuid;
 begin
   if p_reviewed_by is null or char_length(btrim(p_reviewed_by)) not between 1 and 200 then
@@ -186,16 +384,29 @@ begin
   end if;
   if gen.public_course_id is not null then
     raise exception 'a copy of a public course is not published again'
-      using errcode = '55000', detail = 'unvalidated';
+      using errcode = '55000', detail = 'public';
+  end if;
+  if not exists (select 1 from public.study_curators k where k.user_id = gen.owner_id) then
+    raise exception 'only a curator''s course is published, never a reader''s'
+      using errcode = '42501', detail = 'curator';
   end if;
   if gen.assembled_at is null or gen.text_status <> 'validated'
      or public.study_generation_rank(gen.id) < 2 then
     raise exception 'only a course whose text and lessons passed validation is published'
       using errcode = '55000', detail = 'unvalidated';
   end if;
+  if public.study_course_generation(gen.course_id) is distinct from gen.id then
+    raise exception 'only a course''s current version is published'
+      using errcode = '55000', detail = 'superseded';
+  end if;
+  if exists (select 1 from public.public_study_courses p where p.from_generation = gen.id) then
+    raise exception 'this version of the course is published already'
+      using errcode = '55000', detail = 'published';
+  end if;
 
   select w.rights_status, w.title into rights, work_title
-  from public.works w where w.id = p_work_id;
+  from public.works w where w.id = p_work_id
+  for no key update;
   if not found then
     raise exception 'no such work' using errcode = 'P0002';
   end if;
@@ -203,41 +414,108 @@ begin
     raise exception 'only a public-domain or licensed work''s course is published, not %', rights
       using errcode = '42501', detail = 'rights';
   end if;
+  if exists (select 1 from public.study_generation_sources gs
+             where gs.generation_id = gen.id
+               and not exists (select 1 from public.study_curated_sources r
+                               where r.source_version_id = gs.source_version_id
+                                 and r.work_id = p_work_id)) then
+    raise exception 'every source of the course must be registered as this work''s text'
+      using errcode = '42501', detail = 'unregistered';
+  end if;
 
-  -- The excerpts: each quoted span of a validated claim, once, in the source's order.
+  if (select count(*) from public.study_claims c
+      where c.generation_id = gen.id and c.status = 'validated') > max_claims
+     or (select count(*) from public.study_items i
+         where i.generation_id = gen.id and i.status = 'validated') > max_items then
+    raise exception 'a public course has at most % claims and % questions', max_claims, max_items
+      using errcode = '22023', detail = 'too_large';
+  end if;
+
+  -- The quotations: the validated claims' evidence spans, merged where they overlap or lie
+  -- closer than `quotation_gap` -- a gap that short is published with them, and a reader would
+  -- have the passage either way -- in the source's order. Each is the source's own text.
   select coalesce(sum(char_length(v.extracted_text)), 0) into source_chars
   from public.study_generation_sources gs
   join public.study_source_versions v on v.id = gs.source_version_id
   where gs.generation_id = gen.id;
-  for seg in
-    select distinct gs.position, e.start_offset, e.end_offset, e.span_text, c.source_version_id
-    from public.study_claims c
-    join public.study_claim_evidence e on e.claim_id = c.id
-    join public.study_generation_sources gs
-      on gs.generation_id = c.generation_id and gs.source_version_id = c.source_version_id
-    where c.generation_id = gen.id and c.status = 'validated' and e.span_text is not null
-    order by gs.position, e.start_offset, e.end_offset
+  for run_ in
+    with spans as (
+      select distinct gs.position, c.source_version_id as version_id,
+             e.start_offset as s, e.end_offset as t
+      from public.study_claims c
+      join public.study_claim_evidence e on e.claim_id = c.id
+      join public.study_generation_sources gs
+        on gs.generation_id = c.generation_id and gs.source_version_id = c.source_version_id
+      where c.generation_id = gen.id and c.status = 'validated' and e.start_offset is not null
+    ),
+    opened as (
+      select sp.*,
+             case when sp.s - max(sp.t) over (partition by sp.version_id order by sp.s, sp.t
+                                              rows between unbounded preceding and 1 preceding)
+                       < quotation_gap
+                  then 0 else 1 end as opens
+      from spans sp
+    ),
+    numbered as (
+      select o.*, sum(o.opens) over (partition by o.version_id order by o.s, o.t) as run_no
+      from opened o
+    )
+    select n.position, n.version_id, min(n.s) as s, max(n.t) as t
+    from numbered n
+    group by n.position, n.version_id, n.run_no
+    order by n.position, min(n.s)
   loop
-    if char_length(seg.span_text) > 300 then
-      raise exception 'a quotation is % characters; the limit is 300', char_length(seg.span_text)
+    if run_.t - run_.s > max_quotation then
+      raise exception 'a quotation is % characters, counting what lies between spans closer than '
+                      '% characters; the limit is %', run_.t - run_.s, quotation_gap, max_quotation
         using errcode = '22023', detail = 'quotes';
     end if;
     if excerpts <> '' then
       excerpts := excerpts || E'\n\n';
-      at_ := at_ + 2;
     end if;
-    offsets := offsets || jsonb_build_object(
-      seg.source_version_id::text || ':' || seg.start_offset || ':' || seg.end_offset, at_);
-    excerpts := excerpts || seg.span_text;
-    at_ := at_ + char_length(seg.span_text);
-    quoted := quoted + char_length(seg.span_text);
+    runs := runs || jsonb_build_object('v', run_.version_id, 's', run_.s, 't', run_.t,
+                                       'at', char_length(excerpts));
+    excerpts := excerpts || (select substr(v.extracted_text, run_.s + 1, run_.t - run_.s)
+                             from public.study_source_versions v where v.id = run_.version_id);
+    quoted := quoted + (run_.t - run_.s);
   end loop;
-  if quoted = 0 or quoted > 20000 or quoted * 10 > source_chars then
+  if quoted = 0 or quoted * 10 > source_chars then
     raise exception 'the quotations total % characters of a % character source; the limit is a '
-                    'tenth, and 20,000', quoted, source_chars
+                    'tenth', quoted, source_chars
+      using errcode = '22023', detail = 'quotes';
+  end if;
+  select coalesce(sum(char_length(p.excerpts)), 0) into offered
+  from public.public_study_courses p
+  where p.work_id = p_work_id and p.withdrawn_at is null;
+  if offered + char_length(excerpts) > max_work then
+    raise exception 'this work''s courses on offer would quote % characters of it; the limit is %',
+      offered + char_length(excerpts), max_work
       using errcode = '22023', detail = 'quotes';
   end if;
 
+  -- What of the source is not quoted: each version's text around its quotations, in pieces, so
+  -- no run of words is read across a quotation.
+  for src in
+    select gs.source_version_id as version_id, v.extracted_text as body
+    from public.study_generation_sources gs
+    join public.study_source_versions v on v.id = gs.source_version_id
+    where gs.generation_id = gen.id
+  loop
+    last_end := 0;
+    for run_ in
+      select (r ->> 's')::int as s, (r ->> 't')::int as t
+      from jsonb_array_elements(runs) as r
+      where (r ->> 'v')::uuid = src.version_id
+      order by 1
+    loop
+      unquoted := unquoted || substr(src.body, last_end + 1, run_.s - last_end);
+      last_end := run_.t;
+    end loop;
+    unquoted := unquoted || substr(src.body, last_end + 1);
+  end loop;
+
+  -- The snapshot. Each evidence span is re-pointed into the excerpts: its quotation's place
+  -- there, plus how far into the quotation it starts.
   select coalesce(jsonb_agg(jsonb_build_object(
            'key', c.claim_key, 'kind', c.kind, 'statement', c.statement,
            'qualifications', to_jsonb(c.qualifications), 'attribution', c.attribution,
@@ -245,11 +523,14 @@ begin
            'evidence', (
              select coalesce(jsonb_agg(jsonb_build_object(
                       'ordinal', e.ordinal, 'spanText', e.span_text, 'page', e.page,
-                      'start', (offsets ->> (c.source_version_id::text || ':' || e.start_offset
-                                             || ':' || e.end_offset))::int)
+                      'start', (select (r ->> 'at')::int + e.start_offset - (r ->> 's')::int
+                                from jsonb_array_elements(runs) as r
+                                where (r ->> 'v')::uuid = c.source_version_id
+                                  and e.start_offset >= (r ->> 's')::int
+                                  and e.end_offset <= (r ->> 't')::int))
                       order by e.ordinal), '[]'::jsonb)
              from public.study_claim_evidence e
-             where e.claim_id = c.id and e.span_text is not null))
+             where e.claim_id = c.id and e.start_offset is not null))
            order by c.claim_key), '[]'::jsonb)
     into claims
   from public.study_claims c
@@ -259,8 +540,8 @@ begin
            'key', l.lesson_key, 'position', l.position, 'unitNo', l.unit_no,
            'unitTitle', l.unit_title, 'title', l.title, 'objective', l.objective,
            'explanation', l.explanation, 'example', l.example, 'recap', l.recap,
-           'minutes', l.minutes, 'promptHash', l.prompt_hash, 'schemaHash', l.schema_hash,
-           'model', l.model,
+           'minutes', l.minutes, 'authoredBy', l.authored_by, 'promptHash', l.prompt_hash,
+           'schemaHash', l.schema_hash, 'model', l.model,
            'claimKeys', (select coalesce(jsonb_agg(c.claim_key order by c.claim_key), '[]'::jsonb)
                          from public.study_lesson_claims lc
                          join public.study_claims c on c.id = lc.claim_id
@@ -273,16 +554,24 @@ begin
     into lessons, outline
   from public.study_lessons l
   where l.generation_id = gen.id and l.status = 'validated';
+  if jsonb_array_length(lessons) = 0 then
+    raise exception 'no lesson of this course is validated now' using errcode = '55000',
+      detail = 'unvalidated';
+  end if;
 
+  -- A question whose lesson is held back is not published: it belongs to a lesson the copy
+  -- would not have, and would read there as the course's own, which it was not written as.
+  -- Nor is one resting on a claim that is not published: here it proves nothing of that claim
+  -- (study_answer_proves_recall), and in a copy without the claim it would prove the rest.
   select coalesce(jsonb_agg(jsonb_build_object(
            'key', i.item_key,
-           'lessonKey', (select l.lesson_key from public.study_lessons l
-                         where l.id = i.lesson_id and l.status = 'validated'),
+           'lessonKey', (select l.lesson_key from public.study_lessons l where l.id = i.lesson_id),
            'purpose', i.purpose, 'kind', i.kind, 'prompt', i.prompt, 'answer', i.answer,
            'acceptedAnswers', to_jsonb(i.accepted_answers), 'distractors', i.distractors,
            'cloze', i.cloze, 'sequence', to_jsonb(i.sequence), 'pairs', i.pairs,
            'explanation', i.explanation, 'difficulty', i.difficulty,
-           'promptHash', i.prompt_hash, 'schemaHash', i.schema_hash, 'model', i.model,
+           'authoredBy', i.authored_by, 'promptHash', i.prompt_hash,
+           'schemaHash', i.schema_hash, 'model', i.model,
            'claimKeys', (select coalesce(jsonb_agg(c.claim_key order by c.claim_key), '[]'::jsonb)
                          from public.study_item_claims ic
                          join public.study_claims c on c.id = ic.claim_id
@@ -290,7 +579,36 @@ begin
            order by i.item_key), '[]'::jsonb)
     into items
   from public.study_items i
-  where i.generation_id = gen.id and i.status = 'validated';
+  where i.generation_id = gen.id and i.status = 'validated'
+    and (i.lesson_id is null
+         or exists (select 1 from public.study_lessons l
+                    where l.id = i.lesson_id and l.status = 'validated'))
+    and not exists (select 1 from public.study_item_claims ic
+                    join public.study_claims c on c.id = ic.claim_id
+                    where ic.item_id = i.id and c.status <> 'validated');
+
+  -- Analysis, not reproduction: every word the course says of its own -- all the snapshot's
+  -- text but the evidence, which is quotation -- against the source outside its quotations.
+  select f.run into copied
+  from (
+    select distinct r.run
+    from jsonb_path_query(
+           jsonb_build_array(gen.title, gen.goal, gen.overview, to_jsonb(gen.objectives),
+                             gen.recap, gen.disagreements, gen.withheld, lessons, items,
+                             (select coalesce(jsonb_agg(c - 'evidence'), '[]'::jsonb)
+                              from jsonb_array_elements(claims) as c)),
+           'strict $.**') as j
+    cross join lateral public.study_word_runs(j #>> '{}', copied_words) as r
+    where jsonb_typeof(j) = 'string'
+  ) as f
+  where f.run in (select r.run
+                  from unnest(unquoted) as u(piece)
+                  cross join lateral public.study_word_runs(u.piece, copied_words) as r)
+  limit 1;
+  if copied is not null then
+    raise exception 'the course''s own text repeats the work outside its quotations: "%"', copied
+      using errcode = '22023', detail = 'copied';
+  end if;
 
   insert into public.public_study_courses
     (slug, work_id, title, goal, overview, objectives, recap, excerpt_title, excerpts,
@@ -315,15 +633,16 @@ end
 $fn$;
 
 /*
- * Withdraw a public course: no new enrolments. `p_remove_copies` also deletes every reader's
- * copy and its excerpts -- for a rights complaint, where the copies are the thing complained
- * of. Service role only.
+ * Withdraw a public course: no new enrolments, and out of the catalogue. Service role only.
+ * It locks the course row first, FOR UPDATE -- an enrolment share-locks it, so one in flight
+ * finishes first and the next sees the course withdrawn -- and touches nobody's copy: for a
+ * rights complaint, `remove_public_course_copies` does that afterwards. Withdrawing again
+ * keeps the first withdrawal and records the decision again.
  */
 create function public.withdraw_public_study_course(
   p_id uuid,
   p_by text,
-  p_reason text,
-  p_remove_copies boolean default false
+  p_reason text
 )
 returns jsonb
 language plpgsql
@@ -331,54 +650,107 @@ security definer
 set search_path = ''
 as $fn$
 declare
-  courses int := 0;
-  sources int := 0;
+  pc public.public_study_courses%rowtype;
 begin
   if p_by is null or char_length(btrim(p_by)) not between 1 and 200
      or p_reason is null or char_length(btrim(p_reason)) not between 1 and 1000 then
     raise exception 'say who is withdrawing the course, and why' using errcode = '22023';
   end if;
-  update public.public_study_courses
-     set withdrawn_at = coalesce(withdrawn_at, now()),
-         withdrawn_reason = coalesce(withdrawn_reason, btrim(p_reason))
-   where id = p_id;
+  select * into pc from public.public_study_courses where id = p_id for update;
   if not found then
     raise exception 'no such public course' using errcode = 'P0002';
   end if;
-  if p_remove_copies then
-    with gone as (
-      delete from public.study_courses c where c.public_course_id = p_id returning 1
-    ) select count(*) into courses from gone;
-    with gone as (
-      delete from public.study_sources s
-      where exists (select 1 from public.study_source_versions v
-                    where v.source_id = s.id and v.format = 'public_course'
-                      and v.origin_label = 'public_course:' || p_id::text)
-      returning 1
-    ) select count(*) into sources from gone;
+  if pc.withdrawn_at is null then
+    update public.public_study_courses
+       set withdrawn_at = now(), withdrawn_reason = btrim(p_reason)
+     where id = p_id;
   end if;
   insert into public.moderation_decisions (action, rationale)
   values ('withdraw_public_study_course',
-          left(format('%s withdrew %s%s. %s', btrim(p_by), p_id,
-                      case when p_remove_copies then ', with readers'' copies' else '' end,
-                      btrim(p_reason)), 2000));
-  return jsonb_build_object('withdrawn', true, 'coursesRemoved', courses,
-                            'sourcesRemoved', sources);
+          left(format('%s withdrew %s. %s', btrim(p_by), p_id, btrim(p_reason)), 2000));
+  return jsonb_build_object(
+    'withdrawn', true,
+    'copies', (select count(*) from public.study_courses c where c.public_course_id = p_id));
+end
+$fn$;
+
+/*
+ * Delete readers' copies of a withdrawn public course, and their copies of its excerpts: at
+ * most `p_limit` readers' at a time, in owner-id order, each reader's study lock taken before
+ * any row of theirs is touched, and then their sources before their courses -- the order every
+ * study write keeps (docs/study-courses.md, "Lock order"). The excerpts are the copy's only
+ * source, so deleting them takes the copy with them (the last-source trigger); a copy whose
+ * excerpts the reader deleted went with them already. Returns how many readers it went
+ * through -- one who deleted their copy while it waited for their lock is counted, and has
+ * nothing left to remove -- so call it until it returns 0. Service role only; refused (55000)
+ * while the course is still offered.
+ */
+create function public.remove_public_course_copies(p_id uuid, p_limit int default 100)
+returns int
+language plpgsql
+security definer
+set search_path = ''
+as $fn$
+declare
+  marker  text := 'public_course:' || p_id::text;
+  gone    timestamptz;
+  owners  uuid[];
+  o       uuid;
+begin
+  if p_limit is null or p_limit not between 1 and 1000 then
+    raise exception 'remove 1 to 1000 readers'' copies at a time' using errcode = '22023';
+  end if;
+  select p.withdrawn_at into gone from public.public_study_courses p where p.id = p_id;
+  if not found then
+    raise exception 'no such public course' using errcode = 'P0002';
+  end if;
+  if gone is null then
+    raise exception 'withdraw the course before removing readers'' copies of it'
+      using errcode = '55000';
+  end if;
+
+  owners := array(
+    select x.owner_id from (
+      select c.owner_id from public.study_courses c where c.public_course_id = p_id
+      union
+      select v.owner_id from public.study_source_versions v
+      where v.format = 'public_course' and v.origin_label = marker
+    ) as x
+    order by x.owner_id
+    limit p_limit);
+  foreach o in array owners loop
+    perform pg_advisory_xact_lock(pg_catalog.hashtextextended('study_progress:' || o::text, 0));
+  end loop;
+
+  delete from public.study_sources s
+  where s.owner_id = any (owners)
+    and exists (select 1 from public.study_source_versions v
+                where v.source_id = s.id and v.format = 'public_course'
+                  and v.origin_label = marker);
+  delete from public.study_courses c
+  where c.public_course_id = p_id and c.owner_id = any (owners);
+  return cardinality(owners);
 end
 $fn$;
 
 revoke all on function public.publish_study_course(uuid, uuid, text, text, text)
   from public, anon, authenticated;
-revoke all on function public.withdraw_public_study_course(uuid, text, text, boolean)
+revoke all on function public.withdraw_public_study_course(uuid, text, text)
+  from public, anon, authenticated;
+revoke all on function public.remove_public_course_copies(uuid, int)
   from public, anon, authenticated;
 grant execute on function public.publish_study_course(uuid, uuid, text, text, text)
   to service_role;
-grant execute on function public.withdraw_public_study_course(uuid, text, text, boolean)
+grant execute on function public.withdraw_public_study_course(uuid, text, text)
   to service_role;
+grant execute on function public.remove_public_course_copies(uuid, int) to service_role;
 
--- ------------------------------------------------------------------ 4. the catalogue
+-- ------------------------------------------------------------------ 5. the catalogue
 
-/* The published courses of cleared works, newest first, for anyone. */
+/*
+ * The published courses of cleared works, newest first, for a signed-in reader: the app
+ * offers them on /courses, which a visitor is not shown.
+ */
 create function public.list_public_study_courses()
 returns table (
   id             uuid,
@@ -389,6 +761,7 @@ returns table (
   objectives     text[],
   lesson_count   int,
   question_count int,
+  work_id        uuid,
   work_title     text,
   work_kind      public.work_kind,
   rights_status  public.rights_status,
@@ -400,7 +773,7 @@ security definer
 set search_path = ''
 as $fn$
   select p.id, p.slug, p.title, p.goal, p.overview, p.objectives, p.lesson_count,
-         p.question_count, w.title, w.kind, w.rights_status, p.published_at
+         p.question_count, w.id, w.title, w.kind, w.rights_status, p.published_at
   from public.public_study_courses p
   join public.works w on w.id = p.work_id
   where p.withdrawn_at is null and w.rights_status in ('public_domain', 'licensed')
@@ -408,7 +781,7 @@ as $fn$
   limit 200
 $fn$;
 
-/* One published course by its slug, with its outline, for anyone. */
+/* One published course by its slug, with its outline, for a signed-in reader. */
 create function public.get_public_study_course(p_slug text)
 returns table (
   id             uuid,
@@ -421,6 +794,7 @@ returns table (
   outline        jsonb,
   lesson_count   int,
   question_count int,
+  work_id        uuid,
   work_title     text,
   work_kind      public.work_kind,
   rights_status  public.rights_status,
@@ -432,29 +806,35 @@ security definer
 set search_path = ''
 as $fn$
   select p.id, p.slug, p.title, p.goal, p.overview, p.objectives, p.recap, p.outline,
-         p.lesson_count, p.question_count, w.title, w.kind, w.rights_status, p.published_at
+         p.lesson_count, p.question_count, w.id, w.title, w.kind, w.rights_status,
+         p.published_at
   from public.public_study_courses p
   join public.works w on w.id = p.work_id
   where p.slug = p_slug and p.withdrawn_at is null
     and w.rights_status in ('public_domain', 'licensed')
 $fn$;
 
-revoke all on function public.list_public_study_courses() from public;
-revoke all on function public.get_public_study_course(text) from public;
-grant execute on function public.list_public_study_courses() to anon, authenticated, service_role;
-grant execute on function public.get_public_study_course(text)
-  to anon, authenticated, service_role;
+revoke all on function public.list_public_study_courses() from public, anon;
+revoke all on function public.get_public_study_course(text) from public, anon;
+grant execute on function public.list_public_study_courses() to authenticated, service_role;
+grant execute on function public.get_public_study_course(text) to authenticated, service_role;
 
--- ------------------------------------------------------------------ 5. enrolling
+-- ------------------------------------------------------------------ 6. enrolling
 
 /*
  * Copy a public course into the reader's own study tables, as a private course of theirs.
  * No model call, no job, nothing against the reader's allowance: the course was prepared
- * once. One copy per reader -- enrolling again answers with the copy they have -- and twenty
- * new copies a day (54000). Refused with 28000 for a guest and P0002 for a course withdrawn
- * or not published.
+ * once. One copy per reader -- enrolling again answers with the copy they have, and is not
+ * counted -- and twenty enrolments a day (54000), counted from `study_public_enrolments`, so
+ * deleting a copy and adding it again counts twice. Refused with 28000 for a guest and P0002
+ * for a course withdrawn, not published, or whose work's rights came into question.
  *
- * Lock order as every study write: the account row, the reader's study lock, then the rows.
+ * Lock order, as every study write and before any row of the reader's (docs/study-courses.md,
+ * "Lock order"): the account row, FOR NO KEY UPDATE -- as `delete_my_account` takes it, so an
+ * enrolment waits for a deletion in flight here rather than key-sharing past it and meeting it
+ * at the reader's study lock; then the course and its work, FOR SHARE, read open under that
+ * lock -- a withdrawal locks the course FOR UPDATE, so it waits for this enrolment, and one
+ * that follows sees it; then the reader's study lock.
  */
 create function public.enrol_public_course(p_public_course_id uuid)
 returns jsonb
@@ -471,30 +851,27 @@ declare
   v_version uuid;
   v_gen     uuid;
   today     int;
-  claim     jsonb;
-  ev        jsonb;
-  lesson    jsonb;
-  item      jsonb;
-  key_      text;
-  claim_ids jsonb := '{}'::jsonb;
-  lesson_ids jsonb := '{}'::jsonb;
-  new_id    uuid;
 begin
   if uid is null then
     raise exception 'enrolling needs a signed-in reader' using errcode = '28000';
   end if;
-  perform 1 from auth.users u where u.id = uid and u.is_anonymous is not true for key share;
+  perform 1 from auth.users u where u.id = uid and u.is_anonymous is not true
+  for no key update;
   if not found then
     raise exception 'a public course is copied into an account, not a guest session'
       using errcode = '28000';
   end if;
-  perform pg_advisory_xact_lock(
-    pg_catalog.hashtextextended('study_progress:' || uid::text, 0));
-
-  if not public.public_study_course_open(p_public_course_id) then
+  select p.* into pc
+  from public.public_study_courses p
+  join public.works w on w.id = p.work_id
+  where p.id = p_public_course_id and p.withdrawn_at is null
+    and w.rights_status in ('public_domain', 'licensed')
+  for share of p, w;
+  if not found then
     raise exception 'no such public course' using errcode = 'P0002';
   end if;
-  select * into pc from public.public_study_courses where id = p_public_course_id;
+  perform pg_advisory_xact_lock(
+    pg_catalog.hashtextextended('study_progress:' || uid::text, 0));
 
   select c.id into v_course
   from public.study_courses c
@@ -504,9 +881,8 @@ begin
   end if;
 
   select count(*) into today
-  from public.study_courses c
-  where c.owner_id = uid and c.public_course_id is not null
-    and c.created_at >= date_trunc('day', now(), 'UTC');
+  from public.study_public_enrolments e
+  where e.owner_id = uid and e.enrolled_at >= date_trunc('day', now(), 'UTC');
   if today >= 20 then
     raise exception 'that is as many public courses as can be added today; more at 00:00 UTC'
       using errcode = '54000';
@@ -515,7 +891,7 @@ begin
   -- The reader's copy of the excerpts: kept after its course is deleted, and used again.
   select v.source_id, v.id into v_source, v_version
   from public.study_source_versions v
-  where v.owner_id = uid and v.format = 'public_course' and v.origin_label = marker
+  where v.origin_label = marker and v.owner_id = uid and v.format = 'public_course'
   order by v.version_no desc
   limit 1;
   if not found then
@@ -547,66 +923,83 @@ begin
 
   perform set_config('study.status_reason', 'enrolled', true);
 
-  for claim in select * from jsonb_array_elements(pc.snapshot -> 'claims') loop
-    insert into public.study_claims
-      (owner_id, generation_id, source_version_id, claim_key, kind, statement, qualifications,
-       attribution, status, prompt_hash, schema_hash, model)
-    values
-      (uid, v_gen, v_version, claim ->> 'key', claim ->> 'kind', claim ->> 'statement',
-       array(select jsonb_array_elements_text(claim -> 'qualifications')),
-       claim ->> 'attribution', 'draft', claim ->> 'promptHash', claim ->> 'schemaHash',
-       claim ->> 'model')
-    returning id into new_id;
-    claim_ids := claim_ids || jsonb_build_object(claim ->> 'key', new_id);
-    for ev in select * from jsonb_array_elements(claim -> 'evidence') loop
-      insert into public.study_claim_evidence
-        (claim_id, owner_id, ordinal, model_quote, span_text, start_offset, end_offset, page,
-         match)
-      values
-        (new_id, uid, (ev ->> 'ordinal')::smallint, ev ->> 'spanText', ev ->> 'spanText',
+  -- The snapshot, a set at a time. Each link is made by key within the new generation, and a
+  -- key that finds nothing leaves a null a NOT NULL column refuses, rather than a link lost.
+  insert into public.study_claims
+    (owner_id, generation_id, source_version_id, claim_key, kind, statement, qualifications,
+     attribution, status, prompt_hash, schema_hash, model)
+  select uid, v_gen, v_version, c ->> 'key', c ->> 'kind', c ->> 'statement',
+         array(select jsonb_array_elements_text(c -> 'qualifications')),
+         c ->> 'attribution', 'draft', c ->> 'promptHash', c ->> 'schemaHash', c ->> 'model'
+  from jsonb_array_elements(pc.snapshot -> 'claims') as c;
+
+  insert into public.study_claim_evidence
+    (claim_id, owner_id, ordinal, model_quote, span_text, start_offset, end_offset, page, match)
+  select sc.id, uid, (ev ->> 'ordinal')::smallint, ev ->> 'spanText', ev ->> 'spanText',
          (ev ->> 'start')::int, (ev ->> 'start')::int + char_length(ev ->> 'spanText'),
-         (ev ->> 'page')::int, 'exact');
-    end loop;
-  end loop;
+         (ev ->> 'page')::int, 'exact'
+  from jsonb_array_elements(pc.snapshot -> 'claims') as c
+  cross join jsonb_array_elements(c -> 'evidence') as ev
+  left join public.study_claims sc on sc.generation_id = v_gen and sc.claim_key = c ->> 'key';
 
-  for lesson in select * from jsonb_array_elements(pc.snapshot -> 'lessons') loop
-    insert into public.study_lessons
-      (owner_id, generation_id, lesson_key, position, unit_no, unit_title, title, objective,
-       explanation, example, recap, minutes, status, prompt_hash, schema_hash, model)
-    values
-      (uid, v_gen, lesson ->> 'key', (lesson ->> 'position')::smallint,
-       (lesson ->> 'unitNo')::smallint, lesson ->> 'unitTitle', lesson ->> 'title',
-       lesson ->> 'objective', lesson ->> 'explanation', lesson ->> 'example',
-       lesson ->> 'recap', (lesson ->> 'minutes')::smallint, 'draft',
-       lesson ->> 'promptHash', lesson ->> 'schemaHash', lesson ->> 'model')
-    returning id into new_id;
-    lesson_ids := lesson_ids || jsonb_build_object(lesson ->> 'key', new_id);
-    for key_ in select * from jsonb_array_elements_text(lesson -> 'claimKeys') loop
-      insert into public.study_lesson_claims (lesson_id, claim_id, owner_id)
-      values (new_id, (claim_ids ->> key_)::uuid, uid);
-    end loop;
-  end loop;
+  -- A lesson or question a curator corrected is the project's in the reader's copy, not the
+  -- reader's own: see the authored_by constraints above.
+  insert into public.study_lessons
+    (owner_id, generation_id, lesson_key, position, unit_no, unit_title, title, objective,
+     explanation, example, recap, minutes, status, authored_by, prompt_hash, schema_hash, model)
+  select uid, v_gen, l ->> 'key', (l ->> 'position')::smallint, (l ->> 'unitNo')::smallint,
+         l ->> 'unitTitle', l ->> 'title', l ->> 'objective', l ->> 'explanation',
+         l ->> 'example', l ->> 'recap', (l ->> 'minutes')::smallint, 'draft', a.by,
+         case when a.by = 'model' then l ->> 'promptHash' end,
+         case when a.by = 'model' then l ->> 'schemaHash' end,
+         case when a.by = 'model' then l ->> 'model' end
+  from jsonb_array_elements(pc.snapshot -> 'lessons') as l
+  cross join lateral (
+    select case l ->> 'authoredBy' when 'model' then 'model'
+                                   when 'reader' then 'project' end as by
+  ) as a;
 
-  for item in select * from jsonb_array_elements(pc.snapshot -> 'items') loop
-    insert into public.study_items
-      (owner_id, generation_id, lesson_id, item_key, purpose, kind, prompt, answer,
-       accepted_answers, distractors, cloze, sequence, pairs, explanation, difficulty, status,
-       prompt_hash, schema_hash, model)
-    values
-      (uid, v_gen, (lesson_ids ->> (item ->> 'lessonKey'))::uuid, item ->> 'key',
-       item ->> 'purpose', item ->> 'kind', item ->> 'prompt', item ->> 'answer',
-       array(select jsonb_array_elements_text(item -> 'acceptedAnswers')),
-       coalesce(item -> 'distractors', '[]'::jsonb), item ->> 'cloze',
-       array(select jsonb_array_elements_text(item -> 'sequence')),
-       coalesce(item -> 'pairs', '[]'::jsonb), item ->> 'explanation',
-       (item ->> 'difficulty')::smallint, 'draft', item ->> 'promptHash',
-       item ->> 'schemaHash', item ->> 'model')
-    returning id into new_id;
-    for key_ in select * from jsonb_array_elements_text(item -> 'claimKeys') loop
-      insert into public.study_item_claims (item_id, claim_id, owner_id)
-      values (new_id, (claim_ids ->> key_)::uuid, uid);
-    end loop;
-  end loop;
+  insert into public.study_lesson_claims (lesson_id, claim_id, owner_id)
+  select sl.id, sc.id, uid
+  from jsonb_array_elements(pc.snapshot -> 'lessons') as l
+  cross join jsonb_array_elements_text(l -> 'claimKeys') as k(claim_key)
+  left join public.study_lessons sl on sl.generation_id = v_gen and sl.lesson_key = l ->> 'key'
+  left join public.study_claims sc on sc.generation_id = v_gen and sc.claim_key = k.claim_key;
+
+  insert into public.study_items
+    (owner_id, generation_id, lesson_id, item_key, purpose, kind, prompt, answer,
+     accepted_answers, distractors, cloze, sequence, pairs, explanation, difficulty, status,
+     authored_by, prompt_hash, schema_hash, model)
+  select uid, v_gen, sl.id, i ->> 'key', i ->> 'purpose', i ->> 'kind', i ->> 'prompt',
+         i ->> 'answer', array(select jsonb_array_elements_text(i -> 'acceptedAnswers')),
+         coalesce(i -> 'distractors', '[]'::jsonb), i ->> 'cloze',
+         array(select jsonb_array_elements_text(i -> 'sequence')),
+         coalesce(i -> 'pairs', '[]'::jsonb), i ->> 'explanation',
+         (i ->> 'difficulty')::smallint, 'draft', a.by,
+         case when a.by = 'model' then i ->> 'promptHash' end,
+         case when a.by = 'model' then i ->> 'schemaHash' end,
+         case when a.by = 'model' then i ->> 'model' end
+  from jsonb_array_elements(pc.snapshot -> 'items') as i
+  cross join lateral (
+    select case i ->> 'authoredBy' when 'model' then 'model'
+                                   when 'reader' then 'project' end as by
+  ) as a
+  left join public.study_lessons sl on sl.generation_id = v_gen and sl.lesson_key = i ->> 'lessonKey';
+  if exists (select 1 from jsonb_array_elements(pc.snapshot -> 'items') as i
+             where i ->> 'lessonKey' is not null
+               and not exists (select 1 from public.study_lessons sl
+                               where sl.generation_id = v_gen
+                                 and sl.lesson_key = i ->> 'lessonKey')) then
+    raise exception 'a published question names a lesson the course does not have'
+      using errcode = '23503';
+  end if;
+
+  insert into public.study_item_claims (item_id, claim_id, owner_id)
+  select si.id, sc.id, uid
+  from jsonb_array_elements(pc.snapshot -> 'items') as i
+  cross join jsonb_array_elements_text(i -> 'claimKeys') as k(claim_key)
+  left join public.study_items si on si.generation_id = v_gen and si.item_key = i ->> 'key'
+  left join public.study_claims sc on sc.generation_id = v_gen and sc.claim_key = k.claim_key;
 
   -- Everything copied passed validation where it was published, and was reviewed by a
   -- person; so it stands here, logged as enrolled rather than validated.
@@ -615,6 +1008,10 @@ begin
   update public.study_items set status = 'validated' where generation_id = v_gen;
   update public.study_generations set text_status = 'validated' where id = v_gen;
 
+  insert into public.study_public_enrolments (owner_id, public_course_id) values (uid, pc.id);
+  -- Nothing later in the reader's transaction is logged as enrolled.
+  perform set_config('study.status_reason', '', true);
+
   return jsonb_build_object('courseId', v_course, 'generationId', v_gen, 'replayed', false);
 end
 $fn$;
@@ -622,9 +1019,12 @@ $fn$;
 revoke all on function public.enrol_public_course(uuid) from public, anon, authenticated;
 grant execute on function public.enrol_public_course(uuid) to authenticated;
 
--- ------------------------------------------------------------------ 6. the overview
+-- ------------------------------------------------------------------ 7. the overview
 
-/* As 20260925190000, with where a public course's copy came from. */
+/*
+ * As 20260925190000, with where a public course's copy came from: the public course, its
+ * work, and the work's rights in words while they hold (`public_study_course_origin`).
+ */
 create or replace view public.study_course_overview with (security_invoker = true) as
 -- Materialized: the proven set is computed once per query, not once per course.
 with proven as materialized (
@@ -687,7 +1087,9 @@ select
   coalesce(latest.assembled_at is not null and latest.text_status <> 'pending', false)
     as latest_settled,
   c.public_course_id,
-  public.public_study_course_label(c.public_course_id) as public_course_label
+  origin.rights_label as public_course_label,
+  origin.work_id as public_course_work_id,
+  origin.work_title as public_course_work_title
 from public.study_courses c
 left join lateral (
   select g.* from public.study_generations g
@@ -715,12 +1117,495 @@ left join lateral (
   where g.course_id = c.id
   order by g.created_at desc, g.id desc
   limit 1
-) as latest on true;
+) as latest on true
+left join lateral (
+  select o.work_id, o.work_title, o.rights_label
+  from public.public_study_course_origin(c.public_course_id) as o
+  where c.public_course_id is not null
+) as origin on true;
 
+-- ------------------------------------------------------------------ 8. the project's words prove
 
--- ------------------------------------------------------------------ 7. preparing again
+/* As 20260925080000, with a question the project corrected proving as the model's does. */
+create or replace function public.study_answer_proves_recall(p_event_id uuid)
+returns boolean
+language sql
+stable
+set search_path = ''
+as $fn$
+  select coalesce((
+    select e.correct
+       and not e.hinted
+       and e.grading = 'deterministic'
+       and public.study_item_status_at(e.item_id, e.answered_at) = 'validated'
+       and exists (select 1 from public.study_items i
+                   where i.id = e.item_id and i.status = 'validated'
+                     and i.authored_by in ('model', 'project'))
+       and not exists (select 1 from public.study_item_claims ic
+                       join public.study_claims c on c.id = ic.claim_id
+                       where ic.item_id = e.item_id and c.status <> 'validated')
+    from public.study_answer_events e
+    where e.id = p_event_id), false)
+$fn$;
 
-/* As 20260925220000, refusing to prepare a public course's copy again. */
+/* As 20260925090000, with a question the project corrected proving as the model's does. */
+create or replace function public.study_proven_claims()
+returns table (claim_id uuid, proven_at timestamptz)
+language sql
+stable
+security invoker
+set search_path = ''
+as $fn$
+  select ic.claim_id, max(e.answered_at)
+  from public.study_answer_events e
+  join public.study_items i
+    on i.id = e.item_id and i.status = 'validated' and i.authored_by in ('model', 'project')
+  join public.study_item_claims ic on ic.item_id = e.item_id
+  cross join lateral (
+    select l.to_status
+    from public.study_status_log l
+    where l.item_id = e.item_id and l.at <= e.answered_at
+    order by l.at desc, l.id desc
+    limit 1
+  ) as then_status
+  where e.correct
+    and not e.hinted
+    and e.grading = 'deterministic'
+    and then_status.to_status = 'validated'
+    and not exists (select 1 from public.study_item_claims ic2
+                    join public.study_claims c on c.id = ic2.claim_id
+                    where ic2.item_id = e.item_id and c.status <> 'validated')
+  group by ic.claim_id
+$fn$;
+
+/*
+ * As 20260925100000: a row written by the model or copied from a public course starts as a
+ * draft or rejected, and only a reader's own correction is written validated.
+ */
+create or replace function public.study_generated_rows_start_as_drafts()
+returns trigger
+language plpgsql
+set search_path = ''
+as $fn$
+begin
+  if new.status not in ('draft', 'rejected')
+     and coalesce(to_jsonb(new) ->> 'authored_by', 'model') in ('model', 'project') then
+    raise exception 'a generated % starts as a draft or rejected, not %',
+      tg_argv[0], new.status using errcode = '22023';
+  end if;
+  return new;
+end
+$fn$;
+
+/* As 20260925210000, with a question the project corrected scoring as the model's does. */
+create or replace function public.study_remember(p_event_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $fn$
+declare
+  e       public.study_answer_events%rowtype;
+  proves  boolean;
+  scores  boolean;
+  c       uuid;
+  m       public.study_claim_memory%rowtype;
+begin
+  select * into e from public.study_answer_events where id = p_event_id;
+  if not found then
+    return;
+  end if;
+  if e.correct then
+    -- A right answer moves the memory only as proof.
+    if not public.study_answer_proves_recall(e.id) then
+      return;
+    end if;
+    proves := true;
+    scores := true;
+  else
+    -- A wrong one scores where a right one would have proved, hint or none: the proof rule
+    -- without its first two clauses.
+    proves := false;
+    scores := e.grading = 'deterministic'
+      and public.study_item_status_at(e.item_id, e.answered_at) = 'validated'
+      and exists (select 1 from public.study_items i
+                  where i.id = e.item_id and i.status = 'validated'
+                    and i.authored_by in ('model', 'project'))
+      and not exists (select 1 from public.study_item_claims ic
+                      join public.study_claims cl on cl.id = ic.claim_id
+                      where ic.item_id = e.item_id and cl.status <> 'validated');
+  end if;
+
+  -- The reader's own judgement or version, or a key they have disputed: never evidence to
+  -- schedule by, but "not had" is still word that they do not remember it now. A claim
+  -- tested only by short answers -- which a wrong typed answer can only reach self-graded --
+  -- could otherwise never be un-known.
+  if not scores then
+    for c in select ic.claim_id from public.study_item_claims ic where ic.item_id = e.item_id loop
+      insert into public.study_claim_memory as t (owner_id, claim_id, last_outcome, last_answered_at)
+      values (e.owner_id, c, 'lapse', e.answered_at)
+      on conflict (owner_id, claim_id) do update
+        set last_outcome = 'lapse', last_answered_at = excluded.last_answered_at;
+    end loop;
+    return;
+  end if;
+
+  for c in select ic.claim_id from public.study_item_claims ic where ic.item_id = e.item_id loop
+    select * into m from public.study_claim_memory
+    where owner_id = e.owner_id and claim_id = c
+    for update;
+    if not found then
+      m.stability := 1.0;
+      m.difficulty := 0.3;
+      m.reps := 0;
+      m.lapses := 0;
+      m.last_outcome := null;
+      m.last_success_id := null;
+      m.last_success_at := null;
+    end if;
+
+    if proves then
+      if m.last_success_at is null
+         or e.answered_at >= m.last_success_at + make_interval(secs => m.stability * 86400) then
+        m.stability := least(730.0, m.stability * (2.0 + (1.0 - m.difficulty)));
+      end if;
+      m.last_outcome := 'success';
+      m.last_success_id := e.id;
+      m.last_success_at := e.answered_at;
+    else
+      m.stability := greatest(0.5, m.stability * 0.35);
+      m.difficulty := least(1.0, m.difficulty + 0.15);
+      m.lapses := m.lapses + 1;
+      m.last_outcome := 'lapse';
+    end if;
+    m.reps := m.reps + 1;
+
+    insert into public.study_claim_memory as t
+      (owner_id, claim_id, stability, difficulty, reps, lapses, last_outcome,
+       last_success_id, last_success_at, last_answered_at)
+    values
+      (e.owner_id, c, m.stability, m.difficulty, m.reps, m.lapses, m.last_outcome,
+       m.last_success_id, m.last_success_at, e.answered_at)
+    on conflict (owner_id, claim_id) do update
+      set stability = excluded.stability, difficulty = excluded.difficulty,
+          reps = excluded.reps, lapses = excluded.lapses,
+          last_outcome = excluded.last_outcome, last_success_id = excluded.last_success_id,
+          last_success_at = excluded.last_success_at, last_answered_at = excluded.last_answered_at;
+  end loop;
+end
+$fn$;
+
+/* As 20260925210000, with a lapse a question the project corrected can clear. */
+create or replace function public.study_claim_knowledge(p_course_id uuid, p_at timestamptz default null)
+returns table (
+  claim_id       uuid,
+  known          boolean,
+  retrievability double precision,
+  due_at         timestamptz,
+  lapsed         boolean,
+  lapsed_at      timestamptz
+)
+language sql
+stable
+set search_path = ''
+as $fn$
+  with at as (select coalesce(p_at, now()) as t)
+  select c.id,
+         coalesce(m.last_outcome = 'success'
+                  and (p_at is null or m.last_success_at <= p_at)
+                  and public.retrievability(m.stability::real, m.last_success_at, r.t)
+                      > public.known_retrievability_floor()
+                  and public.study_answer_proves_recall(m.last_success_id), false),
+         case when m.last_success_at is not null and (p_at is null or m.last_success_at <= p_at)
+              then public.retrievability(m.stability::real, m.last_success_at, r.t) end,
+         case when m.last_outcome = 'lapse' then m.last_answered_at + interval '30 minutes'
+              when m.last_success_at is not null
+              then m.last_success_at + make_interval(secs => m.stability * 86400) end,
+         lapse.held,
+         case when lapse.held then m.last_answered_at end
+  from public.study_claims c
+  cross join at
+  left join public.study_claim_memory m on m.claim_id = c.id and m.owner_id = c.owner_id
+  cross join lateral (
+    select least(at.t, m.last_success_at + make_interval(secs => m.stability * 86400 * 1000)) as t
+  ) as r
+  cross join lateral (
+    select coalesce(m.last_outcome = 'lapse', false)
+           and exists (select 1 from public.study_item_claims ic
+                       join public.study_items i on i.id = ic.item_id
+                       where ic.claim_id = c.id and i.status = 'validated'
+                         and i.authored_by in ('model', 'project')) as held
+  ) as lapse
+  where c.generation_id = (select public.study_course_generation(p_course_id))
+    and c.status = 'validated'
+$fn$;
+
+/* As 20260925210000, with a question the project corrected demonstrated and due as the model's. */
+create or replace function public.study_course_questions(p_course_id uuid)
+returns table (
+  generation_id    uuid,
+  item_id          uuid,
+  lesson_id        uuid,
+  item_key         text,
+  purpose          text,
+  kind             text,
+  difficulty       smallint,
+  authored_by      text,
+  state            text,
+  first_shown_at   timestamptz,
+  last_answered_at timestamptz,
+  demonstrated_at  timestamptz,
+  due_at           timestamptz,
+  due              boolean
+)
+language sql
+stable
+set search_path = ''
+as $fn$
+  with items as (
+    -- Validated now, by construction; and whether every claim under it is validated now.
+    select i.*,
+           not exists (select 1 from public.study_item_claims ic
+                       join public.study_claims c on c.id = ic.claim_id
+                       where ic.item_id = i.id and c.status <> 'validated') as claims_validated
+    from public.study_items i
+    where i.generation_id = (select public.study_course_generation(p_course_id))
+      and i.status = 'validated'
+  ),
+  shown as (
+    select i.id as item_id, min(e.occurred_at) as shown_at
+    from items i
+    join public.study_items v on v.lineage_id = i.lineage_id
+    join public.study_progress_events e on e.item_id = v.id and e.kind = 'item_shown'
+    group by i.id
+  ),
+  answered as (
+    select a.item_id, max(a.answered_at) as last_answered_at
+    from public.study_answer_events a
+    where a.item_id in (select items.id from items)
+    group by a.item_id
+  ),
+  -- The proof rule, set-based: a correct, unhinted, deterministically graded answer to a
+  -- question the model wrote or the project corrected, validated when answered, validated
+  -- now, on validated claims.
+  demonstrated as (
+    select a.item_id, min(a.answered_at) as demonstrated_at
+    from items i
+    join public.study_answer_events a on a.item_id = i.id
+    cross join lateral (
+      select l.to_status
+      from public.study_status_log l
+      where l.item_id = a.item_id and l.at <= a.answered_at
+      order by l.at desc, l.id desc
+      limit 1
+    ) as then_status
+    where i.authored_by in ('model', 'project')
+      and i.claims_validated
+      and a.correct
+      and not a.hinted
+      and a.grading = 'deterministic'
+      and then_status.to_status = 'validated'
+    group by a.item_id
+  ),
+  -- Due once answered, when the first of the claims it tests is due: its retrievability has
+  -- fallen to 0.9, or the reader's last answer on it was wrong.
+  due as (
+    select ic.item_id, min(k.due_at) as due_at
+    from public.study_item_claims ic
+    join public.study_claim_knowledge(p_course_id) k on k.claim_id = ic.claim_id
+    where ic.item_id in (select answered.item_id from answered)
+      and ic.item_id in (select items.id from items
+                         where items.authored_by in ('model', 'project'))
+    group by ic.item_id
+  )
+  select i.generation_id,
+         i.id,
+         l.id,
+         i.item_key,
+         i.purpose,
+         i.kind,
+         i.difficulty,
+         i.authored_by,
+         case when demonstrated.demonstrated_at is not null then 'recall_demonstrated'
+              when answered.last_answered_at is not null then 'answered'
+              when shown.shown_at is not null then 'shown'
+              else 'not_seen' end,
+         shown.shown_at,
+         answered.last_answered_at,
+         demonstrated.demonstrated_at,
+         due.due_at,
+         coalesce(due.due_at <= now(), false)
+  from items i
+  -- Only a lesson the outline shows: a question whose lesson is held back (reported, or
+  -- quarantined) reads as course-level until the lesson returns.
+  left join public.study_lessons l on l.id = i.lesson_id and l.status = 'validated'
+  left join shown on shown.item_id = i.id
+  left join answered on answered.item_id = i.id
+  left join demonstrated on demonstrated.item_id = i.id
+  left join due on due.item_id = i.id
+  order by l.unit_no nulls last, l.position nulls last,
+           (substr(i.item_key, 2))::int
+$fn$;
+
+-- ------------------------------------------------------------------ 9. excerpts are not a source
+
+/*
+ * As 20260924010000, recording the replay identity of a version a reader saved -- and not of a
+ * public course's excerpts, which enrolling writes and no reader's save ever replays: they do
+ * not count against the reader's 1,000 saves.
+ */
+create or replace function public.record_study_source_mutation()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $trigger$
+begin
+  if new.format = 'public_course' then
+    return new;
+  end if;
+  insert into public.study_source_mutations
+    (owner_id, client_mutation_id, version_id, created_at)
+  values (new.owner_id, new.client_mutation_id, new.id, new.created_at)
+  on conflict (owner_id, client_mutation_id) do nothing;
+  return new;
+end
+$trigger$;
+
+/*
+ * As 20260924010000, with a public course's excerpts neither counted against the reader's
+ * 100 versions nor a source anything is saved into (55000 `public`): they are the course's,
+ * copied in when the reader enrolled.
+ */
+create or replace function public.save_study_source_version(
+  p_title text,
+  p_format text,
+  p_text text,
+  p_mutation_id uuid,
+  p_source_id uuid default null,
+  p_origin_label text default null,
+  p_extraction_notes text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $fn$
+declare
+  uid uuid := auth.uid();
+  existing public.study_source_versions%rowtype;
+  prior public.study_source_mutations%rowtype;
+  parent public.study_sources%rowtype;
+  saved public.study_source_versions%rowtype;
+  next_no integer;
+begin
+  if uid is null then
+    raise exception 'study import requires a signed-in reader' using errcode = '28000';
+  end if;
+
+  -- Serialises same-reader saves, including a lost response retried from another tab.
+  perform 1 from auth.users
+    where id = uid and is_anonymous is false
+    for update;
+  if not found then
+    raise exception 'study import requires a non-guest reader' using errcode = '28000';
+  end if;
+
+  if p_mutation_id is null then
+    raise exception 'study import needs a mutation id' using errcode = '22023';
+  end if;
+  select * into prior from public.study_source_mutations
+    where owner_id = uid and client_mutation_id = p_mutation_id;
+  if found then
+    if prior.version_id is null then
+      raise exception 'this study source was deleted; start a new import'
+        using errcode = '55000';
+    end if;
+    select * into existing from public.study_source_versions
+      where id = prior.version_id and owner_id = uid;
+    if not found then
+      raise exception 'the saved study source is unavailable' using errcode = '55000';
+    end if;
+    return jsonb_build_object(
+      'sourceId', existing.source_id,
+      'versionId', existing.id,
+      'versionNo', existing.version_no,
+      'replayed', true
+    );
+  end if;
+
+  p_title := btrim(p_title);
+  p_text := btrim(p_text);
+  if p_title is null or char_length(p_title) not between 1 and 200 then
+    raise exception 'title must be 1 to 200 characters' using errcode = '22023';
+  end if;
+  if p_text is null or char_length(p_text) not between 1 and 200000 then
+    raise exception 'source text must be 1 to 200000 characters' using errcode = '22023';
+  end if;
+  if p_format is null or p_format not in
+    ('paste', 'text', 'markdown', 'pdf', 'docx', 'image_ocr', 'pdf_ocr', 'highlights') then
+    raise exception 'unsupported study source format' using errcode = '22023';
+  end if;
+  if p_origin_label is not null and char_length(p_origin_label) > 240 then
+    raise exception 'origin label is too long' using errcode = '22023';
+  end if;
+  if p_extraction_notes is not null and char_length(p_extraction_notes) > 2000 then
+    raise exception 'extraction notes are too long' using errcode = '22023';
+  end if;
+
+  if (select count(*) from public.study_source_mutations where owner_id = uid) >= 1000 then
+    raise exception 'this reader has reached the 1000-save study source limit'
+      using errcode = '54000';
+  end if;
+
+  if (select count(*) from public.study_source_versions
+      where owner_id = uid and format <> 'public_course') >= 100 then
+    raise exception 'this reader has reached the 100-version study source limit'
+      using errcode = '54000';
+  end if;
+
+  if p_source_id is null then
+    insert into public.study_sources (owner_id) values (uid) returning * into parent;
+  else
+    select * into parent from public.study_sources
+      where id = p_source_id and owner_id = uid for update;
+    if not found then
+      raise exception 'study source is unavailable' using errcode = '42501';
+    end if;
+    if exists (select 1 from public.study_source_versions v
+               where v.source_id = parent.id and v.format = 'public_course') then
+      raise exception 'a public course''s excerpts are the course''s; save your own text as a new source'
+        using errcode = '55000', detail = 'public';
+    end if;
+  end if;
+
+  next_no := parent.latest_version_no + 1;
+  insert into public.study_source_versions
+    (source_id, owner_id, version_no, client_mutation_id, title, format,
+     origin_label, extracted_text, extraction_notes)
+  values
+    (parent.id, uid, next_no, p_mutation_id, p_title, p_format,
+     p_origin_label, p_text, p_extraction_notes)
+  returning * into saved;
+  -- The AFTER INSERT trigger records the replay identity atomically, including
+  -- saves still running under the previous function body.
+  update public.study_sources set latest_version_no = next_no where id = parent.id;
+
+  return jsonb_build_object(
+    'sourceId', parent.id,
+    'versionId', saved.id,
+    'versionNo', saved.version_no,
+    'replayed', false
+  );
+end
+$fn$;
+
+-- ------------------------------------------------------------------ 10. preparing again
+
+/*
+ * As 20260925220000, refusing to prepare a public course's copy again, or anything from a
+ * public course's excerpts (55000 `public`).
+ */
 create or replace function public.study_enqueue_course(
   p_source_version_ids uuid[],
   p_goal text,
@@ -857,6 +1742,15 @@ begin
       using errcode = '22023';
   end if;
 
+  -- A public course's excerpts are the course's, not the reader's material: nothing is
+  -- prepared from them, which would be a model call over the project's quotations.
+  if exists (select 1 from public.study_source_versions v
+             where v.id = any (v_versions) and v.owner_id = uid
+               and v.format = 'public_course') then
+    raise exception 'a public course''s excerpts are not a source to prepare a course from'
+      using errcode = '55000', detail = 'public';
+  end if;
+
   select count(*), coalesce(sum(char_length(v.extracted_text)), 0) into owned, total
   from public.study_source_versions v
   where v.id = any (v_versions) and v.owner_id = uid;
@@ -960,4 +1854,3 @@ begin
   );
 end
 $fn$;
-

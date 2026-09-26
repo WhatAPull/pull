@@ -274,6 +274,9 @@ const EXPORTED: { table: string; column: string; key: string; page?: number }[] 
   // What the reader's answers left of each claim (20260925210000): the memory the study
   // Delta reads. Keyed by claim, one row a claim for each reader.
   { table: 'study_claim_memory', column: 'owner_id', key: 'claim_id' },
+  // Each public course the reader added, and when (20260925230000): what the limit of twenty a
+  // day counts. Their copies are in the study tables above, like any course of theirs.
+  { table: 'study_public_enrolments', column: 'owner_id', key: 'id' },
 ];
 
 /*

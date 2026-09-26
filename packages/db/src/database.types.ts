@@ -2630,6 +2630,60 @@ export type Database = {
           },
         ]
       }
+      study_curated_sources: {
+        Row: {
+          registered_at: string
+          registered_by: string
+          source_version_id: string
+          work_id: string
+        }
+        Insert: {
+          registered_at?: string
+          registered_by: string
+          source_version_id: string
+          work_id: string
+        }
+        Update: {
+          registered_at?: string
+          registered_by?: string
+          source_version_id?: string
+          work_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "study_curated_sources_source_version_id_fkey"
+            columns: ["source_version_id"]
+            isOneToOne: true
+            referencedRelation: "study_source_versions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "study_curated_sources_work_id_fkey"
+            columns: ["work_id"]
+            isOneToOne: false
+            referencedRelation: "works"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      study_curators: {
+        Row: {
+          added_at: string
+          added_by: string
+          user_id: string
+        }
+        Insert: {
+          added_at?: string
+          added_by: string
+          user_id: string
+        }
+        Update: {
+          added_at?: string
+          added_by?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       study_generation_access: {
         Row: {
           granted_at: string
@@ -3227,6 +3281,35 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "study_visible_lessons"
             referencedColumns: ["id", "owner_id"]
+          },
+        ]
+      }
+      study_public_enrolments: {
+        Row: {
+          enrolled_at: string
+          id: string
+          owner_id: string
+          public_course_id: string
+        }
+        Insert: {
+          enrolled_at?: string
+          id?: string
+          owner_id: string
+          public_course_id: string
+        }
+        Update: {
+          enrolled_at?: string
+          id?: string
+          owner_id?: string
+          public_course_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "study_public_enrolments_public_course_id_fkey"
+            columns: ["public_course_id"]
+            isOneToOne: false
+            referencedRelation: "public_study_courses"
+            referencedColumns: ["id"]
           },
         ]
       }
@@ -4039,6 +4122,8 @@ export type Database = {
           preparing: boolean | null
           public_course_id: string | null
           public_course_label: string | null
+          public_course_work_id: string | null
+          public_course_work_title: string | null
           question_count: number | null
           recap: string | null
           source_count: number | null
@@ -4637,6 +4722,7 @@ export type Database = {
           rights_status: Database["public"]["Enums"]["rights_status"]
           slug: string
           title: string
+          work_id: string
           work_kind: Database["public"]["Enums"]["work_kind"]
           work_title: string
         }[]
@@ -4703,6 +4789,7 @@ export type Database = {
           rights_status: Database["public"]["Enums"]["rights_status"]
           slug: string
           title: string
+          work_id: string
           work_kind: Database["public"]["Enums"]["work_kind"]
           work_title: string
         }[]
@@ -4757,8 +4844,14 @@ export type Database = {
         }
         Returns: Json
       }
-      public_study_course_label: { Args: { p_id: string }; Returns: string }
-      public_study_course_open: { Args: { p_id: string }; Returns: boolean }
+      public_study_course_origin: {
+        Args: { p_id: string }
+        Returns: {
+          rights_label: string
+          work_id: string
+          work_title: string
+        }[]
+      }
       publish_study_course: {
         Args: {
           p_generation_id: string
@@ -4877,6 +4970,10 @@ export type Database = {
           p_pull_id: string
         }
         Returns: Json
+      }
+      remove_public_course_copies: {
+        Args: { p_id: string; p_limit?: number }
+        Returns: number
       }
       renew_source_claim: {
         Args: { p_job_id: string; p_lease?: string }
@@ -5253,6 +5350,12 @@ export type Database = {
       }
       study_unspaced_class: { Args: never; Returns: string }
       study_word_class: { Args: never; Returns: string }
+      study_word_runs: {
+        Args: { p_text: string; p_words: number }
+        Returns: {
+          run: string
+        }[]
+      }
       summary_is_readable: {
         Args: { s: Database["public"]["Tables"]["summaries"]["Row"] }
         Returns: boolean
@@ -5275,12 +5378,7 @@ export type Database = {
       }
       validate_study_course: { Args: { p_job_id: string }; Returns: Json }
       withdraw_public_study_course: {
-        Args: {
-          p_by: string
-          p_id: string
-          p_reason: string
-          p_remove_copies?: boolean
-        }
+        Args: { p_by: string; p_id: string; p_reason: string }
         Returns: Json
       }
       work_is_authorable: { Args: { p_work_id: string }; Returns: boolean }
