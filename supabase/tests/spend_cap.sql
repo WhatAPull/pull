@@ -22,6 +22,10 @@
 --   * `enqueue_generation_job` refuses at the door when the day is spent, validates the
 --     job kind and the payload bounds, and keeps `work_id` only where the caller
 --     authored a summary on that work
+--   * and it counts what it has already admitted: a job a reader asked for, queued and
+--     not yet started, is neither charged nor held, so the door adds it at the least it
+--     will reserve (the catalogue's own jobs are not counted), and the screen reports
+--     `spent` at the same point
 --   * the API roles cannot insert a `generation_jobs` row of their own
 --
 -- Run as the owner where the subject is the arithmetic, and as `authenticated` where
@@ -32,6 +36,14 @@
 \set ON_ERROR_STOP on
 
 begin;
+
+/*
+ * A source the door accepts: at least the 200 characters of text, once trimmed, that
+ * `acquire` and the Studio ask for (20260926230000). Every submit below that is meant to
+ * reach the budget carries it, so that it is the budget being tested and not the target.
+ */
+create or replace function pg_temp.source() returns text
+language sql immutable as $fn$ select repeat('Enough to summarise. ', 10) $fn$;
 
 do $$
 declare
@@ -452,10 +464,79 @@ begin
     raise exception 'an unknown jobKind was accepted; the pipeline would never run it.';
   end if;
 
+  -- Nothing to summarise. The pipeline fails these for nothing, so they were free to
+  -- submit (20260926220000, 20260926230000). Text is what the pipeline uses whenever there
+  -- is any, and `acquire` refuses fewer than 200 characters of it, so the door asks for 200
+  -- once whitespace is trimmed, trimmed and counted as the Studio does before it sends.
+  -- With no text, a URL with something in it. A `work_id` is not a source.
+  declare
+    empty jsonb;
+    said  text;
+    -- 99 characters beyond the BMP, which JavaScript counts as 198, and one more.
+    astral_short text := repeat(U&'\+01F600', 99) || 'x';
+  begin
+    foreach empty in array array[
+      '{"title":"Nothing"}'::jsonb,
+      '{"title":"Blank","text":"   ","url":""}'::jsonb,
+      '{"title":"A number","text":42}'::jsonb,
+      jsonb_build_object('title', 'Only a work', 'work_id', theirs::text),
+      '{"title":"One letter","text":"x"}'::jsonb,
+      jsonb_build_object('title', 'Tab and newline', 'text', E'\n\t'),
+      jsonb_build_object('title', 'No-break spaces', 'text', U&'\00A0\00A0'),
+      '{"title":"A URL of spaces","url":"   "}'::jsonb,
+      jsonb_build_object('title', 'One short', 'text', repeat('x', 199)),
+      jsonb_build_object('title', 'Padded short',
+                         'text', U&'\3000 ' || repeat('x', 199) || U&'\00A0\FEFF\2029'),
+      jsonb_build_object('title', 'Short beyond the BMP', 'text', astral_short),
+      -- Text wins in the pipeline, so a short text is not rescued by a URL beside it.
+      jsonb_build_object('title', 'Short, with a URL', 'text', 'x',
+                         'url', 'https://example.test/b')
+    ] loop
+      said := null;
+      begin
+        perform public.enqueue_generation_job(empty);
+      exception when invalid_parameter_value then
+        said := sqlerrm;
+      end;
+      if said is distinct from
+         'the generation target must carry at least 200 characters of text, or a URL, to '
+         'summarise' then
+        raise exception 'a target with nothing to summarise (%) was answered with %',
+          empty, coalesce(said, 'a job');
+      end if;
+    end loop;
+
+    -- And exactly enough is enough: 200 characters, 200 once padded and trimmed, and 100
+    -- characters beyond the BMP, which the Studio counts as 200 and so would send.
+    foreach empty in array array[
+      jsonb_build_object('title', 'Exactly enough', 'text', repeat('x', 200)),
+      jsonb_build_object('title', 'Padded enough',
+                         'text', E'\n\t ' || repeat('x', 200) || U&'\00A0'),
+      jsonb_build_object('title', 'Enough beyond the BMP', 'text', repeat(U&'\+01F600', 100)),
+      -- Text the pipeline does not read -- empty, or not a string -- leaves the URL to it.
+      '{"title":"Empty text, a URL","text":"","url":"https://example.test/c"}'::jsonb,
+      '{"title":"A number, a URL","text":42,"url":"https://example.test/d"}'::jsonb
+    ] loop
+      if (public.enqueue_generation_job(empty) ->> 'jobId') is null then
+        raise exception 'a target with enough to summarise (%) was refused', empty ->> 'title';
+      end if;
+    end loop;
+  end;
+  -- And a URL alone is something to summarise, even one that will not fetch: a malformed
+  -- URL fails at `acquire` for nothing, and that is the residual docs/generation.md states.
+  if (public.enqueue_generation_job('{"title":"A page","url":"https://example.test/a"}'::jsonb)
+        ->> 'jobId') is null then
+    raise exception 'a target with only a URL was refused';
+  end if;
+  if (public.enqueue_generation_job('{"title":"Not a URL","url":"not a url"}'::jsonb)
+        ->> 'jobId') is null then
+    raise exception 'a target with only a malformed URL was refused; the door does not parse URLs';
+  end if;
+
   refused := false;
   begin
     perform public.enqueue_generation_job(
-      jsonb_build_object('title', repeat('t', 201), 'text', 'x'));
+      jsonb_build_object('title', repeat('t', 201), 'text', pg_temp.source()));
   exception when check_violation then
     refused := true;
   end;
@@ -481,7 +562,7 @@ begin
   -- private generation to a work they have nothing to do with.
   queued := public.enqueue_generation_job(
     jsonb_build_object('jobKind', 'private_summary', 'title', 'Mine',
-                       'text', 'x', 'work_id', theirs::text));
+                       'text', pg_temp.source(), 'work_id', theirs::text));
   select gj.target, gj.kind into stored, kept
   from public.generation_jobs gj where gj.id = (queued ->> 'jobId')::uuid;
   if stored ? 'work_id' then
@@ -499,7 +580,7 @@ begin
 
   queued := public.enqueue_generation_job(
     jsonb_build_object('jobKind', 'private_summary', 'title', 'Mine',
-                       'text', 'x', 'work_id', theirs::text, 'visibility', 'public'));
+                       'text', pg_temp.source(), 'work_id', theirs::text, 'visibility', 'public'));
   select gj.target into stored
   from public.generation_jobs gj where gj.id = (queued ->> 'jobId')::uuid;
   if (stored ->> 'work_id') <> theirs::text then
@@ -515,7 +596,7 @@ begin
   -- A malformed work_id is stripped rather than raised: it is a key the caller
   -- should not have sent, not an error they can act on.
   queued := public.enqueue_generation_job(
-    jsonb_build_object('title', 'Mine', 'text', 'x', 'work_id', 'not-a-uuid'));
+    jsonb_build_object('title', 'Mine', 'text', pg_temp.source(), 'work_id', 'not-a-uuid'));
   if queued ->> 'jobId' is null then
     raise exception 'a malformed work_id failed the whole call';
   end if;
@@ -547,9 +628,9 @@ begin
     json_build_object('sub', reader, 'role', 'authenticated')::text, true);
 
   once := public.enqueue_generation_job(
-    jsonb_build_object('title', 'Replayed', 'text', 'x'), mut);
+    jsonb_build_object('title', 'Replayed', 'text', pg_temp.source()), mut);
   twice := public.enqueue_generation_job(
-    jsonb_build_object('title', 'Replayed', 'text', 'x'), mut);
+    jsonb_build_object('title', 'Replayed', 'text', pg_temp.source()), mut);
 
   if (twice ->> 'jobId') <> (once ->> 'jobId') then
     raise exception
@@ -573,7 +654,7 @@ begin
     -- Past the free allowance, so the next job is genuinely delayed.
     for i in 1..4 loop
       perform public.enqueue_generation_job(
-        jsonb_build_object('title', 'Filler ' || i, 'text', 'x'));
+        jsonb_build_object('title', 'Filler ' || i, 'text', pg_temp.source()));
     end loop;
 
     -- Backdated, because `now()` is the TRANSACTION's clock: every row inserted in this
@@ -587,13 +668,13 @@ begin
       json_build_object('sub', reader, 'role', 'authenticated')::text, true);
 
     staggered := public.enqueue_generation_job(
-      jsonb_build_object('title', 'Late', 'text', 'x'), late);
+      jsonb_build_object('title', 'Late', 'text', pg_temp.source()), late);
     if (staggered ->> 'queue') <> 'normal' or (staggered ->> 'delaySeconds')::int <= 0 then
       raise exception 'the fixture did not produce a staggered job: %', staggered;
     end if;
 
     staggered := public.enqueue_generation_job(
-      jsonb_build_object('title', 'Late', 'text', 'x'), late);
+      jsonb_build_object('title', 'Late', 'text', pg_temp.source()), late);
     if (staggered ->> 'queue') <> 'normal' or (staggered ->> 'delaySeconds')::int <= 0 then
       raise exception
         'a replay of a staggered job reported %, so the screen says "Started." for a job '
@@ -609,7 +690,7 @@ begin
   end if;
 
   -- A DIFFERENT id from the same reader is a different submission, not a replay.
-  if (public.enqueue_generation_job(jsonb_build_object('title', 'Another', 'text', 'x'),
+  if (public.enqueue_generation_job(jsonb_build_object('title', 'Another', 'text', pg_temp.source()),
                                     extensions.gen_random_uuid()) ->> 'jobId')
      = (once ->> 'jobId') then
     raise exception 'a second submission was mistaken for a replay of the first';
@@ -628,7 +709,7 @@ begin
     json_build_object('sub', reader, 'role', 'authenticated')::text, true);
 
   twice := public.enqueue_generation_job(
-    jsonb_build_object('title', 'Replayed', 'text', 'x'), mut);
+    jsonb_build_object('title', 'Replayed', 'text', pg_temp.source()), mut);
   if (twice ->> 'finished')::boolean is not true or (twice ->> 'status') <> 'failed' then
     raise exception
       'a replay of a job that had already failed answered %, so the screen says a summary '
@@ -636,6 +717,708 @@ begin
   end if;
 
   raise notice 'spend_cap.sql: a replayed submit returns its job rather than buying another';
+end $$;
+
+-- ------------------------- 7c. the door counts the jobs it has already admitted
+--
+-- A job admitted and not yet started is neither charged nor held, so a door that asks
+-- only `spend_today()` cannot see it. On an empty day it admitted every reader who asked,
+-- and the jobs the day could not fund waited out the worker's day of budget waits and
+-- failed under a screen that had said "Started." (20260926200000.) The door now refuses
+-- at `spend + waiting + min > cap`. Waiting counts only jobs readers asked for, and no
+-- reader's summaries for more than three jobs' worth (20260926210000). Every figure below
+-- is derived from the functions that state it, not written in here. The catalogue's queued
+-- backlog is left in place throughout.
+--
+-- Two refusals, and the difference is asserted every time. `spent` is spend alone leaving
+-- no room, and keeps its sentence about midnight. `committed` is spend leaving room that
+-- the waiting jobs take: DETAIL 'committed', a sentence that promises no hour, and a state
+-- of its own from `generation_budget_state()`.
+--
+-- Each case is a probe: it sets up a day of its own, asserts, and raises 'probe done' so
+-- that everything it did is rolled back before the next one.
+
+/*
+ * A day with exactly `p_charged` cents charged, nothing held and no reader's job waiting,
+ * set up as the owner. The charge is on a finished job, so it is spend and not a job
+ * waiting. The catalogue's queued backlog (20260907011000) is left where it is: it is not
+ * a reader's, so the door must not count it, and every case below runs beside it.
+ */
+create or replace function pg_temp.door_day(p_charged numeric) returns void
+language plpgsql as $fn$
+declare
+  paid uuid;
+begin
+  perform set_config('role', 'postgres', true);
+  update public.generation_jobs set status = 'cancelled', finished_at = now()
+   where status in ('queued', 'running') and requester_id is not null;
+  delete from public.budget_reservations;
+  delete from public.cost_ledger;
+  insert into public.generation_jobs (target, status, finished_at)
+  values ('{"text":"x"}'::jsonb, 'succeeded', now()) returning id into paid;
+  insert into public.cost_ledger (job_id, provider, operation, unit, quantity, cost_cents)
+  values (paid, 'test', 'synthesize', 'call', 1, p_charged);
+  if public.spend_today() <> p_charged then
+    raise exception 'the door fixture charged % and spend_today() says %',
+      p_charged, public.spend_today();
+  end if;
+end $fn$;
+
+/*
+ * A job for somebody else, staged as the owner in a state that is not a start, with its
+ * message on the `generation` queue as `p_queue` says:
+ *
+ *   due        sent to start now, as the door sends a reader's first three
+ *   staggered  sent with the stagger's delay, not yet visible
+ *   parked     sent back into a budget wait, `budgetWaits > 0`, not yet visible
+ *   none       no message at all, as a stranded job has
+ *
+ * A finished job gets no message whatever `p_queue` says.
+ */
+create or replace function pg_temp.door_stage(
+  p_requester uuid, p_kind text, p_status text, p_state text default 'nothing',
+  p_queue text default 'due'
+) returns uuid
+language plpgsql as $fn$
+declare
+  job      uuid;
+  midnight timestamptz := date_trunc('day', (now() at time zone 'utc')) at time zone 'utc';
+begin
+  perform set_config('role', 'postgres', true);
+  insert into public.generation_jobs (requester_id, kind, target, status, finished_at)
+  values (p_requester, p_kind, '{"text":"x"}'::jsonb, p_status::public.job_status,
+          case when p_status in ('succeeded', 'failed', 'cancelled') then now() end)
+  returning id into job;
+  if p_status in ('queued', 'running') then
+    case p_queue
+      when 'due' then
+        perform pgmq.send('generation',
+                          jsonb_build_object('jobId', job, 'step', 'resolve_identity'), 0);
+      when 'staggered' then
+        perform pgmq.send('generation',
+                          jsonb_build_object('jobId', job, 'step', 'resolve_identity'), 300);
+      when 'parked' then
+        perform pgmq.send('generation',
+                          jsonb_build_object('jobId', job, 'step', 'synthesize',
+                                             'waits', 0, 'budgetWaits', 3), 900);
+      when 'none' then null;
+      else raise exception 'no such queue state: %', p_queue;
+    end case;
+  end if;
+  case p_state
+    when 'nothing' then null;
+    -- A provider's 429: an attempt ledgered, at nothing.
+    when 'a zero-cost attempt' then
+      insert into public.cost_ledger (job_id, provider, operation, unit, quantity, cost_cents)
+      values (job, 'test', 'synthesize', 'call', 1, 0);
+    -- A hold taken today and handed back.
+    when 'a settled hold' then
+      insert into public.budget_reservations (job_id, step, reserved_cents, settled_at)
+      values (job, 'synthesize', public.min_job_cents(), now());
+    -- A hold older than the TTL and never settled: a worker that died holding it.
+    when 'an expired hold' then
+      insert into public.budget_reservations (job_id, step, reserved_cents, created_at)
+      values (job, 'synthesize', public.min_job_cents(),
+              now() - public.budget_reservation_ttl() - interval '1 minute');
+    -- A hold taken before midnight, still open: yesterday's, not today's.
+    when 'a hold from before midnight' then
+      insert into public.budget_reservations (job_id, step, reserved_cents, created_at)
+      values (job, 'synthesize', public.min_job_cents(), midnight - interval '2 minutes');
+    -- A charge from before midnight, on a job still going: it has spent nothing today.
+    when 'a charge from before midnight' then
+      insert into public.cost_ledger
+        (job_id, provider, operation, unit, quantity, cost_cents, created_at)
+      values (job, 'test', 'synthesize', 'call', 1, public.min_job_cents(),
+              midnight - interval '2 minutes');
+    -- Started today, and holding one cent.
+    when 'a cent held' then
+      insert into public.budget_reservations (job_id, step, reserved_cents)
+      values (job, 'embed', 1);
+    -- Started today, and charged one cent.
+    when 'a cent charged' then
+      insert into public.cost_ledger (job_id, provider, operation, unit, quantity, cost_cents)
+      values (job, 'test', 'embed', 'call', 1, 1);
+    else
+      raise exception 'no such staged state: %', p_state;
+  end case;
+  return job;
+end $fn$;
+
+/*
+ * One submit, as whoever is signed in. NULL if it was admitted, otherwise which of the
+ * door's two refusals it was, recognised by SQLSTATE, DETAIL and sentence together.
+ * Anything else is raised: a refusal in the wrong words is a failure, not an answer.
+ */
+create or replace function pg_temp.door_refusal(p_title text, p_mutation uuid default null)
+returns text
+language plpgsql as $fn$
+declare
+  message text;
+  detail  text;
+begin
+  perform public.enqueue_generation_job(
+    jsonb_build_object('title', p_title, 'text', pg_temp.source()), p_mutation);
+  return null;
+exception when configuration_limit_exceeded then
+  get stacked diagnostics message = message_text, detail = pg_exception_detail;
+  if message = 'the daily generation budget is spent. Summaries resume at 00:00 UTC.'
+     and coalesce(detail, '') = '' then
+    return 'spent';
+  end if;
+  if message = 'today''s generation budget is committed to summaries already waiting to '
+               'start. Try again in a little while.'
+     and detail = 'committed' then
+    return 'committed';
+  end if;
+  raise exception 'the door refused in words it does not use: % (detail %)', message, detail;
+end $fn$;
+
+/* One submit: true if admitted, false if the day refused it for either reason. */
+create or replace function pg_temp.door_admits(p_title text, p_mutation uuid default null)
+returns boolean
+language plpgsql as $fn$
+begin
+  return pg_temp.door_refusal(p_title, p_mutation) is null;
+end $fn$;
+
+/*
+ * As `p_reader`: the door admits exactly `p_room` more jobs, and the screen says there is
+ * room (`open` or `low`) before each of them. After them the screen says `p_closed` and
+ * the door refuses the next one with that same refusal.
+ */
+create or replace function pg_temp.door_admits_exactly(
+  p_reader uuid, p_room int, p_case text, p_closed text default 'committed'
+) returns void
+language plpgsql as $fn$
+declare
+  refusal text;
+begin
+  perform set_config('role', 'authenticated', true);
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', p_reader, 'role', 'authenticated')::text, true);
+  if current_user <> 'authenticated' then
+    raise exception 'the door must be asked as a reader, not as %', current_user;
+  end if;
+
+  for i in 1..p_room loop
+    if public.generation_budget_state() not in ('open', 'low') then
+      raise exception
+        '%: with % admitted and not started, the screen said % though the day has room '
+        'for %', p_case, i - 1, public.generation_budget_state(), p_room;
+    end if;
+    refusal := pg_temp.door_refusal(p_case || ' ' || i);
+    if refusal is not null then
+      raise exception '%: job % was refused as %, though the day has room for %',
+        p_case, i, refusal, p_room;
+    end if;
+  end loop;
+
+  if public.generation_budget_state() is distinct from p_closed then
+    raise exception
+      '%: with % admitted and not started the day has no room left, and the screen said % '
+      'rather than %.', p_case, p_room, public.generation_budget_state(), p_closed;
+  end if;
+  refusal := pg_temp.door_refusal(p_case || ' one too many');
+  if refusal is null then
+    raise exception
+      '%: with % admitted and not started, the door admitted one more. The day cannot '
+      'fund it, so it waits a day in the worker''s budget wait and then fails, under a '
+      'screen that said "Started."', p_case, p_room;
+  end if;
+  if refusal is distinct from p_closed then
+    raise exception '%: the door refused as % where the day is %', p_case, refusal, p_closed;
+  end if;
+end $fn$;
+
+do $$
+declare
+  cap      numeric;
+  least_   numeric;
+  s_least  numeric;
+  share    numeric;
+  reader   uuid := extensions.gen_random_uuid();
+  other    uuid := extensions.gen_random_uuid();
+  third    uuid := extensions.gen_random_uuid();
+  charged  numeric;
+  state    text;
+  kind     text;
+  courses  int;
+  spent_s  numeric;
+  job      uuid;
+  mut      uuid := extensions.gen_random_uuid();
+  first    jsonb;
+  again    jsonb;
+  rows_    int;
+begin
+  perform set_config('role', 'postgres', true);
+  cap := public.daily_spend_cap_cents();
+  least_ := public.min_job_cents();
+  s_least := public.study_min_job_cents();
+  share := public.study_requester_daily_cap_cents();
+  if least_ <= 0 or cap < 5 * least_ + 1 then
+    raise exception 'a cap of % cannot fund five jobs of %, so these cases mean nothing',
+      cap, least_;
+  end if;
+  if s_least <= 0 or s_least = least_ or share < s_least or cap < 2 * share + least_ then
+    raise exception 'a study share of %, a study floor of % and a cap of % do not leave '
+      'room for the study cases', share, s_least, cap;
+  end if;
+  if ceil(cap * 0.8) + least_ > cap then
+    raise exception 'a cap of % has no `low` band a job fits in', cap;
+  end if;
+
+  insert into auth.users (id, instance_id, aud, role, email, encrypted_password,
+                          email_confirmed_at, created_at, updated_at,
+                          raw_app_meta_data, raw_user_meta_data, is_anonymous)
+  select u, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+         'door-count' || left(u::text, 8) || '@example.test', '', now(), now(), now(),
+         '{"provider":"email","providers":["email"]}'::jsonb, '{}'::jsonb, false
+  from unnest(array[reader, other, third]) as u;
+
+  -- 1. The boundary, from both sides. With N admitted and not started, the next is refused
+  --    exactly when spend + (N + 1) x min > cap: at three jobs' room it takes three, a cent
+  --    less takes two, and a cent more still takes three. Spend alone leaves room in every
+  --    one of these, so the day is committed, not spent.
+  foreach charged in array array[cap - 3 * least_, cap - 3 * least_ + 1, cap - 3 * least_ - 1]
+  loop
+    begin
+      perform pg_temp.door_day(charged);
+      perform pg_temp.door_admits_exactly(reader, floor((cap - charged) / least_)::int,
+                                          format('%s of %s charged', charged, cap));
+      raise exception using errcode = 'P0001', message = 'probe done';
+    exception when raise_exception then
+      if sqlerrm is distinct from 'probe done' then raise; end if;
+    end;
+  end loop;
+
+  -- 1b. Where committed ends and spent begins. With exactly one job's room left by spend,
+  --     the job admitted into it makes the day committed: the door says "in a little
+  --     while", because that room comes back if the job fails early. A cent more spent and
+  --     there is no room for it to come back to: spent, and the sentence about midnight.
+  begin
+    perform pg_temp.door_day(cap - least_);
+    perform pg_temp.door_admits_exactly(reader, 1, 'one job''s room', 'committed');
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+  begin
+    perform pg_temp.door_day(cap - least_ + 1);
+    perform pg_temp.door_admits_exactly(reader, 0, 'a cent short of one job', 'spent');
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+
+  -- 2. A job that has not started is waiting, whatever it has been through, and of either
+  --    summary kind. Each is staged on a day with room for two: counted, it leaves room
+  --    for one.
+  foreach kind in array array['canonical_summary', 'private_summary'] loop
+    foreach state in array array['nothing', 'a zero-cost attempt', 'a settled hold',
+                                 'an expired hold', 'a hold from before midnight',
+                                 'a charge from before midnight']
+    loop
+      begin
+        perform pg_temp.door_day(cap - 2 * least_);
+        perform pg_temp.door_stage(other, kind, 'running', state);
+        if public.spend_today() <> cap - 2 * least_ then
+          raise exception 'a job with % moved today''s spend to %', state, public.spend_today();
+        end if;
+        perform pg_temp.door_admits_exactly(reader, 1,
+          format('beside a %s with %s', kind, state));
+        raise exception using errcode = 'P0001', message = 'probe done';
+      exception when raise_exception then
+        if sqlerrm is distinct from 'probe done' then raise; end if;
+      end;
+    end loop;
+  end loop;
+
+  -- 2b. And the hold from before midnight is yesterday's because of the DAY bound, not
+  --     only because it has aged out. With the default one-hour TTL the two agree for all
+  --     but the first hour of the day, so the TTL is widened to two days inside this probe
+  --     alone -- and rolled back with it -- to hold the day bound to account by itself.
+  begin
+    perform set_config('role', 'postgres', true);
+    create or replace function public.budget_reservation_ttl()
+    returns interval
+    language sql
+    immutable
+    set search_path = ''
+    as 'select interval ''2 days''';
+    perform pg_temp.door_day(cap - 2 * least_);
+    perform pg_temp.door_stage(other, 'canonical_summary', 'running',
+                               'a hold from before midnight');
+    perform pg_temp.door_admits_exactly(reader, 1,
+      'beside a job holding since before midnight, under a two-day TTL');
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+  perform set_config('role', 'postgres', true);
+  if public.budget_reservation_ttl() <> interval '1 hour' then
+    raise exception 'the widened TTL outlived its probe: %', public.budget_reservation_ttl();
+  end if;
+
+  -- 3. A job that HAS started counts at what it holds or has been charged, which today's
+  --    spend already includes. It does not count again at the floor. One cent held and one
+  --    cent charged leave room for exactly two. Counted twice, they would leave room for
+  --    none.
+  begin
+    perform pg_temp.door_day(cap - 2 * least_ - 2);
+    perform pg_temp.door_stage(other, 'canonical_summary', 'running', 'a cent held');
+    perform pg_temp.door_stage(other, 'private_summary', 'running', 'a cent charged');
+    if public.spend_today() <> cap - 2 * least_ then
+      raise exception 'the fixture for started jobs did not take; spend_today() is %',
+        public.spend_today();
+    end if;
+    perform pg_temp.door_admits_exactly(reader, 2, 'beside two started jobs');
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+
+  -- 4. A finished job waits for nothing, however it finished.
+  begin
+    perform pg_temp.door_day(cap - 2 * least_);
+    foreach state in array array['succeeded', 'failed', 'cancelled'] loop
+      perform pg_temp.door_stage(other, 'canonical_summary', state);
+    end loop;
+    perform pg_temp.door_admits_exactly(reader, 2, 'beside finished jobs');
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+
+  -- 5. No reader's summaries hold more than three jobs' worth of the day, of whichever
+  --    kinds. Eleven of them due -- what one account can queue in a minute, each failing
+  --    for nothing when it runs -- count as three, and so do six canonical and six private
+  --    together, and so do five parked on the budget: on a day with room for five a second
+  --    reader gets the other two. Counted in full, or three per kind, they would close the
+  --    door on everyone.
+  foreach kind in array array['eleven canonical', 'six canonical and six private',
+                              'five parked'] loop
+    begin
+      perform pg_temp.door_day(cap - 5 * least_);
+      if kind = 'eleven canonical' then
+        for i in 1..11 loop
+          perform pg_temp.door_stage(other, 'canonical_summary', 'queued');
+        end loop;
+      elsif kind = 'five parked' then
+        for i in 1..5 loop
+          perform pg_temp.door_stage(other, 'private_summary', 'running', 'nothing', 'parked');
+        end loop;
+      else
+        for i in 1..6 loop
+          perform pg_temp.door_stage(other, 'canonical_summary', 'queued');
+          perform pg_temp.door_stage(other, 'private_summary', 'queued');
+        end loop;
+      end if;
+      perform pg_temp.door_admits_exactly(reader, 2, 'beside one reader''s ' || kind);
+      raise exception using errcode = 'P0001', message = 'probe done';
+    exception when raise_exception then
+      if sqlerrm is distinct from 'probe done' then raise; end if;
+    end;
+  end loop;
+  --    And on an otherwise empty day, a reader beside those eleven is simply admitted, and
+  --    is told there is room.
+  begin
+    perform pg_temp.door_day(0);
+    for i in 1..11 loop
+      perform pg_temp.door_stage(other, 'private_summary', 'queued');
+    end loop;
+    perform set_config('role', 'authenticated', true);
+    perform set_config('request.jwt.claims',
+      json_build_object('sub', reader, 'role', 'authenticated')::text, true);
+    if public.generation_budget_state() is distinct from 'open' then
+      raise exception 'beside one reader''s eleven waiting jobs, an empty day reads %',
+        public.generation_budget_state();
+    end if;
+    if not pg_temp.door_admits('Beside the eleven') then
+      raise exception 'one reader''s eleven waiting jobs closed an empty day to another';
+    end if;
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+
+  -- 6. A waiting study course counts at the STUDY floor, not the summary one. One course
+  --    on a day with a course and a summary's room left admits one summary; a cent less
+  --    room admits none.
+  foreach charged in array array[cap - s_least - least_, cap - s_least - least_ + 1] loop
+    begin
+      perform pg_temp.door_day(charged);
+      perform pg_temp.door_stage(other, 'study_course', 'queued');
+      perform pg_temp.door_admits_exactly(reader, floor((cap - charged - s_least) / least_)::int,
+        format('beside one waiting course, %s of %s charged', charged, cap));
+      raise exception using errcode = 'P0001', message = 'probe done';
+    exception when raise_exception then
+      if sqlerrm is distinct from 'probe done' then raise; end if;
+    end;
+  end loop;
+
+  -- 6b. But a reader's courses count for no more than that reader's study share can still
+  --     fund. More courses than the share can start count as the share, and a share partly
+  --     spent today (by a course that has started) counts as what is left of it. Either
+  --     way this day has room for exactly one summary.
+  courses := floor(share / s_least)::int + 2;
+  foreach spent_s in array array[0, s_least] loop
+    begin
+      perform pg_temp.door_day(cap - share - least_);
+      for i in 1..courses loop
+        perform pg_temp.door_stage(other, 'study_course', 'queued');
+      end loop;
+      if spent_s > 0 then
+        job := pg_temp.door_stage(other, 'study_course', 'running');
+        insert into public.cost_ledger (job_id, provider, operation, unit, quantity, cost_cents)
+        values (job, 'test', 'study_extract', 'call', 1, spent_s);
+      end if;
+      perform pg_temp.door_admits_exactly(reader, 1,
+        format('beside %s waiting courses, %s of the share spent', courses, spent_s));
+      raise exception using errcode = 'P0001', message = 'probe done';
+    exception when raise_exception then
+      if sqlerrm is distinct from 'probe done' then raise; end if;
+    end;
+  end loop;
+
+  -- 6c. And the share is EACH reader's, not one for everybody. Two readers each with more
+  --     courses waiting than their share can start count as two shares.
+  begin
+    perform pg_temp.door_day(cap - 2 * share - least_);
+    for i in 1..courses loop
+      perform pg_temp.door_stage(other, 'study_course', 'queued');
+      perform pg_temp.door_stage(third, 'study_course', 'queued');
+    end loop;
+    perform pg_temp.door_admits_exactly(reader, 1,
+      format('beside two readers'' %s waiting courses each', courses));
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+
+  -- 6d. And a PARKED course counts under the same share: for a reader whose share is
+  --     already spent today, it adds nothing. Its reservation cannot fit the share, today
+  --     or at any point before midnight.
+  begin
+    perform pg_temp.door_day(cap - share - 2 * least_);
+    job := pg_temp.door_stage(other, 'study_course', 'running', 'nothing', 'none');
+    insert into public.cost_ledger (job_id, provider, operation, unit, quantity, cost_cents)
+    values (job, 'test', 'study_extract', 'call', 1, share);
+    perform pg_temp.door_stage(other, 'study_course', 'running', 'nothing', 'parked');
+    if public.spend_today() <> cap - 2 * least_ then
+      raise exception 'the fixture for a spent share did not take; spend_today() is %',
+        public.spend_today();
+    end if;
+    perform pg_temp.door_admits_exactly(reader, 2, 'beside a parked course, its share spent');
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+
+  -- 7. `low` is four fifths of the day spent, due or parked. A day spent a job short of
+  --    it, with one job due or one parked, is low; the same day with neither is open.
+  foreach state in array array['due', 'parked'] loop
+    begin
+      perform pg_temp.door_day(ceil(cap * 0.8) - least_);
+      perform set_config('role', 'authenticated', true);
+      perform set_config('request.jwt.claims',
+        json_build_object('sub', reader, 'role', 'authenticated')::text, true);
+      if public.generation_budget_state() is distinct from 'open' then
+        raise exception 'a day spent short of four fifths, with nothing waiting, reads %',
+          public.generation_budget_state();
+      end if;
+      perform pg_temp.door_stage(other, 'canonical_summary', 'running', 'nothing', state);
+      perform set_config('role', 'authenticated', true);
+      if public.generation_budget_state() is distinct from 'low' then
+        raise exception
+          'a day with four fifths of it spent or % reads %. The warning has to come from '
+          'what the day has agreed to, not only from what it has spent.',
+          state, public.generation_budget_state();
+      end if;
+      raise exception using errcode = 'P0001', message = 'probe done';
+    exception when raise_exception then
+      if sqlerrm is distinct from 'probe done' then raise; end if;
+    end;
+  end loop;
+
+  -- 8. A job still in its stagger delay holds nothing. The door sends a reader's fourth
+  --    job and later ones with a delay, and until the message is visible no worker can
+  --    start the job, so it cannot spend. The same goes for a job with no message at
+  --    all, which is stranded. On a day with room for two, either one leaves room for
+  --    two. Once its message is due, the job counts and leaves room for one.
+  foreach state in array array['staggered', 'none'] loop
+    begin
+      perform pg_temp.door_day(cap - 2 * least_);
+      perform pg_temp.door_stage(other, 'private_summary', 'queued', 'nothing', state);
+      perform pg_temp.door_admits_exactly(reader, 2, 'beside a job ' || state);
+      raise exception using errcode = 'P0001', message = 'probe done';
+    exception when raise_exception then
+      if sqlerrm is distinct from 'probe done' then raise; end if;
+    end;
+  end loop;
+  begin
+    perform pg_temp.door_day(cap - 2 * least_);
+    job := pg_temp.door_stage(other, 'private_summary', 'queued', 'nothing', 'staggered');
+    update pgmq.q_generation q set vt = clock_timestamp() - interval '1 second'
+     where q.message ->> 'jobId' = job::text;
+    perform pg_temp.door_admits_exactly(reader, 1, 'beside a staggered job now due');
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+  --    And a message already DELIVERED is a job a worker is on, even though the read has
+  --    pushed its visibility into the future.
+  begin
+    perform pg_temp.door_day(cap - 2 * least_);
+    job := pg_temp.door_stage(other, 'private_summary', 'running', 'nothing', 'staggered');
+    update pgmq.q_generation q set read_ct = 1
+     where q.message ->> 'jobId' = job::text;
+    perform pg_temp.door_admits_exactly(reader, 1, 'beside a job a worker is on');
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+
+  -- 9. Four accounts cannot close an empty day between them. Each has its three fast jobs
+  --    failed and eight more in the stagger, empty. Counted, that was 204 cents of
+  --    "waiting" and every fifth reader refused for four hours. Not yet due, it is nothing.
+  begin
+    perform pg_temp.door_day(0);
+    for r in 1..4 loop
+      job := extensions.gen_random_uuid();
+      insert into auth.users (id, instance_id, aud, role, email, encrypted_password,
+                              email_confirmed_at, created_at, updated_at,
+                              raw_app_meta_data, raw_user_meta_data, is_anonymous)
+      values (job, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+              'door-four' || left(job::text, 8) || '@example.test', '', now(), now(), now(),
+              '{"provider":"email","providers":["email"]}'::jsonb, '{}'::jsonb, false);
+      for i in 1..3 loop
+        perform pg_temp.door_stage(job, 'private_summary', 'failed');
+      end loop;
+      for i in 1..8 loop
+        perform pg_temp.door_stage(job, 'private_summary', 'queued', 'nothing', 'staggered');
+      end loop;
+    end loop;
+    perform set_config('role', 'authenticated', true);
+    perform set_config('request.jwt.claims',
+      json_build_object('sub', reader, 'role', 'authenticated')::text, true);
+    if public.generation_budget_state() is distinct from 'open' then
+      raise exception 'four accounts'' staggered jobs made an empty day read %',
+        public.generation_budget_state();
+    end if;
+    if not pg_temp.door_admits('A fifth reader') then
+      raise exception 'four accounts'' staggered jobs closed an empty day to a fifth reader';
+    end if;
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+
+  -- 10. A job PARKED on the budget counts, whether or not its message is due, and when it
+  --     is what closes the door the day is SPENT, not committed: its reservation has been
+  --     refused, and nothing that runs today gives that room back. With room left by spend
+  --     and the parked job for exactly one more job, one is admitted and the day is then
+  --     committed by it. A cent more spent, and the parked job closes the day: spent, with
+  --     the midnight sentence.
+  begin
+    perform pg_temp.door_day(cap - 2 * least_);
+    perform pg_temp.door_stage(other, 'private_summary', 'running', 'nothing', 'parked');
+    perform pg_temp.door_admits_exactly(reader, 1, 'beside a parked job, one room left',
+                                        'committed');
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+  begin
+    perform pg_temp.door_day(cap - 2 * least_ + 1);
+    perform pg_temp.door_stage(other, 'private_summary', 'running', 'nothing', 'parked');
+    perform pg_temp.door_admits_exactly(reader, 0, 'beside a parked job, a cent short',
+                                        'spent');
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+
+  -- 10b. A budget wait sent YESTERDAY is not a parked job today. Such a job re-asks within
+  --      fifteen minutes of midnight on a fresh day, so it counts as due, and a day it
+  --      closes is committed, not spent. The edge is today's UTC midnight: a wait sent at
+  --      midnight is today's, and one sent a moment before it is yesterday's. Both staged
+  --      on a day a cent short of room for the job and one more.
+  foreach charged in array array[0, 1] loop
+    begin
+      perform pg_temp.door_day(cap - 2 * least_ + 1);
+      job := pg_temp.door_stage(other, 'private_summary', 'running', 'nothing', 'parked');
+      update pgmq.q_generation q
+         set enqueued_at = date_trunc('day', (now() at time zone 'utc')) at time zone 'utc'
+                           - charged * interval '1 microsecond'
+       where q.message ->> 'jobId' = job::text;
+      perform pg_temp.door_admits_exactly(reader, 0,
+        case when charged = 0 then 'beside a job parked at midnight'
+             else 'beside a job parked a moment before midnight' end,
+        case when charged = 0 then 'spent' else 'committed' end);
+      raise exception using errcode = 'P0001', message = 'probe done';
+    exception when raise_exception then
+      if sqlerrm is distinct from 'probe done' then raise; end if;
+    end;
+  end loop;
+
+  -- 11. The catalogue's jobs are not a reader's, and do not close the door to one. More
+  --     of them queued than the whole day could fund, plus one that has attempted and been
+  --     ledgered at nothing, leave a day with room for two admitting exactly two. The
+  --     reservation, not the door, is what stops them and the readers together passing the
+  --     cap.
+  begin
+    perform pg_temp.door_day(cap - 2 * least_);
+    for i in 1..(floor(cap / least_)::int + 1) loop
+      perform pg_temp.door_stage(null, 'canonical_summary', 'queued');
+    end loop;
+    perform pg_temp.door_stage(null, 'canonical_summary', 'running', 'a zero-cost attempt');
+    perform pg_temp.door_admits_exactly(reader, 2, 'beside a day''s worth of catalogue');
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+
+  -- 12. A replay is still a replay on a full day. It is answered before the day is asked,
+  --     because it spends nothing: it returns the job that was already admitted.
+  begin
+    perform pg_temp.door_day(cap - least_);
+    perform set_config('role', 'authenticated', true);
+    perform set_config('request.jwt.claims',
+      json_build_object('sub', reader, 'role', 'authenticated')::text, true);
+
+    first := public.enqueue_generation_job(
+      jsonb_build_object('title', 'The last room', 'text', pg_temp.source()), mut);
+    if pg_temp.door_refusal('After the last room', extensions.gen_random_uuid())
+       is distinct from 'committed' then
+      raise exception
+        'the last room was taken by a job not yet started, and the door did not say the '
+        'day is committed.';
+    end if;
+    again := public.enqueue_generation_job(
+      jsonb_build_object('title', 'The last room', 'text', pg_temp.source()), mut);
+    if (again ->> 'replayed')::boolean is not true
+       or (again ->> 'jobId') is distinct from (first ->> 'jobId') then
+      raise exception 'a replay on a full day answered % rather than the job %',
+        again, first ->> 'jobId';
+    end if;
+    if (again ->> 'budget') is distinct from 'committed' then
+      raise exception 'a replay on a committed day reported the budget as %',
+        again ->> 'budget';
+    end if;
+    perform set_config('role', 'postgres', true);
+    select count(*) into rows_ from public.generation_jobs gj
+     where gj.requester_id = reader and gj.client_mutation_id = mut;
+    if rows_ <> 1 then
+      raise exception 'one submission and its replay left % job rows', rows_;
+    end if;
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+
+  raise notice 'spend_cap.sql: the door counts what readers asked for and is due or parked, '
+    'once, at the least it reserves and at most three jobs'' worth a reader, and says '
+    'whether the day is spent or only committed';
 end $$;
 
 -- ------------------------------------------- 8. a spent day refuses at the door
@@ -678,7 +1461,8 @@ begin
     json_build_object('sub', reader, 'role', 'authenticated')::text, true);
 
   begin
-    perform public.enqueue_generation_job('{"title":"After the budget","text":"x"}'::jsonb);
+    perform public.enqueue_generation_job(
+      jsonb_build_object('title', 'After the budget', 'text', pg_temp.source()));
   exception when configuration_limit_exceeded then
     refused := true;
   end;
@@ -740,7 +1524,8 @@ begin
     json_build_object('sub', reader, 'role', 'authenticated')::text, true);
 
   begin
-    perform public.enqueue_generation_job('{"title":"Ten cents left","text":"x"}'::jsonb);
+    perform public.enqueue_generation_job(
+      jsonb_build_object('title', 'Ten cents left', 'text', pg_temp.source()));
   exception when configuration_limit_exceeded then
     refused := true;
   end;

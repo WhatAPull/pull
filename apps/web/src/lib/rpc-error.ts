@@ -64,7 +64,25 @@ export function rpcError(error: unknown): Error {
   // Keep the SQLSTATE reachable. Callers already branch on 23505, and "not
   // authorised" versus "constraint violated" are very different things to be told.
   wrapped.name = e.code ? `PostgrestError ${e.code}` : 'PostgrestError';
+  // And the DETAIL, on its own. It is already in the message, joined to the sentence, but
+  // a function that raises one SQLSTATE for two different refusals says which in its
+  // DETAIL, and a caller should read that without parsing a sentence.
+  if (typeof e.details === 'string' && e.details.length > 0) {
+    Object.defineProperty(wrapped, 'detail', { value: e.details, enumerable: false });
+  }
   return wrapped;
+}
+
+/**
+ * The DETAIL Postgres attached to a refusal, or nothing. Read off an error `rpcError`
+ * made, or off a raw PostgREST error object.
+ */
+export function sqlDetail(error: unknown): string | undefined {
+  const detail =
+    error instanceof Error
+      ? (error as Error & { detail?: unknown }).detail
+      : ((error ?? {}) as RpcErrorShape).details;
+  return typeof detail === 'string' && detail.length > 0 ? detail : undefined;
 }
 
 /**

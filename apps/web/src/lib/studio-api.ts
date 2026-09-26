@@ -1,9 +1,13 @@
 import { rpcError } from './rpc-error.js';
 import { supabase } from './supabase.js';
-import { isBudgetState, type BudgetState, type StudioJob, type StudioKind } from './studio.js';
+import { budgetOf, type BudgetState, type StudioJob, type StudioKind } from './studio.js';
 
 export {
+  BUDGET_RECHECK_MS,
+  shouldRecheckBudget,
   budgetLine,
+  budgetOf,
+  budgetRefusal,
   fitImportSource,
   truncationNote,
   waitMinutes,
@@ -40,7 +44,11 @@ export interface Enqueued {
   queue: 'fast' | 'normal';
   delaySeconds: number;
   remainingToday: number;
-  /** `open | low | spent`. Never the figures — see `generation_budget_state()`. */
+  /**
+   * `open | low | committed | spent`, as the server said it: read it through `budgetOf`,
+   * which treats a word this bundle does not know as `open`. Never the figures — see
+   * `generation_budget_state()`.
+   */
   budget: BudgetState;
   /**
    * Set when this answer is a REPLAY — the mutation id named a job that already exists,
@@ -129,10 +137,11 @@ export async function requestPrivateSummary(input: {
  * refusal with a real reason — but swallowing the error here would also hide a broken
  * RPC from the console, so the fallback is at the screen and the throw stays.
  */
-export async function fetchBudgetState(): Promise<BudgetState> {
-  const { data, error } = await supabase.rpc('generation_budget_state');
+export async function fetchBudgetState(signal?: AbortSignal): Promise<BudgetState> {
+  const request = supabase.rpc('generation_budget_state');
+  const { data, error } = await (signal ? request.abortSignal(signal) : request);
   if (error) throw rpcError(error);
-  return isBudgetState(data) ? data : 'open';
+  return budgetOf(data);
 }
 
 /**

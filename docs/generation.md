@@ -174,7 +174,95 @@ a price for it here would inflate every hold for a step that spends nothing.
 `embed` — and `generation_budget_state()` reports `spent` at exactly the same point, so
 the screen never offers room the door will refuse. A floor rather than the ceiling for the
 largest source: a door pinned to the book would turn away an essay with 30 cents of the day
-unspent. The hold is taken
+unspent.
+
+The door also counts **what it has already admitted**. A job that is queued and not yet
+started is neither charged nor held, so `spend_today()` cannot see it. A door that asked
+only about spend admitted every reader who asked on an empty day, fifty jobs each, and the
+jobs the day could not fund waited out the 24-hour budget wait below and failed under a
+screen that had said "Started." Since `20260926200000` the door refuses when
+
+```
+spend_today() + generation_waiting_cents() + min_job_cents() > daily_spend_cap_cents()
+```
+
+and `generation_budget_state()` applies the same test. **Readers' admitted, unstarted jobs
+are counted once they are due; the catalogue's are not.** `generation_waiting()` (and
+`generation_waiting_cents()`, its sum) starts from every job a reader asked for
+(`requester_id is not null`) that is queued or running with nothing charged to it today
+(`cost_cents > 0`, because an attempt ledgered at nothing such as a 429 is not a start) and
+nothing held for it today. A job that has started counts at what it holds or has been
+charged, which `spend_today()` already includes. Of the rest, it reads the `generation`
+queue (`20260926220000`, `20260926230000`):
+
+| The job's messages                                         | Counted as | Why                                                                        |
+| ---------------------------------------------------------- | ---------- | -------------------------------------------------------------------------- |
+| one carries `budgetWaits > 0` and was sent today           | parked     | its reservation was refused today, and it waits for a day that can fund it |
+| one carries `budgetWaits > 0` and was sent before midnight | due        | yesterday's refusal says nothing about today: it re-asks on a fresh day    |
+| one is visible now, or already delivered                   | due        | a worker can start it now, or has                                          |
+| all still delayed (the stagger, a held-source wait)        | nothing    | it cannot spend before it runs, and when it comes due the door counts it   |
+| none at all                                                | nothing    | it is stranded, and the sweep fails it                                     |
+
+**No reader holds more than three jobs' worth of the day.** A reader's parked and due
+summaries, of both kinds together, count at `min_job_cents()` each for at most three of them
+(`20260926210000`). Three is the fast allowance. A reader's courses count at
+`study_min_job_cents()` each, together no more than their study share can still fund. A
+reader is never refused for having jobs waiting: the quota stays three fast, then a
+widening stagger, fifty in total.
+
+**A target with too little to summarise is refused at the door** (22023, "the generation
+target must carry at least 200 characters of text, or a URL, to summarise"). The pipeline
+fails such a job for nothing, which made it free to submit. Text is what the pipeline uses
+whenever there is any, and `acquire` refuses fewer than 200 characters of it. So the door
+asks for 200 once whitespace is trimmed, trimmed and counted as the Studio does before it
+sends (`text.trim().length`: JavaScript's whitespace set, UTF-16 code units). The Studio
+never sends less, so the door refuses nothing it would accept. With no text, the door asks
+for a URL with something in it. A `work_id` is not a source. The three 200s
+(`MIN_TEXT_CHARS`, `acquire` and the door's `min_text_chars`) move together. The catalogue
+does not come through this door: its jobs are queued by migration and by
+`scripts/seed-corpus.mjs`.
+
+**What is left.** A reader's due jobs are their fast ones, at most three, and they start
+within moments of being admitted. So one account can hold at most three jobs' worth of the
+day, and a delivered job counts until it reserves or fails. A malformed or dead URL is
+still free to submit and fails at `acquire` for nothing, since the door does not parse or
+fetch it. So an account can repeat this three jobs at a time, and
+enough accounts together can keep the door `committed` for those moments. The reservation
+bounds the day whatever the door admits.
+
+The door is an estimate. A large source reserves more than the floor, a started job's
+remaining steps are not counted, and neither are a reader's jobs past their third or jobs
+not yet due. Two readers at the door at the same moment can each miss the other's job,
+because the count runs under the requester's lock and not the budget's. The reservation is
+what holds the cap exactly.
+
+The door refuses a day in **two** ways, and `generation_budget_state()` names both:
+
+| State       | When                                                                                | The reader is told                                                |
+| ----------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `spent`     | spend alone, or spend and parked jobs together, leave no room for `min_job_cents()` | Summaries resume at 00:00 UTC                                     |
+| `committed` | otherwise, and the jobs that are due take the room (53400, DETAIL `committed`)      | Try again in a little while; the Studio asks again while it lasts |
+| `low`       | four fifths of the day spent, parked or due                                         | Nearly used up                                                    |
+| `open`      | otherwise                                                                           | There is room                                                     |
+
+A committed day reopens as the jobs that are due run, and one that fails early hands its
+share straight back, so it promises no hour. Parked jobs are different: they wait for a day
+that can fund them, so a day they close is spent. The Studio re-reads the state every
+minute while it shows `committed`, and when the page is shown again, at most once every ten
+seconds.
+
+The study door, `study_enqueue_course`, still tests spend alone (`spend_today() +
+study_min_job_cents() > cap`) until a follow-up aligns it with this one, after the study
+stack that redefines it has merged.
+
+The catalogue's own jobs, which have no requester, are left out on purpose. The door
+answers a reader's request, and the catalogue is the operator's scheduling. A seeding
+backlog waits behind readers instead of closing the Studio to them, and the reservation
+still bounds the day whoever holds the money. It also keeps `pnpm dev` usable after a fresh
+`db reset`, where `20260907011000` has just queued the whole manifest and nothing locally
+runs it.
+
+The hold is taken
 **after** the source claim — a job that is only ever going to wait on a source another job
 is synthesising should not take a hold it will not use — and **immediately before** the
 provider, because a reservation taken afterwards is a receipt rather than a cap.

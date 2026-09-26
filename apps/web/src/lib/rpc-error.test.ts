@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { isPermanentFailure, isSchemaMismatch, rpcError, TRANSPORT_ERROR } from './rpc-error.js';
+import {
+  isPermanentFailure,
+  isSchemaMismatch,
+  rpcError,
+  sqlDetail,
+  sqlState,
+  TRANSPORT_ERROR,
+} from './rpc-error.js';
 import { isOfflineFailure } from './offline.js';
 
 /**
@@ -51,6 +58,30 @@ describe('rpcError', () => {
   it('passes a real Error through untouched, so stacks survive', () => {
     const original = new Error('network down');
     expect(rpcError(original)).toBe(original);
+  });
+
+  /*
+   * `enqueue_generation_job` refuses a day two ways under one SQLSTATE, 53400, and says
+   * which in its DETAIL. The screen has to read that without parsing the sentence.
+   */
+  it('keeps the DETAIL reachable on its own, beside the joined message', () => {
+    const e = rpcError({
+      message: 'today’s generation budget is committed to summaries already waiting to start.',
+      details: 'committed',
+      hint: null,
+      code: '53400',
+    });
+    expect(sqlState(e)).toBe('53400');
+    expect(sqlDetail(e)).toBe('committed');
+    expect(e.message).toContain('committed to summaries');
+  });
+
+  it('has no DETAIL where Postgres gave none, and reads a raw PostgREST object too', () => {
+    expect(sqlDetail(rpcError(postgrest))).toBeUndefined();
+    expect(sqlDetail(rpcError({ message: 'x', details: '' }))).toBeUndefined();
+    expect(sqlDetail({ message: 'x', details: 'committed', code: '53400' })).toBe('committed');
+    expect(sqlDetail(new Error('network down'))).toBeUndefined();
+    expect(sqlDetail(null)).toBeUndefined();
   });
 });
 
