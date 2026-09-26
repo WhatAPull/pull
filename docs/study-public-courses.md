@@ -48,24 +48,26 @@ private result made public.
 
 It is refused, in this order, with:
 
-| Refusal              | Unless                                                                                                                                                                                                                                                                                                                                                                                                |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 22023                | The slug is 3 to 80 lower-case letters, digits and single hyphens, and a reviewer is named                                                                                                                                                                                                                                                                                                            |
-| P0002                | The generation exists                                                                                                                                                                                                                                                                                                                                                                                 |
-| 55000 `public`       | It is not a reader's copy of a public course                                                                                                                                                                                                                                                                                                                                                          |
-| 42501 `curator`      | Its owner is a curator                                                                                                                                                                                                                                                                                                                                                                                |
-| 55000 `unvalidated`  | Its text is validated, validation passed a lesson in it, and a lesson of it is validated now                                                                                                                                                                                                                                                                                                          |
-| 55000 `superseded`   | It is its course's current generation                                                                                                                                                                                                                                                                                                                                                                 |
-| 55000 `published`    | It was not published before                                                                                                                                                                                                                                                                                                                                                                           |
-| P0002                | The work exists                                                                                                                                                                                                                                                                                                                                                                                       |
-| 42501 `rights`       | The work's `rights_status` is `public_domain` or `licensed` -- never `user_owned`, `review_required` or anything else                                                                                                                                                                                                                                                                                 |
-| 42501 `unregistered` | Every source of the generation is registered to that work                                                                                                                                                                                                                                                                                                                                             |
-| 22023 `too_large`    | It has at most 400 validated claims and 300 validated questions                                                                                                                                                                                                                                                                                                                                       |
-| 22023 `quotes`       | Every quotation is at most 300 characters -- spans that overlap or lie within 200 characters of each other are one quotation, gap and all -- and, with every course published from the work before it, withdrawn or not, the work's courses quote at most a tenth of each registered text and 20,000 characters of the work between them ([What a work's courses quote](#what-a-works-courses-quote)) |
-| 22023 `copied`       | The course's own words -- title, goal, overview, objectives, lessons, claims, questions, answers -- do not repeat twelve words in a row of the source from outside its quotations                                                                                                                                                                                                                     |
+| Refusal              | Unless                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 55000 `isolation`    | It is called in a READ COMMITTED transaction, the default ([below](#what-published-courses-quote))                                                                                                                                                                                                                                                                                                                                                     |
+| 22023                | The slug is 3 to 80 lower-case letters, digits and single hyphens, and a reviewer is named                                                                                                                                                                                                                                                                                                                                                             |
+| P0002                | The generation exists                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| 55000 `public`       | It is not a reader's copy of a public course                                                                                                                                                                                                                                                                                                                                                                                                           |
+| 42501 `curator`      | Its owner is a curator                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| 55000 `unvalidated`  | Its text is validated, validation passed a lesson in it, and a lesson of it is validated now                                                                                                                                                                                                                                                                                                                                                           |
+| 55000 `superseded`   | It is its course's current generation                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| 55000 `published`    | It was not published before                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| P0002                | The work exists                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| 42501 `rights`       | The work's `rights_status` is `public_domain` or `licensed` -- never `user_owned`, `review_required` or anything else                                                                                                                                                                                                                                                                                                                                  |
+| 42501 `unregistered` | Every source of the generation is registered to that work                                                                                                                                                                                                                                                                                                                                                                                              |
+| 22023 `too_large`    | It has at most 400 validated claims and 300 validated questions                                                                                                                                                                                                                                                                                                                                                                                        |
+| 22023 `quotes`       | Every quotation is at most 300 characters -- spans that overlap or lie within 200 characters of each other are one quotation, gap and all -- and, with every course published before it, withdrawn or not, the courses quote at most a tenth of each registered text between them, whatever work each was published from, and the work's courses at most 20,000 characters of the work ([What published courses quote](#what-published-courses-quote)) |
+| 22023 `copied`       | The course's own words -- title, goal, overview, objectives, lessons, claims, questions, answers -- do not repeat twelve words in a row of the source from outside its quotations                                                                                                                                                                                                                                                                      |
 
-The work's row is locked while its rights are read and its quotations counted, so two
-publications of one work cannot each count without the other.
+The work's row is locked while its rights are read and its quotations counted, and so is
+each registered text the course quotes, so two publications of one work, or of one text,
+cannot each count without the other.
 
 **What is published is a snapshot**: the validated claims, the validated lessons, and the
 validated questions -- except a question whose lesson is held back, or which rests on a claim
@@ -80,29 +82,41 @@ is a new course.
 
 **What the schema cannot check.** It measures quotations against the text the service role
 registered, so a tenth of that text is a tenth of the work only if the registered text is the
-work; and a text registered again with any change is another text, with a tenth of its own --
-the 20,000 characters of the work are what holds whatever is registered. A lesson that
-paraphrases a passage closely enough to replace it repeats no twelve words of it; nor does
-one that copies a passage with a word changed every eleven. And a "word" is what lies between
-spaces and punctuation, so in a script written without spaces -- Chinese, Japanese, Thai -- a
-word is a whole clause, and twelve of them are far more than twelve words. All of these are
-what the review in step 3 is for; the caps are what no review can exceed.
+work; and a text registered again with any change -- a character added -- is another text,
+with a tenth of its own. Registered to the same work, the work's 20,000 characters still hold
+both; registered to another work, only that work's 20,000 do. A lesson that paraphrases a
+passage closely enough to replace it repeats no twelve words of it; nor does one that copies a
+passage with a word changed every eleven. And a "word" is what lies between spaces and
+punctuation, so in a script written without spaces -- Chinese, Japanese, Thai -- a word is a
+whole clause, and twelve of them are far more than twelve words. All of these are what the
+review in step 3 is for; the caps are what no review can exceed.
 
-### What a work's courses quote
+### What published courses quote
 
-The caps hold across every course ever published from a work, not one course at a time: a
-course withdrawn is counted too, since its readers keep their copies, and only a course
-deleted -- withdrawn, with no copy left anywhere -- stops counting. Each published course
-records its quotations as ranges of the registered text, which is known by its SHA-256, so
-a version saved again with the same text is the same text. At publishing, the new course's
-ranges are merged with every earlier course's, text by text, and:
+The caps hold across every course ever published, not one course at a time: a course
+withdrawn is counted too, since its readers keep their copies, and only a course deleted --
+withdrawn, with no copy left anywhere -- stops counting. Each published course records its
+quotations as ranges of the registered text, which is known by its SHA-256, so a version saved
+again with the same text is the same text, and so is the same text registered to another
+work. At publishing, the new course's ranges are merged with every earlier course's, text by
+text, and:
 
-- of each registered text, the ranges quoted between them are at most a tenth of it;
-- of the work, all of them together are at most 20,000 characters.
+- of each registered text it quotes, what every course quotes of it -- whatever work each was
+  published from -- is at most a tenth of it;
+- of the work, what its courses quote between them is at most 20,000 characters.
 
 A passage two courses both quote counts once, so publishing the same passages again takes
 nothing more; courses of one short text, each quoting a different passage well under a tenth
 of it, stop at the first that would take the text past its tenth.
+
+Two publications that would each count without the other queue instead: two of one work at
+the work's row, and two quoting one text -- of one work or of two -- at a lock on that text,
+taken for each text the course quotes, in key order, after the work's row
+([`study-courses.md`](./study-courses.md), "Lock order"). What they count is read after the
+locks, which only READ COMMITTED does: under REPEATABLE READ or SERIALIZABLE a transaction's
+snapshot is older than the lock it waited for, and misses the course it waited for, so
+publishing refuses them (55000 `isolation`). READ COMMITTED is Postgres's default, so only
+a transaction that asked for another is refused.
 
 ## The catalogue
 
@@ -160,7 +174,7 @@ select public.withdraw_public_study_course('<id>', '<who>', '<why>');
 Withdrawing takes the course out of the catalogue and stops new copies; an enrolment in
 flight finishes first, and the next is refused. It touches nobody's copy, and records a
 `moderation_decisions` row each time it is called; the first withdrawal's time and reason
-stand. What the course quotes still counts towards its work's caps. Its readers' copies say
+stand. What the course quotes still counts towards the caps. Its readers' copies say
 it is no longer offered.
 
 For a rights complaint, where the copies are what is complained of, remove them after
@@ -184,11 +198,17 @@ the work's rights.
 
 A public course outlives the curator's account and the generation it was published from: it
 is a snapshot. It goes only once withdrawn and with no copies left, and only as the database
-owner -- and only then does what it quoted stop counting towards its work's caps:
+owner -- and only then does what it quoted stop counting towards the caps:
 
 1. `withdraw_public_study_course`, then `remove_public_course_copies` until it returns 0;
 2. `delete from public.public_study_courses where id = '<id>'` -- its log of enrolments goes
    with it.
+
+Deleting it waits for every copy to be removed, of the course and of its excerpts: a reader
+who deleted their copy of the course keeps the excerpts, which name the course only by a
+label, so while any reader holds them the deletion is refused (55000). Deleted first, the
+course would stop counting what they hold of its texts, and leave `remove_public_course_copies`
+nothing to find them by.
 
 A work with a public course is not deleted (`on delete restrict`): delete its courses that
 way first. Deleting the work then takes its registered texts in `study_curated_sources`.

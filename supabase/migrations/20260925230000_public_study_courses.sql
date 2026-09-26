@@ -16,13 +16,13 @@
 -- 2. ANALYSIS, NOT REPRODUCTION (law 4). Only validated claims, lessons and questions are
 --    published, and the source itself is not: what goes out are the evidence spans the claims
 --    quote, merged where they overlap or lie within 200 characters of each other into one
---    quotation, each quotation at most 300 characters. Every course published from a work --
---    a withdrawn one too, whose readers keep their copies -- counts towards what the work's
---    courses quote between them: of each registered text, at most a tenth, and of the work,
---    at most 20,000 characters, a passage two courses both quote counted once. They become
---    the course's excerpts, and the evidence points into them. The course's own text -- its
---    lessons, claims, questions, overview -- may not repeat twelve words in a row of the
---    source from outside those quotations.
+--    quotation, each quotation at most 300 characters. Every course published -- a withdrawn
+--    one too, whose readers keep their copies -- counts towards what the courses quote between
+--    them: of each registered text, whatever work it is registered to, at most a tenth, and
+--    of each work, at most 20,000 characters, a passage two courses both quote counted once.
+--    They become the course's excerpts, and the evidence points into them. The course's own
+--    text -- its lessons, claims, questions, overview -- may not repeat twelve words in a row
+--    of the source from outside those quotations.
 -- 3. ONE PREPARATION, MANY READERS -- the cost law pointing the right way again. Enrolling
 --    (`enrol_public_course`) copies the published snapshot into the reader's own study tables:
 --    no model call, no job, nothing against their allowance. Everything per reader then works
@@ -100,9 +100,9 @@ create table public.public_study_courses (
   excerpts         text not null check (char_length(excerpts) between 1 and 24000),
   -- Each quotation, in the excerpts' order: the registered text it quotes (`sha256`, of that
   -- text, and `chars`, its length), where in that text (`from`, `to`), and where in the
-  -- excerpts (`at`), in characters. What a work's courses quote between them is counted from
-  -- these -- the source versions may be deleted after publishing -- and a reader's copy of
-  -- the excerpts is cut into its quotations by them.
+  -- excerpts (`at`), in characters. What the courses quote of a text, and of a work, between
+  -- them is counted from these -- the source versions may be deleted after publishing -- and a
+  -- reader's copy of the excerpts is cut into its quotations by them.
   quotations       jsonb not null
                    check (jsonb_typeof(quotations) = 'array' and jsonb_array_length(quotations) > 0),
   snapshot         jsonb not null
@@ -142,8 +142,11 @@ grant select on public.public_study_courses to service_role;
 /*
  * A published course does not change. The one update allowed is its withdrawal, once:
  * `withdrawn_at` and `withdrawn_reason` from null to set. An update that changes nothing
- * passes, so a second withdrawal is not an error. It is deleted only once withdrawn (and the
- * readers' copies, which refer to it, are gone), and never truncated.
+ * passes, so a second withdrawal is not an error. It is deleted only once withdrawn and every
+ * reader's copy is gone, and never truncated. A copy of the course refers to it; a copy of
+ * its excerpts only names it (`origin_label`), and outlives a copy of the course the reader
+ * deleted -- deleted before them, the course would stop counting what they hold of the work
+ * (publish_study_course), and leave `remove_public_course_copies` nothing to find them by.
  */
 create function public.public_study_course_is_final()
 returns trigger
@@ -156,6 +159,13 @@ begin
   elsif tg_op = 'DELETE' then
     if old.withdrawn_at is null then
       raise exception 'a published course is withdrawn before it is deleted'
+        using errcode = '55000';
+    end if;
+    if exists (select 1 from public.study_source_versions v
+               where v.format = 'public_course'
+                 and v.origin_label = 'public_course:' || old.id::text) then
+      raise exception 'a published course is deleted once every reader''s copy of its excerpts '
+                      'is removed (remove_public_course_copies)'
         using errcode = '55000';
     end if;
     return old;
@@ -330,6 +340,7 @@ revoke all on function public.study_word_runs(text, int) from public, anon, auth
  * Publish a course the project prepared, from a rights-cleared work. Service role only.
  * Refused, in this order, with:
  *
+ *   55000 `isolation`   the transaction is not READ COMMITTED
  *   22023               a bad slug, or no reviewer named
  *   P0002               no such generation
  *   55000 `public`      the generation is a reader's copy of a public course
@@ -344,8 +355,9 @@ revoke all on function public.study_word_runs(text, int) from public, anon, auth
  *   22023 `too_large`   more than 400 validated claims or 300 questions
  *   22023 `quotes`      a quotation over 300 characters -- spans that overlap or lie within 200
  *                       characters of each other are one quotation, gap and all -- or, with
- *                       what every course published from the work quotes, withdrawn or not,
- *                       over a tenth of a registered text or 20,000 characters of the work
+ *                       what every course published before it quotes, withdrawn or not, over
+ *                       a tenth of a registered text, whatever work each course is of, or
+ *                       over 20,000 characters of the work
  *   22023 `copied`      the course's own text repeats twelve words in a row of the source from
  *                       outside its quotations
  *
@@ -356,7 +368,15 @@ revoke all on function public.study_word_runs(text, int) from public, anon, auth
  * counted: two publications of one work queue there, so neither counts without the other,
  * and an enrolment -- which share-locks it -- waits for a publication rather than reading
  * rights a publication is about to rely on. Not FOR UPDATE: a save or a summary of the work
- * key-shares it, and has no reason to wait for a publication.
+ * key-shares it, and has no reason to wait for a publication. A text may be registered to two
+ * works, whose rows do not serialise their publications, so each registered text the course
+ * quotes is locked too -- an advisory lock per text, in key order, after the work's row --
+ * before what the courses quote of it is read.
+ *
+ * The locks serialise publications only if the count is read after they are granted, so a
+ * course is published in a READ COMMITTED transaction alone: under REPEATABLE READ or
+ * SERIALIZABLE the transaction's one snapshot is taken before them, and does not see the
+ * course whose publication they waited for.
  */
 create function public.publish_study_course(
   p_generation_id uuid,
@@ -390,6 +410,8 @@ declare
   work_quoted  bigint;
   text_quoted  bigint;
   text_chars   bigint;
+  text_hashes  text[];
+  lock_key     bigint;
   unquoted     text[] := '{}';
   last_end     int;
   claims       jsonb;
@@ -400,6 +422,11 @@ declare
   copied       text;
   new_id       uuid;
 begin
+  if current_setting('transaction_isolation') <> 'read committed' then
+    raise exception 'publish in a READ COMMITTED transaction: under an older snapshot, what is '
+                    'counted would miss a publication it waited for'
+      using errcode = '55000', detail = 'isolation';
+  end if;
   if p_reviewed_by is null or char_length(btrim(p_reviewed_by)) not between 1 and 200 then
     raise exception 'say who reviewed the course' using errcode = '22023';
   end if;
@@ -528,17 +555,32 @@ begin
       using errcode = '22023', detail = 'quotes';
   end if;
 
-  -- What the work's courses would quote between them: this one's quotations with those of
-  -- every course published from the work -- withdrawn too, since its readers keep their
-  -- copies -- merged by registered text, so a passage two courses quote is counted once and
-  -- publishing the same passages again takes nothing more. Checked against a tenth of each
-  -- text, the most-quoted for its length, and against the work's 20,000 characters.
+  -- One lock for each registered text the course quotes, in key order, after the work's row:
+  -- two publications quoting one text -- of one work or of two -- queue here, so neither
+  -- counts what the courses quote of it without the other. Nothing holding one waits for a
+  -- work's row.
+  text_hashes := array(select distinct q ->> 'sha256'
+                       from jsonb_array_elements(quotations) as q);
+  for lock_key in
+    select distinct pg_catalog.hashtextextended('public_course_text:' || h, 0)
+    from unnest(text_hashes) as h
+    order by 1
+  loop
+    perform pg_advisory_xact_lock(lock_key);
+  end loop;
+
+  -- What the courses would quote between them of each text this one quotes: its quotations
+  -- with those of every published course quoting the same text -- whatever work it was
+  -- published from, since a text is known by its hash, not by the work it is registered to,
+  -- and withdrawn too, since its readers keep their copies -- merged, so a passage two courses
+  -- quote is counted once and publishing the same passages again takes nothing more. Checked
+  -- against a tenth of each text, the most-quoted for its length.
   with ranges as (
     select q ->> 'sha256' as text_hash, (q ->> 'chars')::bigint as chars,
            int4range((q ->> 'from')::int, (q ->> 'to')::int) as r
     from public.public_study_courses p
     cross join jsonb_array_elements(p.quotations) as q
-    where p.work_id = p_work_id
+    where q ->> 'sha256' = any (text_hashes)
     union all
     select q ->> 'sha256', (q ->> 'chars')::bigint,
            int4range((q ->> 'from')::int, (q ->> 'to')::int)
@@ -554,16 +596,36 @@ begin
            (select sum(upper(piece) - lower(piece)) from unnest(b.quoted) as piece) as quoted
     from by_text b
   )
-  select sum(m.quoted),
-         (array_agg(m.quoted order by m.quoted::numeric / greatest(m.chars, 1) desc))[1],
+  select (array_agg(m.quoted order by m.quoted::numeric / greatest(m.chars, 1) desc))[1],
          (array_agg(m.chars order by m.quoted::numeric / greatest(m.chars, 1) desc))[1]
-    into work_quoted, text_quoted, text_chars
+    into text_quoted, text_chars
   from measured m;
   if text_quoted * 10 > text_chars then
-    raise exception 'the work''s courses would quote % characters of a % character text between '
-                    'them; the limit is a tenth', text_quoted, text_chars
+    raise exception 'the courses would quote % characters of a % character text between them; '
+                    'the limit is a tenth', text_quoted, text_chars
       using errcode = '22023', detail = 'quotes';
   end if;
+
+  -- And what the work's courses would quote of it between them: this one's quotations with
+  -- those of every course published from the work, withdrawn too, merged text by text, against
+  -- the work's 20,000 characters.
+  with ranges as (
+    select q ->> 'sha256' as text_hash, int4range((q ->> 'from')::int, (q ->> 'to')::int) as r
+    from public.public_study_courses p
+    cross join jsonb_array_elements(p.quotations) as q
+    where p.work_id = p_work_id
+    union all
+    select q ->> 'sha256', int4range((q ->> 'from')::int, (q ->> 'to')::int)
+    from jsonb_array_elements(quotations) as q
+  ),
+  by_text as (
+    select range_agg(x.r) as quoted
+    from ranges x
+    group by x.text_hash
+  )
+  select sum(upper(piece) - lower(piece)) into work_quoted
+  from by_text b
+  cross join lateral unnest(b.quoted) as piece;
   if work_quoted > max_work then
     raise exception 'the work''s courses would quote % characters of it between them; the limit is %',
       work_quoted, max_work

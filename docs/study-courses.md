@@ -381,11 +381,15 @@ course.
   finishes first and the next sees it withdrawn, and touches nobody's rows.
   `remove_public_course_copies` takes each reader's study lock, in owner-id order, before any
   row of theirs, and deletes their sources before their courses. Publishing locks the work
-  FOR NO KEY UPDATE, which an enrolment's share lock waits for. Before this order, removing
-  copies inside the withdrawal -- a row locked, then its reader's study lock waited for --
-  deadlocked with `delete_study_course`, with the reader adding the course again, and with
-  `delete_my_account`; and an enrolment that key-shared the account row deadlocked with
-  `delete_my_account`.
+  FOR NO KEY UPDATE, which an enrolment's share lock waits for, and after it an advisory lock
+  for each registered text the course quotes (`public_course_text:<sha256>`), in key order:
+  a text may be registered to two works, whose rows do not serialise their publications.
+  Only publishing takes a text's lock, always after its one work's row, so nothing holding a
+  text's lock waits for a work's row, and two publications take the texts they share in one
+  order. Before this order, removing copies inside the withdrawal -- a row locked, then its
+  reader's study lock waited for -- deadlocked with `delete_study_course`, with the reader
+  adding the course again, and with `delete_my_account`; and an enrolment that key-shared
+  the account row deadlocked with `delete_my_account`.
 
 - **Several readers' study locks in owner-id order.** Anything that takes more than one
   reader's study lock in a transaction takes them in owner-id order, as
