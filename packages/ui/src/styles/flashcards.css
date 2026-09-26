@@ -8,6 +8,13 @@
  * nothing moves. A state is always said in words beside any colour or outline.
  */
 
+/* Every word here is the reader's own, and some are long: a 200-character title, a chemical
+   name, a URL. Any of them breaks where it must rather than pushing the page past the screen
+   -- a title of one unbroken word was 3,498 pixels wide on a phone. */
+.flashcards {
+  overflow-wrap: anywhere;
+}
+
 .flashcards__list,
 .flashcards__modes,
 .flashcards__cards,
@@ -43,6 +50,8 @@
 .flashcards__timer {
   font-size: var(--step-1);
   color: var(--text);
+  /* "23.4 s": the unit is a word, not a label, and "S" is not the symbol for a second. */
+  text-transform: none;
 }
 
 .flashcards__heading {
@@ -85,10 +94,12 @@
   color: var(--accent);
 }
 
-/* The two sentences that change what a reader can do on the page: set apart by a rule. */
+/* The two sentences that change what a reader can do on the page: set apart by a rule. Their
+   top margin is the stack's gap, which a `margin: 0` here took away. */
 .flashcards__offline,
 .flashcards__notice {
-  margin: 0;
+  margin-inline: 0;
+  margin-block-end: 0;
   padding-left: var(--space-3);
   border-left: 2px solid var(--rule-strong);
   color: var(--text-soft);

@@ -5,20 +5,45 @@
  *
  * Saving needs a connection; the button says so rather than failing. A save that is refused
  * is said in words, from the refusal's SQLSTATE and DETAIL. Leaving with changes not saved
- * asks once, as a course correction does: the first press says so beside the control, the
- * second leaves.
+ * by the editor's own ways out asks once, as a course correction does: the first press says
+ * so beside the control, the second leaves.
+ *
+ * AND ANY OTHER WAY OUT KEEPS THEM. The masthead, the browser's Back and a closed tab all
+ * left this screen without asking, and what was typed went with it. So the draft is kept in
+ * this tab's `sessionStorage` while it differs from the set -- written a moment after typing
+ * stops, and at once when focus leaves the form -- and the editor, opened again, starts from
+ * it and says so. Closing or reloading the tab asks first (`beforeunload`). The draft goes
+ * when it is saved or let go, when the set is deleted, and when the reader signs out.
+ *
+ * TWO SCREENS DO NOT SAVE OVER EACH OTHER. A save names the version of the set the editor
+ * began from, and one that has changed since -- saved in another tab -- or been deleted is
+ * refused. The reader then chooses: the latest version, or theirs over it.
  */
-import { useId, useState } from 'react';
+import {
+  memo,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   CARD_LIMIT,
   DEFINITION_MAX,
   DESCRIPTION_MAX,
   TERM_MAX,
   TITLE_MAX,
+  draftKey,
   draftUnsaved,
   moveDraftCard,
+  readKeptDraft,
+  saveConflict,
   saveRefusal,
   validateDraft,
+  type DraftCard,
   type FlashcardSet,
   type SavePayload,
   type SetDraft,
@@ -27,7 +52,7 @@ import { isOfflineFailure } from '../lib/offline.js';
 import { sqlDetail, sqlState } from '../lib/rpc-error.js';
 import { mutationId } from '../lib/submission.js';
 import { FlashcardImport } from './FlashcardImport.js';
-import { cardCount, useFocusAfter } from './FlashcardParts.js';
+import { cardCount, readStored, useFocusAfter, writeStored } from './FlashcardParts.js';
 
 /**
  * Languages a reader is likely to study, by the tag a voice is chosen with. "Other" takes
@@ -49,6 +74,16 @@ const LANGUAGES: readonly [string, string][] = [
   ['ko', 'Korean'],
   ['la', 'Latin'],
 ];
+
+/** How long typing has to pause before the draft is written to the tab's storage. */
+const KEEP_AFTER_MS = 400;
+
+/**
+ * `maxLength` counts UTF-16 units and the limits are characters, of which an emoji is two
+ * units. So each box stops at twice its limit: never short of a text the database takes, and
+ * still a stop for a paste of a whole book. `validateDraft` says the limit in characters.
+ */
+const units = (characters: number) => characters * 2;
 
 function LanguageChoice({
   label,
@@ -94,6 +129,10 @@ function LanguageChoice({
           placeholder="e.g. sv or pt-BR"
           value={value}
           maxLength={35}
+          // Enter here finishes a code, not the set: it does not save the form around it.
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') e.preventDefault();
+          }}
           onChange={(e) => onChange(e.target.value.trim())}
         />
       )}
@@ -101,7 +140,102 @@ function LanguageChoice({
   );
 }
 
+/**
+ * One card's row. Every keystroke used to draw every row -- 2,400 textareas at 1,200 cards, a
+ * tenth of a second or more a key, and over a second on a slow phone -- so a key now draws
+ * none of them. The row is memoised, its handlers are the editor's stable callbacks, and its
+ * boxes are the browser's own (`defaultValue`): what is typed is on screen as it is typed, and
+ * reaches the draft through `onChange`, with nothing to draw in between. The list around them
+ * is drawn from a deferred copy of the cards, off the path of the key.
+ *
+ * Nothing else writes into a box once it is drawn: a row added, moved or removed is a row
+ * drawn, moved or dropped by its key, and a draft replaced wholesale is a new editor.
+ */
+const FlashcardRow = memo(function FlashcardRow({
+  card,
+  index,
+  last,
+  idPrefix,
+  onChange,
+  onMove,
+  onRemove,
+}: {
+  card: DraftCard;
+  index: number;
+  last: boolean;
+  idPrefix: string;
+  onChange: (cardId: string, side: 'term' | 'definition', value: string) => void;
+  onMove: (index: number, delta: -1 | 1) => void;
+  onRemove: (index: number) => void;
+}) {
+  const n = index + 1;
+  return (
+    <li className="flashcards__row">
+      <p className="meta flashcards__row-number">Card {n}</p>
+      <div className="flashcards__row-sides">
+        <div className="field">
+          <label className="field__label" htmlFor={`${idPrefix}-term-${card.id}`}>
+            Term<span className="sr-only">, card {n}</span>
+          </label>
+          <textarea
+            id={`${idPrefix}-term-${card.id}`}
+            className="field__textarea flashcards__side-input"
+            rows={2}
+            dir="auto"
+            defaultValue={card.term}
+            maxLength={units(TERM_MAX)}
+            onChange={(e) => onChange(card.id, 'term', e.target.value)}
+          />
+        </div>
+        <div className="field">
+          <label className="field__label" htmlFor={`${idPrefix}-definition-${card.id}`}>
+            Definition<span className="sr-only">, card {n}</span>
+          </label>
+          <textarea
+            id={`${idPrefix}-definition-${card.id}`}
+            className="field__textarea flashcards__side-input"
+            rows={2}
+            dir="auto"
+            defaultValue={card.definition}
+            maxLength={units(DEFINITION_MAX)}
+            onChange={(e) => onChange(card.id, 'definition', e.target.value)}
+          />
+        </div>
+      </div>
+      <div className="flashcards__row-actions">
+        <button
+          type="button"
+          className="btn btn--plain"
+          aria-label={`Move card ${n} up`}
+          aria-disabled={index === 0}
+          onClick={() => onMove(index, -1)}
+        >
+          Up
+        </button>
+        <button
+          type="button"
+          className="btn btn--plain"
+          aria-label={`Move card ${n} down`}
+          aria-disabled={last}
+          onClick={() => onMove(index, 1)}
+        >
+          Down
+        </button>
+        <button
+          type="button"
+          className="btn btn--plain"
+          aria-label={`Remove card ${n}`}
+          onClick={() => onRemove(index)}
+        >
+          Remove
+        </button>
+      </div>
+    </li>
+  );
+});
+
 export function FlashcardEditor({
+  userId,
   initial,
   saved,
   heading,
@@ -110,7 +244,10 @@ export function FlashcardEditor({
   onSave,
   onLeave,
   leaveLabel,
+  onLoadLatest,
+  onGone,
 }: {
+  userId: string;
   initial: SetDraft;
   /** The set as it is saved, or null for a new one. */
   saved: FlashcardSet | null;
@@ -121,31 +258,89 @@ export function FlashcardEditor({
   onSave: (payload: SavePayload) => Promise<void>;
   onLeave: () => void;
   leaveLabel: string;
+  /** Opens the editor again on the set as the account now has it, these edits let go. */
+  onLoadLatest?: () => void;
+  /** Leaves a set deleted on another screen deleted. */
+  onGone?: () => void;
 }) {
   const id = useId();
   const focusAfter = useFocusAfter();
-  const [draft, setDraft] = useState<SetDraft>(initial);
+  const keyInStorage = draftKey(userId, saved?.id ?? null);
+  // A draft this tab kept for this set -- from a way out that did not ask -- is where the
+  // editor starts, and with it the version of the set that draft began from.
+  const [kept] = useState(() => {
+    const found = readKeptDraft(readStored(keyInStorage, 'session'), saved?.id ?? null);
+    return found && draftUnsaved(found.draft, saved) ? found : null;
+  });
+  const [draft, setDraft] = useState<SetDraft>(kept?.draft ?? initial);
+  const [base] = useState<string | null>(kept ? kept.base : (saved?.updatedAt ?? null));
   const [problems, setProblems] = useState<string[]>([]);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [conflict, setConflict] = useState<'changed' | 'gone' | null>(null);
   const [saving, setSaving] = useState(false);
   // A way out pressed once over unsaved changes -- the one above the form or the one below
   // it -- and said beside it: the next press leaves.
   const [leaving, setLeaving] = useState<null | 'top' | 'bottom'>(null);
   const [importing, setImporting] = useState(false);
   const [moved, setMoved] = useState('');
-  const unsaved = draftUnsaved(draft, saved);
+  // Worked out a draw behind the typing, so a key press never waits on a pass over the set.
+  // Only for asking before the tab closes; a way out pressed here asks of the draft as it is.
+  const settled = useDeferredValue(draft);
+  const unsaved = useMemo(() => draftUnsaved(settled, saved), [settled, saved]);
+
+  // The latest draft, for the handlers below, which are made once and must not go stale.
+  const latest = useRef(draft);
+  useLayoutEffect(() => {
+    latest.current = draft;
+  }, [draft]);
+  // Set once the draft is saved or let go, after which nothing may write it back.
+  const finished = useRef(false);
+
+  const keep = useCallback(() => {
+    if (finished.current) return;
+    const now = latest.current;
+    writeStored(
+      keyInStorage,
+      draftUnsaved(now, saved) ? JSON.stringify({ draft: now, base }) : null,
+      'session',
+    );
+  }, [keyInStorage, saved, base]);
+  const forget = useCallback(() => {
+    finished.current = true;
+    writeStored(keyInStorage, null, 'session');
+  }, [keyInStorage]);
+
+  // A moment after typing stops. Not on the way out: an unmount is also a sign-out, which
+  // has just cleared this reader's drafts, and must not find one written back after it.
+  useEffect(() => {
+    const timer = window.setTimeout(keep, KEEP_AFTER_MS);
+    return () => window.clearTimeout(timer);
+  }, [draft, keep]);
+
+  // Closing or reloading the tab with changes not saved asks first, and keeps them either way.
+  useEffect(() => {
+    if (!unsaved) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      keep();
+      event.preventDefault();
+      // Some browsers still ask only when this is set.
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [unsaved, keep]);
 
   const change = (next: Partial<SetDraft>) => {
     setDraft((d) => ({ ...d, ...next }));
     setLeaving(null);
   };
-  const changeCard = (cardId: string, side: 'term' | 'definition', value: string) => {
+  const changeCard = useCallback((cardId: string, side: 'term' | 'definition', value: string) => {
     setDraft((d) => ({
       ...d,
       cards: d.cards.map((c) => (c.id === cardId ? { ...c, [side]: value } : c)),
     }));
     setLeaving(null);
-  };
+  }, []);
 
   const addCard = () => {
     const card = { id: mutationId(), term: '', definition: '' };
@@ -153,21 +348,27 @@ export function FlashcardEditor({
     focusAfter(`${id}-term-${card.id}`);
   };
 
-  const removeCard = (index: number) => {
-    const after = draft.cards[index + 1] ?? draft.cards[index - 1];
-    setDraft((d) => ({ ...d, cards: d.cards.filter((_, i) => i !== index) }));
-    setMoved(`Card ${index + 1} removed.`);
-    focusAfter(after ? `${id}-term-${after.id}` : `${id}-add`);
-  };
+  const removeCard = useCallback(
+    (index: number) => {
+      const cards = latest.current.cards;
+      const after = cards[index + 1] ?? cards[index - 1];
+      setDraft((d) => ({ ...d, cards: d.cards.filter((_, i) => i !== index) }));
+      setMoved(`Card ${index + 1} removed.`);
+      focusAfter(after ? `${id}-term-${after.id}` : `${id}-add`);
+    },
+    [focusAfter, id],
+  );
 
-  const move = (index: number, delta: -1 | 1) => {
+  const move = useCallback((index: number, delta: -1 | 1) => {
+    const count = latest.current.cards.length;
     const to = index + delta;
-    if (to < 0 || to >= draft.cards.length) return;
+    if (to < 0 || to >= count) return;
     setDraft((d) => ({ ...d, cards: moveDraftCard(d.cards, index, delta) }));
-    setMoved(`Card ${index + 1} is now card ${to + 1} of ${draft.cards.length}.`);
-  };
+    setMoved(`Card ${index + 1} is now card ${to + 1} of ${count}.`);
+  }, []);
 
-  const save = async () => {
+  /** Saves the draft -- over a newer version of the set when the reader chose that. */
+  const save = async (over = false) => {
     if (saving) return;
     setSaveError(null);
     if (!online) {
@@ -182,25 +383,33 @@ export function FlashcardEditor({
     }
     setSaving(true);
     try {
-      await onSave(payload);
+      await onSave({ ...payload, baseUpdatedAt: over ? null : base });
+      forget();
     } catch (e: unknown) {
+      const code = sqlState(e);
+      const detail = sqlDetail(e);
+      const clash = saved && !over ? saveConflict(code, detail) : null;
+      setConflict(clash);
       setSaveError(
-        isOfflineFailure(e)
-          ? 'That did not reach your account — you look offline. Your changes are still here.'
-          : (saveRefusal(sqlState(e), sqlDetail(e), e instanceof Error ? e.message : String(e)) ??
+        clash
+          ? null
+          : isOfflineFailure(e)
+            ? 'That did not reach your account — you look offline. Your changes are still here.'
+            : (saveRefusal(code, detail, e instanceof Error ? e.message : String(e)) ??
               (e instanceof Error ? e.message : 'The set could not be saved.')),
       );
-      focusAfter(`${id}-save-error`);
+      focusAfter(clash ? `${id}-conflict` : `${id}-save-error`);
     } finally {
       setSaving(false);
     }
   };
 
   const leave = (where: 'top' | 'bottom') => {
-    if (unsaved && leaving !== where) {
+    if (draftUnsaved(draft, saved) && leaving !== where) {
       setLeaving(where);
       return;
     }
+    forget();
     onLeave();
   };
 
@@ -212,20 +421,60 @@ export function FlashcardEditor({
     </p>
   );
 
-  const room = CARD_LIMIT - draft.cards.filter((c) => c.term.trim() || c.definition.trim()).length;
+  const room = useMemo(
+    () => CARD_LIMIT - draft.cards.filter((c) => c.term.trim() || c.definition.trim()).length,
+    [draft.cards],
+  );
+  const formId = `${id}-form`;
+
+  // The rows, from the cards a draw behind: a key's own draw reuses this very list and draws
+  // no row at all, and the deferred one compares each row's props and draws the one typed in.
+  const shownCards = useDeferredValue(draft.cards);
+  const rows = useMemo(
+    () => (
+      <ol className="flashcards__rows">
+        {shownCards.map((c, i) => (
+          <FlashcardRow
+            key={c.id}
+            card={c}
+            index={i}
+            last={i === shownCards.length - 1}
+            idPrefix={id}
+            onChange={changeCard}
+            onMove={move}
+            onRemove={removeCard}
+          />
+        ))}
+      </ol>
+    ),
+    [shownCards, id, changeCard, move, removeCard],
+  );
 
   return (
-    <section className="stack measure flashcards" aria-labelledby={headingId}>
+    <section
+      className="stack measure flashcards"
+      aria-labelledby={headingId}
+      // Focus leaving the editor -- for the masthead, say -- keeps the draft at once.
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) keep();
+      }}
+    >
       <div className="flashcards__bar">
         <button type="button" className="btn btn--plain meta" onClick={() => leave('top')}>
           ← {leaveLabel}
         </button>
       </div>
       {unsavedLine('top')}
-      <h1 id={headingId} tabIndex={-1}>
+      <h1 id={headingId} tabIndex={-1} dir="auto">
         {heading}
       </h1>
+      {kept && (
+        <p className="flashcards__notice">
+          Your unsaved changes were kept. Save them, or Cancel to let them go.
+        </p>
+      )}
       <form
+        id={formId}
         className="stack"
         onSubmit={(e) => {
           e.preventDefault();
@@ -239,8 +488,9 @@ export function FlashcardEditor({
           <input
             id={`${id}-title`}
             className="field__input"
+            dir="auto"
             value={draft.title}
-            maxLength={TITLE_MAX}
+            maxLength={units(TITLE_MAX)}
             onChange={(e) => change({ title: e.target.value })}
           />
         </div>
@@ -252,8 +502,9 @@ export function FlashcardEditor({
             id={`${id}-description`}
             className="field__textarea flashcards__description"
             rows={2}
+            dir="auto"
             value={draft.description}
-            maxLength={DESCRIPTION_MAX}
+            maxLength={units(DESCRIPTION_MAX)}
             onChange={(e) => change({ description: e.target.value })}
           />
         </div>
@@ -279,142 +530,127 @@ export function FlashcardEditor({
         <p className="sr-only" role="status">
           {moved}
         </p>
-        <ol className="flashcards__rows">
-          {draft.cards.map((c, i) => (
-            <li key={c.id} className="flashcards__row">
-              <p className="meta flashcards__row-number">Card {i + 1}</p>
-              <div className="flashcards__row-sides">
-                <div className="field">
-                  <label className="field__label" htmlFor={`${id}-term-${c.id}`}>
-                    Term
-                  </label>
-                  <textarea
-                    id={`${id}-term-${c.id}`}
-                    className="field__textarea flashcards__side-input"
-                    rows={2}
-                    value={c.term}
-                    maxLength={TERM_MAX}
-                    onChange={(e) => changeCard(c.id, 'term', e.target.value)}
-                  />
-                </div>
-                <div className="field">
-                  <label className="field__label" htmlFor={`${id}-definition-${c.id}`}>
-                    Definition
-                  </label>
-                  <textarea
-                    id={`${id}-definition-${c.id}`}
-                    className="field__textarea flashcards__side-input"
-                    rows={2}
-                    value={c.definition}
-                    maxLength={DEFINITION_MAX}
-                    onChange={(e) => changeCard(c.id, 'definition', e.target.value)}
-                  />
-                </div>
-              </div>
-              <div className="flashcards__row-actions">
-                <button
-                  type="button"
-                  className="btn btn--plain"
-                  aria-label={`Move card ${i + 1} up`}
-                  aria-disabled={i === 0}
-                  onClick={() => move(i, -1)}
-                >
-                  Up
-                </button>
-                <button
-                  type="button"
-                  className="btn btn--plain"
-                  aria-label={`Move card ${i + 1} down`}
-                  aria-disabled={i === draft.cards.length - 1}
-                  onClick={() => move(i, 1)}
-                >
-                  Down
-                </button>
-                <button
-                  type="button"
-                  className="btn btn--plain"
-                  aria-label={`Remove card ${i + 1}`}
-                  onClick={() => removeCard(i)}
-                >
-                  Remove
-                </button>
-              </div>
-            </li>
-          ))}
-        </ol>
-        <div className="flashcards__actions">
-          <button id={`${id}-add`} type="button" className="btn" onClick={addCard}>
-            Add a card
-          </button>
-          <button
-            type="button"
-            className="btn btn--plain"
-            aria-expanded={importing}
-            aria-controls={`${id}-import`}
-            onClick={() => setImporting((o) => !o)}
-          >
-            Add from text
-          </button>
-        </div>
-        {importing && (
-          <div id={`${id}-import`} className="flashcards__inset">
-            <FlashcardImport
-              headingLevel={3}
-              primary={false}
-              limit={Math.max(0, room)}
-              takeLabel={(n) => (n === 0 ? 'Add cards' : `Add ${cardCount(n)}`)}
-              onTake={(cards) => {
-                // The unused empty rows go, so the new cards follow the last real one.
-                setDraft((d) => ({
-                  ...d,
-                  cards: [
-                    ...d.cards.filter((c) => c.term.trim() || c.definition.trim()),
-                    ...cards.map((c) => ({ id: mutationId(), ...c })),
-                  ],
-                }));
-                setImporting(false);
-                setMoved(`${cardCount(cards.length)} added at the end.`);
-                focusAfter(`${id}-add`);
-              }}
-            />
-          </div>
-        )}
-
-        {problems.length > 0 && (
-          <div id={`${id}-problems`} tabIndex={-1} className="stack" role="alert">
-            <p className="remember__error">The set is not saved yet:</p>
-            <ul className="flashcards__problems">
-              {problems.map((p) => (
-                <li key={p}>{p}</li>
-              ))}
-            </ul>
-          </div>
-        )}
-        {saveError && (
-          <p id={`${id}-save-error`} tabIndex={-1} className="remember__error" role="alert">
-            {saveError}
-          </p>
-        )}
-        <div className="flashcards__actions">
-          <button
-            type="submit"
-            className="btn btn--primary"
-            aria-disabled={saving || !online}
-            aria-describedby={!online ? `${id}-offline` : undefined}
-          >
-            {saving ? 'Saving…' : 'Save'}
-          </button>
-          <button type="button" className="btn btn--plain" onClick={() => leave('bottom')}>
-            Cancel
-          </button>
-        </div>
-        {unsavedLine('bottom')}
-        {!online && (
-          <p id={`${id}-offline`} className="form-note">
-            You are offline. Saving needs a connection; your changes stay here until then.
-          </p>
-        )}
+        {rows}
       </form>
+
+      {/* Outside the form: Enter in the importer's boxes is the importer's, not Save. */}
+      <div className="flashcards__actions">
+        <button id={`${id}-add`} type="button" className="btn" onClick={addCard}>
+          Add a card
+        </button>
+        <button
+          type="button"
+          className="btn btn--plain"
+          aria-expanded={importing}
+          aria-controls={`${id}-import`}
+          onClick={() => setImporting((o) => !o)}
+        >
+          Add from text
+        </button>
+      </div>
+      {importing && (
+        <div id={`${id}-import`} className="flashcards__inset">
+          <FlashcardImport
+            headingLevel={3}
+            primary={false}
+            limit={Math.max(0, room)}
+            takeLabel={(n) => (n === 0 ? 'Add cards' : `Add ${cardCount(n)}`)}
+            onTake={(cards) => {
+              // The unused empty rows go, so the new cards follow the last real one.
+              setDraft((d) => ({
+                ...d,
+                cards: [
+                  ...d.cards.filter((c) => c.term.trim() || c.definition.trim()),
+                  ...cards.map((c) => ({ id: mutationId(), ...c })),
+                ],
+              }));
+              setImporting(false);
+              setMoved(`${cardCount(cards.length)} added at the end.`);
+              focusAfter(`${id}-add`);
+            }}
+          />
+        </div>
+      )}
+
+      {problems.length > 0 && (
+        <div id={`${id}-problems`} tabIndex={-1} className="stack" role="alert">
+          <p className="remember__error">The set is not saved yet:</p>
+          <ul className="flashcards__problems">
+            {problems.map((p) => (
+              <li key={p}>{p}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {saveError && (
+        <p id={`${id}-save-error`} tabIndex={-1} className="remember__error" role="alert">
+          {saveError}
+        </p>
+      )}
+      {conflict && (
+        <div className="stack" role="alert">
+          <p id={`${id}-conflict`} tabIndex={-1} className="remember__error">
+            {conflict === 'changed'
+              ? 'This set was changed somewhere else after you opened it — in another tab, or on another device. Saving yours now would undo those changes.'
+              : 'This set was deleted somewhere else after you opened it.'}
+          </p>
+          <div className="flashcards__actions">
+            {conflict === 'changed' ? (
+              <>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => {
+                    forget();
+                    onLoadLatest?.();
+                  }}
+                >
+                  Load the latest, and let mine go
+                </button>
+                <button type="button" className="btn btn--plain" onClick={() => void save(true)}>
+                  Save mine over it
+                </button>
+              </>
+            ) : (
+              <>
+                <button type="button" className="btn" onClick={() => void save(true)}>
+                  Put it back, as it is here
+                </button>
+                <button
+                  type="button"
+                  className="btn btn--plain"
+                  onClick={() => {
+                    forget();
+                    onGone?.();
+                  }}
+                >
+                  Leave it deleted
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+      <div className="flashcards__actions">
+        <button
+          type="submit"
+          form={formId}
+          className="btn btn--primary"
+          aria-disabled={saving || !online}
+          aria-describedby={!online ? `${id}-offline` : undefined}
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+        <button type="button" className="btn btn--plain" onClick={() => leave('bottom')}>
+          Cancel
+        </button>
+      </div>
+      {unsavedLine('bottom')}
+      {!online && (
+        <p id={`${id}-offline`} className="form-note">
+          You are offline. Saving needs a connection; your changes stay here until then.
+        </p>
+      )}
     </section>
   );
 }

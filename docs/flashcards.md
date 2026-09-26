@@ -28,13 +28,26 @@ flashcard_sets ─── flashcards     a set, and its cards in order
   only: choosing a voice on the device for Listen.
 - **A card** (`flashcards`) is a term (1–1,000 characters) and a definition (1–2,000), with
   its `position` in the set. Its id is kept across edits: changing the term, the definition
-  or the order never makes a new card.
+  or the order never makes a new card. `unique (owner_id, id)` is what a per-card memory's
+  foreign key will reference, and the same index serves the account export and the count
+  the total limit takes.
+- **Blank means one thing.** Every text is stored trimmed of what JavaScript's `.trim()`
+  takes off — the Unicode spaces, the line breaks, tab, and U+FEFF, as
+  `study_space_class()` spells them — by `flashcard_trim`, and the tables' checks use the
+  same function. A title of one no-break space is blank to the editor and to the database
+  alike. Lengths are characters (code points) on both sides: the editor counts them, not
+  JavaScript's UTF-16 units, and a box stops typing only at twice its limit, so it never
+  cuts a text the database would take.
 - **Private, and nothing else.** One policy each, `for select to authenticated using
 (owner_id = (select auth.uid()))`. anon can read neither table, and no role has a write
   grant on either: the two functions below are the only way in, because the limits are
   properties of a reader's whole collection, which a row policy cannot see. A set is never
   published and never joins the catalogue (`docs/content-policy.md`).
-- **Limits**, against abuse rather than as a tier: 500 sets a reader, 2,000 cards a set.
+- **Limits**, against abuse rather than as a tier: 500 sets a reader; 2,000 cards and 2 MB
+  of text a set (its title, description and every side, trimmed, in UTF-8 bytes); and
+  20,000 cards across all of a reader's sets. The last two are what make the first two safe
+  to multiply: without them one account could store 11.5 GB of four-byte characters in a
+  scripted afternoon, and with them it is at most 20,000 cards of 12 KB.
 - Both tables are in the account export (`account-api.ts`), and go with the account: a set
   cascades from `auth.users`, and its cards from the set.
 
@@ -43,7 +56,8 @@ flashcard_sets ─── flashcards     a set, and its cards in order
 `save_flashcard_set(p_set jsonb)` makes the reader's set be what it is sent:
 
 ```
-{ id?, title, description?, termLang?, definitionLang?, cards: [{ id?, term, definition }] }
+{ id?, baseUpdatedAt?, title, description?, termLang?, definitionLang?,
+  cards: [{ id?, term, definition }] }
 → { id, updatedAt, cards: [{ id, position }] }
 ```
 
@@ -57,27 +71,46 @@ flashcard_sets ─── flashcards     a set, and its cards in order
   Positions are the array's order, 0 to n−1.
 - **A card is never moved.** An id that belongs to another set — the reader's own or anyone
   else's — is malformed input, since a card's future memory would move with it.
-- **`updated_at` moves only when something changed**, so opening and saving a set untouched
-  does not reorder the reader's list. A card's own `updated_at` moves when it does.
-- A save after the set was deleted elsewhere puts it back, with what was saved: the reader
-  pressed Save over the content on their screen.
+- **`updated_at` moves only when something changed** — a field, a card's words or place, a
+  card added or taken out — so opening and saving a set untouched does not reorder the
+  reader's list. A card's own `updated_at` moves when it does.
+- **Two screens do not save over each other unseen.** `baseUpdatedAt` is the `updatedAt`
+  of the set the editor began from, exactly as the API gave it (to the microsecond; never
+  round-tripped through a `Date`). A set that has changed since — saved in another tab or
+  on another device — is refused as `40001 changed`, and a set deleted since as `P0002`.
+  Without it a tab left open on old cards saved them back, deleting every card another tab
+  had added, and a stale tab could put back a set deleted elsewhere. The editor then asks:
+  **Load the latest, and let mine go**, or **Save mine over it** — the same save sent without
+  `baseUpdatedAt`, which is the reader's word, and for a deleted set puts it back with what
+  they saved (**Put it back, as it is here**) or leaves it deleted.
 - One save at a time per reader (`pg_advisory_xact_lock` on `flashcards:<uid>`), so two
-  tabs cannot race the set limit.
+  tabs cannot race any limit. The lock is the only one taken: the set's row is not locked
+  first, since that would lock another reader's row before its owner is known.
 
 `delete_flashcard_set(p_id uuid)` deletes the reader's set and its cards, under the same
 lock, and answers true. A set that does not exist, was already deleted, or is somebody
-else's all answer false — one answer, so an id says nothing about whose it is.
+else's all answer false — one answer, so an id says nothing about whose it is. With no
+reader in the request it is refused `28000`.
+
+Neither function is executable by anyone but `authenticated`: not `anon`, and not
+`service_role`, since nothing server-side writes a reader's sets.
 
 ### Refusals
 
-| SQLSTATE | DETAIL  | Why                                                                                                                                                                                                 |
-| -------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `28000`  |         | No reader in the request                                                                                                                                                                            |
-| `42501`  | `guest` | A guest session, read from `auth.users.is_anonymous` rather than the token's claim. A guest's rows are swept a day after last use                                                                   |
-| `22023`  |         | Malformed: not an object; an id that is not a uuid; a title, description, language, term or definition out of range; cards not an array or empty; a card id given twice; a card id from another set |
-| `54000`  | `sets`  | The reader has 500 sets and this would be another                                                                                                                                                   |
-| `54000`  | `cards` | More than 2,000 cards                                                                                                                                                                               |
-| `P0002`  |         | The id is another reader's set. It says only that the id is taken — out of 2^122 — and nothing of that set is read                                                                                  |
+| SQLSTATE | DETAIL    | Why                                                                                                                                                                                                                            |
+| -------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `28000`  |           | No reader in the request, or a token whose account no longer exists                                                                                                                                                            |
+| `42501`  | `guest`   | A guest session, read from `auth.users.is_anonymous` rather than the token's claim. A guest's rows are swept a day after last use                                                                                              |
+| `22023`  |           | Malformed: not an object; an id that is not a uuid; a base that is not a time; a title, description, language, term or definition out of range; cards not an array or empty; a card id given twice; a card id from another set |
+| `40001`  | `changed` | `baseUpdatedAt` is not the set's `updated_at`: it changed since the editor opened it                                                                                                                                           |
+| `54000`  | `sets`    | The reader has 500 sets and this would be another                                                                                                                                                                              |
+| `54000`  | `cards`   | More than 2,000 cards                                                                                                                                                                                                          |
+| `54000`  | `size`    | More than 2 MB of text in the set, trimmed, in UTF-8 bytes                                                                                                                                                                     |
+| `54000`  | `total`   | More than 20,000 cards across the reader's sets, counting this set as sent rather than as it was — so a set at the limit can still be saved, and made smaller                                                                  |
+| `P0002`  |           | The id is another reader's set, or — with `baseUpdatedAt` — no set at all. It says only that the id is taken or free — out of 2^122 — and nothing of that set is read                                                          |
+
+PostgREST answers `40001`, `54000` and `P0002` with HTTP 500 and the SQLSTATE and DETAIL in
+the body; the web reads the body, never the status.
 
 The web says each in words (`saveRefusal` in `lib/flashcards.ts`), and checks the same
 rules in the editor first (`validateDraft`), so the database's refusals are its second line
@@ -90,8 +123,12 @@ Plain selects under RLS, and **paged**: the API answers at most 100 rows a reque
 set of 150 cards embedded as `flashcards(*)` came back with 100. So:
 
 - **The list** is `flashcard_sets` with `flashcards(count)` — an embedded count works through
-  the composite foreign key — ordered by `updated_at` desc, read 100 at a time with the
-  first page's exact count saying how many more pages there are.
+  the composite foreign key — read 100 at a time **by id**, each page after the last id
+  read, and sorted by `updated_at` in the browser. It was paged by `updated_at`, which a
+  save moves: a set saved while the later pages were on their way jumped to the first page,
+  already read, and was left out. The first page's exact count says whether the list is
+  complete — no set made or deleted while it was read — which only a complete list may be
+  trusted to say when it comes to pruning this device's copies (below).
 - **A set** is its row, then its cards by `position` in parallel pages of 100, then its
   `updated_at` again. A set that changed while being read — its time moved, or its card count
   disagrees — is read again from the start, up to three times.
@@ -108,6 +145,18 @@ set of 150 cards embedded as `flashcards(*)` came back with 100. So:
   back from the account, so what is studied and kept offline is what the account holds.
 - **Leaving with changes not saved asks once**, as a course correction does: the first press
   of Cancel or the way back says so beside it, and the second leaves.
+- **Any other way out keeps them.** The draft is kept in this tab's `sessionStorage`
+  (`wap:flashcards:draft:<reader>:<set or new>`) while it differs from the set — written a
+  moment after typing stops, and at once when focus leaves the editor — and the editor,
+  opened again, starts from it and says "Your unsaved changes were kept." Closing or
+  reloading the tab asks first (`beforeunload`). The draft goes when it is saved or let go,
+  when the set is deleted on this device, and when the reader signs out or deletes their
+  account. There is no guard on the app's own navigation: the draft is what makes one
+  unnecessary.
+- **A key draws no row.** The card boxes are the browser's own (`defaultValue`), each row is
+  memoised with stable handlers, and the list is drawn from a deferred copy of the cards, so
+  typing into a set of 1,200 cards costs a few milliseconds of React a key rather than
+  drawing 2,400 boxes.
 - Saving needs a connection; offline, Save says why instead of failing.
 
 ## Importing
@@ -128,13 +177,26 @@ set of 150 cards embedded as `flashcards(*)` came back with 100. So:
   one has to say which line each card began on). A quote that never closes is read as a
   character, so one stray quote costs one card its punctuation rather than swallowing the
   rest of the file.
-- **Anki's text export**: its header lines — `#`, a name and a colon, as in
-  `#separator:tab`, `#html:true` or `#deck column:2` — are skipped, and only those: a card
-  may begin with `#`. When the header says the fields are HTML, a `<br>` becomes a line break and other tags
-  go. A file's separators are guessed from its name and Anki's `#separator:` line; the
-  reader can change them.
+- **Past two columns.** Empty fields at the end of a row are a spreadsheet's empty columns
+  and are dropped (`dog,perro,,` is `perro`). More fields than two are joined back into the
+  definition only when none of them was quoted — `hacer, to do, to make`, split at the first
+  separator as Quizlet splits it. A quoted field is a column its writer meant, so a third
+  one is left out, and the preview says how many lines had columns left out.
+- **Anki's text export**: its header lines — Anki's own keys only (`#separator:tab`,
+  `#html:true`, `#tags column:3` and so on), and only in the block the file begins with —
+  are skipped; a card may begin with `#`, or look like `#define: a macro`, anywhere. The
+  columns its header names as Anki's own — guid, note type, deck and tags — are taken out
+  before the term and definition are read. Its fields are read quote-aware whatever its
+  separator, since Anki quotes a field holding a separator, a quote or a line break. When the
+  header says the fields are HTML, a `<br>` becomes a line break and other tags go. A file's
+  separators are guessed from its name and Anki's `#separator:` line; the reader can change
+  them.
 - A spreadsheet's header row (`Term, Definition`, `Front, Back`) on the first line is
-  skipped.
+  skipped, and the preview says so — which also means a set whose first card is literally
+  `Term` / `Definition` loses it on a round trip, visibly.
+- **Bounded.** Text over 8 MB, pasted or opened, is not read (a set holds 2 MB); reading
+  stops at 20,000 lines — ten for every card a set holds — and says so; and the preview draws
+  the first 200 cards and 200 problems, with the count of the rest.
 - **Nothing is dropped silently.** A blank line is nothing; every other line either becomes a
   card or is listed under the preview with its line number and why — no separator, no term,
   no definition, a side too long. The preview lists the cards before anything is saved, and
@@ -165,9 +227,18 @@ focus moves to the new heading on every screen change.
 
 **Distractors** are the set's own other cards' answers on the side being answered: each
 once, and never one a reader would take for the right answer — two answers with the same
-`normaliseAnswer` letters and `semanticMarks` are one answer. So a set of four or more
-offers four choices, a set of two or three offers two or three, and a card with nothing to
-choose between is asked in writing.
+`normaliseAnswer` letters and `semanticMarks` are one answer, and **the answer of another
+card with the same prompt is a right answer too** ("bank": a river's edge, and a lender), so
+it is never a wrong option or a false statement, and is accepted when chosen or typed. So a
+set of four or more offers four choices, a set of two or three offers two or three, and a
+card with nothing to choose between is asked in writing.
+
+**Keyed once.** Each card's answer and prompt are keyed once per set and side, kept against
+the cards array itself (a `WeakMap`), and three distractors are drawn from a seeded order of
+the set's answers (`seededDraws`, `seededShuffle`'s order read one item at a time) rather
+than by shuffling the whole set for each question. Opening Learn on 2,000 cards took 46
+seconds and a Test of all of them 32; both now take tens of milliseconds, and a question
+drawn on each key typed is a lookup.
 
 ### Flashcards
 
@@ -201,7 +272,8 @@ still being learnt keep their place, and each one mastered makes room for the ne
 the set. After a wrong written answer the right one is shown with **I was right**, which
 counts it — the reader's own judgement, which is fine here because nothing is recorded.
 Progress is "Mastered 12 of 40" on the hairline `Meter`. A card with nothing to choose
-between (a set of one) is asked in writing from the start and after a miss. The end says
+between — a set of one, or cards whose only other answers are right ones too — is asked in
+writing from the start and after a miss. The end says
 "You've learnt all N" and offers **Learn again**. Learn answers with the term by default:
 a written answer is graded exact-or-close, which is fair for a word and harsh for a
 sentence.
@@ -216,15 +288,20 @@ prompt with its own answer or another card's, by the seed, about half and half. 
 dealt multiple choice or true/false with no other answer to offer is asked in writing.
 
 **Submit** grades everything at once: "15 / 20", every question marked right or wrong in
-words with the answer beside a wrong one, an unanswered question counted wrong. **Retake**
+words — "Wrong: you chose …", "you wrote …" — with the answer beside it, an unanswered
+question counted wrong. A choice or a typed answer is right when it is right for the prompt:
+the card's own answer or another same-prompt card's. **Retake**
 is a new seed; **Learn the ones you missed** opens Learn over just those cards.
 
 ### Match
 
 Up to six cards, as twelve tiles — their terms and definitions — in a grid the seed orders.
 Two cards whose tiles would read the same (`to be` and `To be.`) are never laid out
-together, since the right tile and the wrong one would look alike; a set with fewer than two
-such cards says Match needs more. Choose a tile, then another: a card's term and its
+together, since the right tile and the wrong one would look alike. The set's page offers
+Match when some two cards have four tiles that all read differently (`canMatch`, one pass
+over the set), and the game always finds them: a seeded pick that leaves fewer than two
+starts again from such a pair. The page once asked one seeded pick and the game made
+another, so a set offered Match opened on "needs two cards" a third of the time. Choose a tile, then another: a card's term and its
 definition clear together, and anything else is **not a pair**, said in words and marked by
 a dashed border — no shake — with nothing left chosen. Choosing a tile again lets it go.
 
@@ -240,13 +317,25 @@ browser's `localStorage` only. **Play again** is a new seed.
 Every set a reader opens is kept in IndexedDB (`flashcardSets`, keyed `userId:setId` with a
 `by-user` index; schema version 3, whose upgrade creates that store and touches nothing
 else). Without a connection, `/flashcards` lists the sets on the device and a set opens from
-its copy, and all four modes and Download work. Making, importing, editing and deleting say
-they need a connection. A copy read offline is read from the account again when the
-connection returns.
+its copy, and all four modes and Download work. When the browser says it is offline the
+device is read first, at once, rather than after supabase-js has retried its way to failing
+(seven seconds of "Loading…"). Making, importing, editing and deleting say they need a
+connection. A copy read offline is read from the account again when the connection
+returns, and a mode open on it starts afresh if the set changed meanwhile.
 
-A deleted set leaves the device with it, as does a set the account no longer has. Signing
-out clears the reader's copies, as it clears the cached feed and the practice pack
-(`App.tsx`), and deleting the account clears them before the page is left (`Account.tsx`).
+**What leaves the device, and when**, per device:
+
+- A set deleted here takes its copy and every key of its with it — its round, its best
+  Match time, its draft.
+- A set deleted on another device goes from this one the next time a complete list is read
+  here: its copy and its round and best time, but not a draft, which is the reader's own
+  unsaved typing and stays in the tab until saved or let go.
+- A round is kept in `localStorage` while it runs and let go once it ends.
+- Signing out clears the reader's copies and every `wap:flashcards:*:<reader>:*` key in
+  `localStorage` and `sessionStorage`, as it clears the cached feed and the practice pack
+  (`App.tsx`); deleting the account does the same before the page is left (`Account.tsx`),
+  on the device it is deleted on.
+
 No offline write is queued: saving is online only.
 
 ## The routes

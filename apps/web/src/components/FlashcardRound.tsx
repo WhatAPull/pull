@@ -16,6 +16,7 @@ import {
   answerOf,
   promptOf,
   restoreRound,
+  roundKey,
   roundOver,
   shuffleRound,
   sortCard,
@@ -33,7 +34,6 @@ import {
   SIDE_LABEL,
   cardCount,
   readStored,
-  roundKey,
   typingIn,
   useFocusAfter,
   useListen,
@@ -99,8 +99,13 @@ export function FlashcardRound({
   const over = roundOver(round);
   const learning = stillLearning(round);
 
+  // Kept while it runs, and let go once it ends: a round over is nothing to come back to, and
+  // a finished round of 2,000 cards is 150 KB of the browser's storage for nothing.
   useEffect(() => {
-    writeStored(roundKey(userId, set.id), JSON.stringify({ ...round, answerWith }));
+    writeStored(
+      roundKey(userId, set.id),
+      roundOver(round) ? null : JSON.stringify({ ...round, answerWith }),
+    );
   }, [round, answerWith, userId, set.id]);
 
   const show = (next: CardsRound) => {
@@ -153,10 +158,12 @@ export function FlashcardRound({
             : `${round.index + 1} of ${round.order.length}`}
         </span>
       </div>
-      <p className="meta">{set.title}</p>
-      <h2 id={headingId} tabIndex={-1} className="flashcards__heading">
+      <p className="meta" dir="auto">
+        {set.title}
+      </p>
+      <h1 id={headingId} tabIndex={-1} className="flashcards__heading">
         Flashcards
-      </h2>
+      </h1>
       <AnswerWithChoice
         value={answerWith}
         onChange={(side) => {
@@ -167,11 +174,11 @@ export function FlashcardRound({
 
       {over ? (
         <div className="stack flashcards__end">
-          <h3 id={END_ID} tabIndex={-1} className="flashcards__subheading">
+          <h2 id={END_ID} tabIndex={-1} className="flashcards__subheading">
             {learning.length === 0
               ? `You know all ${cardCount(round.order.length)} in this round.`
               : `You know ${round.known.length} of ${round.order.length}. ${learning.length} still learning.`}
-          </h3>
+          </h2>
           {learning.length > 0 && (
             <p className="form-note">
               A card you went past without sorting counts as still learning.
@@ -208,7 +215,7 @@ export function FlashcardRound({
           <>
             <article className="flashcards__card" aria-label={`Card ${round.index + 1}`}>
               <p className="meta flashcards__side">{SIDE_LABEL[other]}</p>
-              <p id={PROMPT_ID} tabIndex={-1} className="flashcards__face">
+              <p id={PROMPT_ID} tabIndex={-1} className="flashcards__face" dir="auto">
                 {promptOf(card, answerWith)}
               </p>
               <ListenButton
@@ -220,7 +227,7 @@ export function FlashcardRound({
               {revealed ? (
                 <div className="flashcards__answer">
                   <p className="meta flashcards__side">{SIDE_LABEL[answerWith]}</p>
-                  <p id={ANSWER_ID} tabIndex={-1} className="flashcards__face">
+                  <p id={ANSWER_ID} tabIndex={-1} className="flashcards__face" dir="auto">
                     {answerOf(card, answerWith)}
                   </p>
                   <ListenButton

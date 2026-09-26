@@ -14,21 +14,20 @@ import { FlashcardLearn } from '../components/FlashcardLearn.js';
 import { FlashcardMatch } from '../components/FlashcardMatch.js';
 import {
   cardCount,
-  roundKey,
   shortDate,
   typingIn,
   useFocusAfter,
   useOnline,
-  writeStored,
 } from '../components/FlashcardParts.js';
 import { FlashcardRound } from '../components/FlashcardRound.js';
 import { FlashcardTest } from '../components/FlashcardTest.js';
 import { downloadText } from '../lib/download.js';
-import { draftOf, matchCards, type FlashcardSet, type SavePayload } from '../lib/flashcards.js';
+import { canMatch, draftOf, type FlashcardSet, type SavePayload } from '../lib/flashcards.js';
 import { deleteSet, fetchSet, saveSet } from '../lib/flashcards-api.js';
 import { exportFileName, toTsv } from '../lib/flashcards-import.js';
 import {
   cacheFlashcardSet,
+  clearFlashcardStorage,
   isOfflineFailure,
   onReconnect,
   readFlashcardSet,
@@ -83,9 +82,34 @@ export function FlashcardSetPage({
   const [working, setWorking] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [deleted, setDeleted] = useState(false);
+  // Opening the editor again -- on the latest version of the set -- is a new editor.
+  const [editing, setEditing] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
+    const fromThisDevice = async () => {
+      const kept = await readFlashcardSet(userId, setId);
+      if (controller.signal.aborted) return;
+      if (kept) {
+        setSet(kept);
+        setFromDevice(true);
+        setError(null);
+        onTitle?.(kept.title);
+      } else {
+        setError('You look offline, and this set has not been opened on this device before.');
+      }
+      setSettled(true);
+    };
+    /*
+     * OFFLINE, THE DEVICE FIRST. A request made without a network is not refused at once:
+     * supabase-js retries a read, and the page said "Loading…" for seven seconds before it
+     * read the copy it had all along. The browser saying it is offline is trusted -- only
+     * that way round (`useOnline`) -- and the account is read when the connection returns.
+     */
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      void fromThisDevice();
+      return () => controller.abort();
+    }
     fetchSet(setId, controller.signal)
       .then((found) => {
         if (controller.signal.aborted) return;
@@ -93,8 +117,9 @@ export function FlashcardSetPage({
           setMissing(true);
           setSet(null);
           onTitle?.(null);
-          // Gone from the account, so gone from this device too.
+          // Gone from the account, so gone from this device too: its copy and its keys.
           void removeFlashcardSet(userId, setId);
+          clearFlashcardStorage(userId, (_, keyed) => keyed === setId);
         } else {
           setSet(found);
           setMissing(false);
@@ -111,21 +136,11 @@ export function FlashcardSetPage({
       .catch(async (e: unknown) => {
         if (controller.signal.aborted) return;
         if (isOfflineFailure(e)) {
-          const kept = await readFlashcardSet(userId, setId);
-          if (controller.signal.aborted) return;
-          if (kept) {
-            setSet(kept);
-            setFromDevice(true);
-            setError(null);
-            onTitle?.(kept.title);
-            setSettled(true);
-            return;
-          }
-          setError('You look offline, and this set has not been opened on this device before.');
-        } else {
-          console.error('Flashcard set request failed', e);
-          setError(e instanceof Error ? e.message : String(e));
+          await fromThisDevice();
+          return;
         }
+        console.error('Flashcard set request failed', e);
+        setError(e instanceof Error ? e.message : String(e));
         setSettled(true);
       });
     return () => controller.abort();
@@ -227,10 +242,18 @@ export function FlashcardSetPage({
 
   const leaveMode = toOverview;
 
+  /** Everything of this set's on the device: its copy, its round, its best time, its draft. */
+  const forgetHere = (id: string) => {
+    void removeFlashcardSet(userId, id);
+    clearFlashcardStorage(userId, (_, keyed) => keyed === id);
+  };
+
   switch (view.kind) {
     case 'edit':
       return (
         <FlashcardEditor
+          key={editing}
+          userId={userId}
           initial={draftOf(set)}
           saved={set}
           heading={`Edit ${set.title}`}
@@ -243,7 +266,11 @@ export function FlashcardSetPage({
             // the page shows what was saved rather than calling it unsaved.
             const fresh = await fetchSet(set.id).catch(() => null);
             const next: FlashcardSet = fresh ?? {
-              ...payload,
+              id: payload.id,
+              title: payload.title,
+              description: payload.description,
+              termLang: payload.termLang,
+              definitionLang: payload.definitionLang,
               updatedAt: out.updatedAt,
               cards: payload.cards,
             };
@@ -255,16 +282,56 @@ export function FlashcardSetPage({
           }}
           onLeave={toOverview}
           leaveLabel={set.title}
+          onLoadLatest={() => {
+            void fetchSet(set.id)
+              .then((fresh) => {
+                if (!fresh) {
+                  forgetHere(set.id);
+                  setMissing(true);
+                  setSet(null);
+                  onTitle?.(null);
+                  return;
+                }
+                setSet(fresh);
+                onTitle?.(fresh.title);
+                void cacheFlashcardSet(userId, fresh);
+                setEditing((n) => n + 1);
+                focusAfter(EDIT_TITLE_ID);
+              })
+              .catch((e: unknown) => {
+                setView({ kind: 'overview' });
+                setActionError(
+                  isOfflineFailure(e)
+                    ? 'The latest version could not be read — you look offline.'
+                    : e instanceof Error
+                      ? e.message
+                      : String(e),
+                );
+              });
+          }}
+          onGone={() => {
+            forgetHere(set.id);
+            onNavigate('/flashcards');
+          }}
         />
       );
+    // Each mode is keyed on the version of the set it was opened on. A copy read offline is
+    // read again when the connection returns, and a version changed elsewhere -- a card gone
+    // from under the round -- starts the mode afresh on it rather than drawing a blank.
     case 'cards':
       return (
-        <FlashcardRound set={set} userId={userId} headingId={MODE_TITLE_ID} onLeave={leaveMode} />
+        <FlashcardRound
+          key={set.updatedAt}
+          set={set}
+          userId={userId}
+          headingId={MODE_TITLE_ID}
+          onLeave={leaveMode}
+        />
       );
     case 'learn':
       return (
         <FlashcardLearn
-          key={view.cardIds.join(',')}
+          key={`${set.updatedAt}:${view.cardIds.join(',')}`}
           set={set}
           cardIds={view.cardIds}
           headingId={MODE_TITLE_ID}
@@ -274,6 +341,7 @@ export function FlashcardSetPage({
     case 'test':
       return (
         <FlashcardTest
+          key={set.updatedAt}
           set={set}
           headingId={MODE_TITLE_ID}
           onLeave={leaveMode}
@@ -282,14 +350,20 @@ export function FlashcardSetPage({
       );
     case 'match':
       return (
-        <FlashcardMatch set={set} userId={userId} headingId={MODE_TITLE_ID} onLeave={leaveMode} />
+        <FlashcardMatch
+          key={set.updatedAt}
+          set={set}
+          userId={userId}
+          headingId={MODE_TITLE_ID}
+          onLeave={leaveMode}
+        />
       );
     case 'overview':
       break;
   }
 
   const canChange = online && !fromDevice;
-  const matchable = matchCards(set.cards, 'check').length >= 2;
+  const matchable = canMatch(set.cards);
 
   const remove = async () => {
     if (working || !canChange) return;
@@ -303,8 +377,7 @@ export function FlashcardSetPage({
     try {
       // False is a set already gone -- deleted in another tab -- which is done all the same.
       await deleteSet(set.id);
-      await removeFlashcardSet(userId, set.id);
-      writeStored(roundKey(userId, set.id), null);
+      forgetHere(set.id);
       setDeleted(true);
       onTitle?.(null);
       focusAfter(TITLE_ID);
@@ -328,10 +401,14 @@ export function FlashcardSetPage({
         Flashcard set · {cardCount(set.cards.length)}
         {shortDate(set.updatedAt) && ` · Changed ${shortDate(set.updatedAt)}`}
       </p>
-      <h1 id={TITLE_ID} tabIndex={-1}>
+      <h1 id={TITLE_ID} tabIndex={-1} dir="auto">
         {set.title}
       </h1>
-      {set.description && <p className="flashcards__lede">{set.description}</p>}
+      {set.description && (
+        <p className="flashcards__lede" dir="auto">
+          {set.description}
+        </p>
+      )}
       {/* Always drawn: a live region added together with its text is not reliably announced. */}
       <p role="status" className={notice ? 'flashcards__notice' : 'sr-only'}>
         {notice}
@@ -379,8 +456,12 @@ export function FlashcardSetPage({
       <ol className="flashcards__cards">
         {set.cards.map((c) => (
           <li key={c.id} className="flashcards__pair">
-            <span className="flashcards__pair-term">{c.term}</span>
-            <span className="flashcards__pair-definition">{c.definition}</span>
+            <span className="flashcards__pair-term" dir="auto">
+              {c.term}
+            </span>
+            <span className="flashcards__pair-definition" dir="auto">
+              {c.definition}
+            </span>
           </li>
         ))}
       </ol>
@@ -456,6 +537,7 @@ export function FlashcardSetPage({
             type="button"
             className="btn btn--plain"
             aria-disabled={working || !canChange}
+            aria-describedby={!canChange ? 'flashcard-set-offline-note' : undefined}
             onClick={() => void remove()}
           >
             Delete this set

@@ -169,11 +169,14 @@ excerpts, and it is never prepared again. See [`study-public-courses.md`](./stud
 **A flashcard set is written through two functions and nothing else.** `flashcard_sets`
 and `flashcards` carry a read-own policy and no write grant: `save_flashcard_set` upserts a
 set by the client's id and keeps the id of every card it names, and `delete_flashcard_set`
-removes one. Both limits — 500 sets a reader, 2,000 cards a set — are about a reader's whole
-collection, which a row policy cannot see, and a card id is never moved between sets
-because the per-card memory spaced review will key on it would move with it. Cards reference
-their set through `(set_id, owner_id)`, and carry `unique (id, owner_id)` for that memory's
-own composite key. See [`flashcards.md`](./flashcards.md).
+removes one. Its limits — 500 sets and 20,000 cards a reader, 2,000 cards and 2 MB of text
+a set — are about a reader's whole collection, which a row policy cannot see, and a save
+that names the version it began from is refused when the set has changed since, so two
+screens never save over each other unseen. A card id is never moved between sets because
+the per-card memory spaced review will key on it would move with it. Cards reference their
+set through `(set_id, owner_id)`, and carry `unique (owner_id, id)` for that memory's own
+composite key. Blank is one rule in the function and the tables, `flashcard_trim`. See
+[`flashcards.md`](./flashcards.md).
 
 **A reader's own question lives in its own table.** `user_questions` rather than a row in
 `quiz_questions`, because the pipeline upserts canonical questions with

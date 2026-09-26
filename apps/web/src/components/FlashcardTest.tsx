@@ -104,14 +104,19 @@ export function FlashcardTest({
     return (
       <section className="stack measure flashcards" aria-labelledby={headingId}>
         {bar}
-        <p className="meta">{set.title}</p>
-        <h2 id={headingId} tabIndex={-1} className="flashcards__heading">
+        <p className="meta" dir="auto">
+          {set.title}
+        </p>
+        <h1 id={headingId} tabIndex={-1} className="flashcards__heading">
           Test
-        </h2>
+        </h1>
         <p>A page of questions on this set, marked all at once when you submit.</p>
+        {/* `start` says a count out of range in words, beside the control; the browser's own
+            bubble said it first, in its own words, and away from where the reader looks. */}
         <form
           id={SETUP_ID}
           className="stack"
+          noValidate
           onSubmit={(e) => {
             e.preventDefault();
             start();
@@ -173,15 +178,17 @@ export function FlashcardTest({
   return (
     <section className="stack measure flashcards" aria-labelledby={headingId}>
       {bar}
-      <p className="meta">{set.title}</p>
-      <h2 id={headingId} tabIndex={-1} className="flashcards__heading">
+      <p className="meta" dir="auto">
+        {set.title}
+      </p>
+      <h1 id={headingId} tabIndex={-1} className="flashcards__heading">
         Test
-      </h2>
+      </h1>
       {result && (
         <div className="stack flashcards__end">
-          <h3 id={SCORE_ID} tabIndex={-1} className="flashcards__score">
+          <h2 id={SCORE_ID} tabIndex={-1} className="flashcards__score">
             {result.score} / {result.total}
-          </h3>
+          </h2>
           <p>
             {result.score === result.total
               ? 'Every answer right.'
@@ -227,9 +234,9 @@ export function FlashcardTest({
             className="stack flashcards__section"
             aria-labelledby={`${id}-${kind}`}
           >
-            <h3 id={`${id}-${kind}`} className="flashcards__subheading">
+            <h2 id={`${id}-${kind}`} className="flashcards__subheading">
               {KIND_LABEL[kind]}
-            </h3>
+            </h2>
             {/* Numbered through the page: the sections come in the order the questions do. */}
             <ol className="flashcards__questions" start={(inSection[0]?.i ?? 0) + 1}>
               {inSection.map(({ q, i }) => {
@@ -244,10 +251,12 @@ export function FlashcardTest({
                         className="flashcards__prompt"
                       >
                         <span className="flashcards__qnum">{i + 1}.</span>{' '}
-                        <span className="meta">{SIDE_LABEL[promptSide]}</span> {q.prompt}
+                        <span className="meta">{SIDE_LABEL[promptSide]}</span>{' '}
+                        <span dir="auto">{q.prompt}</span>
                         {q.kind === 'true_false' && (
                           <span className="flashcards__shown">
-                            <span className="meta">{SIDE_LABEL[answerWith]}</span> {q.shown}
+                            <span className="meta">{SIDE_LABEL[answerWith]}</span>{' '}
+                            <span dir="auto">{q.shown}</span>
                           </span>
                         )}
                       </legend>
@@ -276,7 +285,7 @@ export function FlashcardTest({
                                 checked={responses[i] === option}
                                 onChange={() => respond(i, option)}
                               />{' '}
-                              {option}
+                              <span dir="auto">{option}</span>
                             </label>
                           ))}
                         </div>
@@ -289,6 +298,7 @@ export function FlashcardTest({
                           <input
                             id={`${id}-q${i}`}
                             className="field__input"
+                            dir="auto"
                             autoComplete="off"
                             autoCapitalize="off"
                             spellCheck={false}
@@ -309,11 +319,13 @@ export function FlashcardTest({
                       >
                         {mark
                           ? 'Right.'
-                          : q.kind === 'true_false'
-                            ? `Wrong: it is ${q.truth ? 'true' : 'false'}. The answer is ${q.answer}.`
-                            : responses[i] === null || responses[i] === ''
-                              ? `Not answered. The answer is ${q.answer}.`
-                              : `Wrong. The answer is ${q.answer}.`}
+                          : responses[i] === null || responses[i] === ''
+                            ? `Not answered. The answer is ${q.answer}.`
+                            : q.kind === 'true_false'
+                              ? `Wrong: you chose ${responses[i] ? 'True' : 'False'}, and it is ${q.truth ? 'true' : 'false'}. The answer is ${q.answer}.`
+                              : q.kind === 'choice'
+                                ? `Wrong: you chose “${String(responses[i])}”. The answer is ${q.answer}.`
+                                : `Wrong: you wrote “${String(responses[i])}”. The answer is ${q.answer}.`}
                       </p>
                     )}
                   </li>

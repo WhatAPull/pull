@@ -4,9 +4,10 @@
  * the preview lists every card and every line that did not make one before anything is
  * taken. Nothing is uploaded: the file is read in the browser.
  */
-import { useId, useMemo, useState } from 'react';
+import { useDeferredValue, useId, useMemo, useState } from 'react';
 import { CARD_LIMIT } from '../lib/flashcards.js';
 import {
+  READ_LIMIT,
   guessSeparators,
   parseImport,
   separatorProblem,
@@ -16,10 +17,17 @@ import {
 } from '../lib/flashcards-import.js';
 import { cardCount } from './FlashcardParts.js';
 
-/** A file larger than this is not a list of cards: 2,000 cards of the longest sides is 6 MB. */
+/**
+ * Text larger than this is not a list of cards -- a set holds 2 MB of it -- whether it comes
+ * from a file or is pasted. Pasted text was not measured at all, and 8 MB of lines with no
+ * separator drew four million problem rows and took the tab down.
+ */
 const FILE_LIMIT = 8 * 1024 * 1024;
 
-/** How many parsed cards the preview draws; the count above it says how many there are. */
+/**
+ * How many parsed cards, and how many problems, the preview draws; the counts above them say
+ * how many there are.
+ */
 const PREVIEW_ROWS = 200;
 
 export function FlashcardImport({
@@ -67,9 +75,12 @@ export function FlashcardImport({
     [between, betweenCustom, cardsBy, cardsByCustom, limit],
   );
   const problem = separatorProblem(options);
+  // Parsed a draw behind the typing, so a key in a long paste is not held up by reading it all.
+  const pasted = useDeferredValue(text);
+  const tooLong = pasted.length > FILE_LIMIT;
   const result = useMemo(
-    () => (problem || !text.trim() ? null : parseImport(text, options)),
-    [problem, text, options],
+    () => (problem || tooLong || !pasted.trim() ? null : parseImport(pasted, options)),
+    [problem, tooLong, pasted, options],
   );
 
   const chooseFile = async (file: File) => {
@@ -105,6 +116,7 @@ export function FlashcardImport({
           id={`${id}-text`}
           className="field__textarea"
           rows={8}
+          dir="auto"
           value={text}
           onChange={(e) => setText(e.target.value)}
           aria-describedby={`${id}-text-note`}
@@ -213,12 +225,14 @@ export function FlashcardImport({
         <p role="status" className="form-note">
           {problem
             ? problem
-            : !result
-              ? 'Nothing pasted yet.'
-              : `${cardCount(count)} to add` +
-                (result.problems.length > 0
-                  ? `, and ${result.problems.length} ${result.problems.length === 1 ? 'line that is' : 'lines that are'} not a card.`
-                  : '.')}
+            : tooLong
+              ? 'That is more than 8 MB of text, which is more than a set can hold. Paste part of it.'
+              : !result
+                ? 'Nothing pasted yet.'
+                : `${cardCount(count)} to add` +
+                  (result.problems.length > 0
+                    ? `, and ${result.problems.length} ${result.problems.length === 1 ? 'line that is' : 'lines that are'} not a card.`
+                    : '.')}
         </p>
         {result && result.over > 0 && (
           <p className="remember__error">
@@ -234,25 +248,53 @@ export function FlashcardImport({
               : `${result.headers} header lines were skipped.`}
           </p>
         )}
+        {result?.unread && (
+          <p className="remember__error">
+            Only the first {READ_LIMIT.toLocaleString()} lines were read: a set holds{' '}
+            {CARD_LIMIT.toLocaleString()} cards, and this goes on well past that.
+          </p>
+        )}
+        {result && result.extraColumns > 0 && (
+          <p className="form-note">
+            {result.extraColumns === 1
+              ? 'One line had more columns than a term and a definition; only those two were read.'
+              : `${result.extraColumns.toLocaleString()} lines had more columns than a term and a definition; only those two were read.`}
+          </p>
+        )}
         {result && result.problems.length > 0 && (
           <>
             <p className="form-note">These lines were not added. Fix them above to include them.</p>
             <ul className="flashcards__problems">
-              {result.problems.map((p, i) => (
+              {result.problems.slice(0, PREVIEW_ROWS).map((p, i) => (
                 <li key={`${p.where}-${i}`}>
                   <span className="meta">{p.where}</span> {p.reason}
-                  {p.text && <span className="flashcards__problem-text"> “{p.text}”</span>}
+                  {p.text && (
+                    <span className="flashcards__problem-text" dir="auto">
+                      {' '}
+                      “{p.text}”
+                    </span>
+                  )}
                 </li>
               ))}
             </ul>
+            {result.problems.length > PREVIEW_ROWS && (
+              <p className="form-note">
+                And {(result.problems.length - PREVIEW_ROWS).toLocaleString()} more lines like
+                these.
+              </p>
+            )}
           </>
         )}
         {count > 0 && (
           <ol className="flashcards__cards">
             {result?.cards.slice(0, PREVIEW_ROWS).map((c, i) => (
               <li key={i} className="flashcards__pair">
-                <span className="flashcards__pair-term">{c.term}</span>
-                <span className="flashcards__pair-definition">{c.definition}</span>
+                <span className="flashcards__pair-term" dir="auto">
+                  {c.term}
+                </span>
+                <span className="flashcards__pair-definition" dir="auto">
+                  {c.definition}
+                </span>
               </li>
             ))}
           </ol>

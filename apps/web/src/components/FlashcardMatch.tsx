@@ -12,6 +12,7 @@
 import { useEffect, useState } from 'react';
 import {
   beatsBest,
+  bestTimeKey,
   elapsedTenths,
   formatTenths,
   matchDone,
@@ -22,7 +23,7 @@ import {
   type MatchState,
 } from '../lib/flashcards.js';
 import { mutationId } from '../lib/submission.js';
-import { bestTimeKey, readStored, useFocusAfter, writeStored } from './FlashcardParts.js';
+import { readStored, useFocusAfter, writeStored } from './FlashcardParts.js';
 
 const DONE_ID = 'flashcards-match-done';
 const tileDomId = (tileId: string) => `flashcards-tile-${tileId}`;
@@ -62,9 +63,9 @@ export function FlashcardMatch({
             ← Back to the set
           </button>
         </div>
-        <h2 id={headingId} tabIndex={-1} className="flashcards__heading">
+        <h1 id={headingId} tabIndex={-1} className="flashcards__heading">
           Match
-        </h2>
+        </h1>
         <p>
           Match needs at least two cards whose terms and definitions all read differently, so that
           the right tile cannot be mistaken for another.
@@ -134,10 +135,12 @@ export function FlashcardMatch({
           {formatTenths(tenths)}
         </span>
       </div>
-      <p className="meta">{set.title}</p>
-      <h2 id={headingId} tabIndex={-1} className="flashcards__heading">
+      <p className="meta" dir="auto">
+        {set.title}
+      </p>
+      <h1 id={headingId} tabIndex={-1} className="flashcards__heading">
         Match
-      </h2>
+      </h1>
       <p className="form-note">
         Choose a term, then its definition — or the other way round. The clock starts with your
         first choice.{best !== null && ` Your best: ${formatTenths(best)}.`}
@@ -148,9 +151,9 @@ export function FlashcardMatch({
 
       {matchDone(game) ? (
         <div className="stack flashcards__end">
-          <h3 id={DONE_ID} tabIndex={-1} className="flashcards__subheading">
+          <h2 id={DONE_ID} tabIndex={-1} className="flashcards__subheading">
             Your time {formatTenths(tenths)}
-          </h3>
+          </h2>
           <p>
             {newBest
               ? 'A new best for this set.'
@@ -179,6 +182,7 @@ export function FlashcardMatch({
                   id={tileDomId(tile.id)}
                   type="button"
                   className="flashcards__tile"
+                  dir="auto"
                   aria-pressed={game.selected === tile.id}
                   data-missed={missed.includes(tile.id) ? 'true' : undefined}
                   onClick={(e) => choose(tile.id, e.timeStamp)}

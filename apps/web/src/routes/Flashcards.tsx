@@ -12,8 +12,11 @@ import { FlashcardEditor } from '../components/FlashcardEditor.js';
 import { FlashcardImport } from '../components/FlashcardImport.js';
 import { cardCount, shortDate, useFocusAfter, useOnline } from '../components/FlashcardParts.js';
 import {
+  CARD_LIMIT,
   SET_LIMIT,
   TITLE_MAX,
+  TOTAL_CARD_LIMIT,
+  longerThan,
   newDraft,
   saveRefusal,
   type FlashcardSetSummary,
@@ -59,6 +62,20 @@ export function Flashcards({
 
   useEffect(() => {
     const controller = new AbortController();
+    const fromThisDevice = async () => {
+      const kept = await readFlashcardSets(userId);
+      if (controller.signal.aborted) return;
+      setSets(kept);
+      setFromDevice(true);
+      setError(null);
+      setSettled(true);
+    };
+    // Offline, what is on the device at once, rather than after supabase-js has retried its
+    // way to failing; the account is read again when the connection returns.
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      void fromThisDevice();
+      return () => controller.abort();
+    }
     fetchSets(controller.signal)
       .then(({ sets: list, complete }) => {
         if (controller.signal.aborted) return;
@@ -73,15 +90,11 @@ export function Flashcards({
       .catch(async (e: unknown) => {
         if (controller.signal.aborted) return;
         if (isOfflineFailure(e)) {
-          const kept = await readFlashcardSets(userId);
-          if (controller.signal.aborted) return;
-          setSets(kept);
-          setFromDevice(true);
-          setError(null);
-        } else {
-          console.error('Flashcard sets request failed', e);
-          setError(e instanceof Error ? e.message : String(e));
+          await fromThisDevice();
+          return;
         }
+        console.error('Flashcard sets request failed', e);
+        setError(e instanceof Error ? e.message : String(e));
         setSettled(true);
       });
     return () => controller.abort();
@@ -102,10 +115,16 @@ export function Flashcards({
   };
 
   const full = !fromDevice && sets.length >= SET_LIMIT;
-  const cannotMake = !online || fromDevice || full;
+  // The cards across every set, against the account's limit: known here, from the list.
+  const totalCards = sets.reduce((n, s) => n + s.cardCount, 0);
+  const cardRoom = TOTAL_CARD_LIMIT - totalCards;
+  const fullOfCards = !fromDevice && cardRoom <= 0;
+  const cannotMake = !online || fromDevice || full || fullOfCards;
   const cannotMakeReason = full
     ? `You have ${SET_LIMIT} sets, which is as many as an account keeps. Delete one you are done with to make another.`
-    : 'Making or importing a set needs a connection.';
+    : fullOfCards
+      ? `You have ${TOTAL_CARD_LIMIT.toLocaleString('en')} cards across your sets, which is as many as an account keeps. Delete cards or sets you are done with to make room.`
+      : 'Making or importing a set needs a connection.';
 
   const saved = async (payload: SavePayload) => {
     const out = await saveSet(payload);
@@ -116,6 +135,7 @@ export function Flashcards({
     return (
       <FlashcardEditor
         key={newId}
+        userId={userId}
         initial={newDraft(newId, mutationId)}
         saved={null}
         heading="A new set"
@@ -131,8 +151,10 @@ export function Flashcards({
   if (view === 'import') {
     const take = async (cards: { term: string; definition: string }[]) => {
       const title = importTitle.trim();
-      if (!title) {
-        setImportError('Give the set a title first.');
+      if (!title || longerThan(title, TITLE_MAX)) {
+        setImportError(
+          title ? `A title is at most ${TITLE_MAX} characters.` : 'Give the set a title first.',
+        );
         focusAfter('flashcards-import-name');
         return;
       }
@@ -180,12 +202,15 @@ export function Flashcards({
           <input
             id="flashcards-import-name"
             className="field__input"
+            dir="auto"
             value={importTitle}
-            maxLength={TITLE_MAX}
+            // Units, of which an emoji is two: twice the limit, and the limit said in characters.
+            maxLength={TITLE_MAX * 2}
             onChange={(e) => setImportTitle(e.target.value)}
           />
         </div>
         <FlashcardImport
+          limit={Math.max(0, Math.min(CARD_LIMIT, cardRoom))}
           takeLabel={(n) => (n === 0 ? 'Create the set' : `Create the set with ${cardCount(n)}`)}
           onTake={(cards) => void take(cards)}
           busy={importing}
@@ -296,6 +321,7 @@ export function Flashcards({
               <button
                 type="button"
                 className="btn btn--plain flashcards__title"
+                dir="auto"
                 onClick={() => onNavigate(`/flashcards/${encodeURIComponent(s.id)}`)}
               >
                 {s.title}
@@ -304,14 +330,21 @@ export function Flashcards({
                 {cardCount(s.cardCount)}
                 {shortDate(s.updatedAt) && ` · Changed ${shortDate(s.updatedAt)}`}
               </span>
-              {s.description && <p className="flashcards__description-line">{s.description}</p>}
+              {s.description && (
+                <p className="flashcards__description-line" dir="auto">
+                  {s.description}
+                </p>
+              )}
             </li>
           ))}
         </ol>
       )}
       <p className="meta">
         Private to you. Nothing here is published or sent to a model
-        {sets.length > 0 && !fromDevice ? ` · ${sets.length} of ${SET_LIMIT} sets` : ''}.
+        {sets.length > 0 && !fromDevice
+          ? ` · ${sets.length} of ${SET_LIMIT} sets · ${totalCards.toLocaleString('en')} of ${TOTAL_CARD_LIMIT.toLocaleString('en')} cards`
+          : ''}
+        .
       </p>
     </section>
   );

@@ -1,7 +1,7 @@
 /**
  * What the flashcard screens share: where focus goes after a screen changes, whether there
  * is a connection, the "answer with" choice every mode offers, reading a side aloud, and
- * this browser's storage for the two conveniences kept there.
+ * this browser's storage for the three conveniences kept there.
  *
  * Archive rules (docs/design.md): every control is a real button, radio or link a keyboard
  * reaches, a state is said in words beside any colour, and nothing moves.
@@ -170,33 +170,33 @@ export function ListenButton({
 }
 
 /**
- * This browser's storage, for the two things kept there -- a round in progress, and a best
- * Match time. Both are conveniences for this viewer on this device: storage can be absent
- * or refuse (a private window, blocked site data), and then the screen simply starts
- * afresh, so every access is wrapped rather than trusted.
+ * This browser's storage, for the three things kept there -- a round in progress and a best
+ * Match time in `localStorage`, and a set being edited in this tab's `sessionStorage`. All
+ * are conveniences for this viewer on this device, under keys by reader and set
+ * (`lib/flashcards.ts`): storage can be absent or refuse (a private window, blocked site
+ * data, a full quota), and then the screen simply starts afresh, so every access is wrapped
+ * rather than trusted.
  */
-export function readStored(key: string): string | null {
+type Where = 'local' | 'session';
+
+const storage = (where: Where) => (where === 'local' ? window.localStorage : window.sessionStorage);
+
+export function readStored(key: string, where: Where = 'local'): string | null {
   try {
-    return window.localStorage.getItem(key);
+    return storage(where).getItem(key);
   } catch {
     return null;
   }
 }
 
-export function writeStored(key: string, value: string | null): void {
+export function writeStored(key: string, value: string | null, where: Where = 'local'): void {
   try {
-    if (value === null) window.localStorage.removeItem(key);
-    else window.localStorage.setItem(key, value);
+    if (value === null) storage(where).removeItem(key);
+    else storage(where).setItem(key, value);
   } catch {
     /* a convenience, never a requirement */
   }
 }
-
-/** Keyed by reader and set, so one reader's round never opens on the next reader's screen. */
-export const roundKey = (userId: string, setId: string) =>
-  `wap:flashcards:round:${userId}:${setId}`;
-export const bestTimeKey = (userId: string, setId: string) =>
-  `wap:flashcards:match-best:${userId}:${setId}`;
 
 /** Whether a key press belongs to a field being typed in, which the modes leave alone. */
 export function typingIn(target: EventTarget | null): boolean {

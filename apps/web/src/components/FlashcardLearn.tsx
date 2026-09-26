@@ -15,13 +15,13 @@ import {
   answerLearn,
   claimRight,
   continueLearn,
+  learnCorrect,
   learnDone,
   learnProgress,
   learnQuestion,
   learnRoundOver,
   nextLearnRound,
   startLearn,
-  writtenCorrect,
   type AnswerSide,
   type FlashcardSet,
   type LearnState,
@@ -79,7 +79,7 @@ export function FlashcardLearn({
 
   const choose = (option: string) => {
     if (!question || answered) return;
-    setState(answerLearn(state, option === question.answer, option));
+    setState(answerLearn(state, learnCorrect(question, option), option));
     focusAfter(VERDICT_ID);
   };
 
@@ -91,7 +91,8 @@ export function FlashcardLearn({
     }
     setProblem(null);
     const response = gaveUp ? '' : typed.trim();
-    setState(answerLearn(state, !gaveUp && writtenCorrect(typed, question.answer), response));
+    // Right when close to the card's answer, or to another card's with the same prompt.
+    setState(answerLearn(state, !gaveUp && learnCorrect(question, typed), response));
     focusAfter(VERDICT_ID);
   };
 
@@ -113,10 +114,12 @@ export function FlashcardLearn({
           Round {state.roundNo} · Mastered {mastered} of {total}
         </span>
       </div>
-      <p className="meta">{set.title}</p>
-      <h2 id={headingId} tabIndex={-1} className="flashcards__heading">
+      <p className="meta" dir="auto">
+        {set.title}
+      </p>
+      <h1 id={headingId} tabIndex={-1} className="flashcards__heading">
         Learn
-      </h2>
+      </h1>
       <Meter
         value={total === 0 ? 0 : mastered / total}
         label={`Mastered ${mastered} of ${total}`}
@@ -129,9 +132,9 @@ export function FlashcardLearn({
 
       {done ? (
         <div className="stack flashcards__end">
-          <h3 id={BREAK_ID} tabIndex={-1} className="flashcards__subheading">
+          <h2 id={BREAK_ID} tabIndex={-1} className="flashcards__subheading">
             You’ve learnt all {cardCount(total)}.
-          </h3>
+          </h2>
           <p>Each was right in multiple choice and then right in writing.</p>
           <div className="flashcards__actions">
             <button
@@ -148,9 +151,9 @@ export function FlashcardLearn({
         </div>
       ) : between ? (
         <div className="stack flashcards__end">
-          <h3 id={BREAK_ID} tabIndex={-1} className="flashcards__subheading">
+          <h2 id={BREAK_ID} tabIndex={-1} className="flashcards__subheading">
             Round {state.roundNo} done. Mastered {mastered} of {total}.
-          </h3>
+          </h2>
           <p>The next round keeps the cards you are still learning and brings in new ones.</p>
           <p>
             <button
@@ -172,7 +175,7 @@ export function FlashcardLearn({
               {SIDE_LABEL[promptSide]} ·{' '}
               {question.kind === 'choice' ? 'Choose the answer' : 'Write the answer'}
             </p>
-            <p id={PROMPT_ID} tabIndex={-1} className="flashcards__face">
+            <p id={PROMPT_ID} tabIndex={-1} className="flashcards__face" dir="auto">
               {question.prompt}
             </p>
             <ListenButton
@@ -192,6 +195,7 @@ export function FlashcardLearn({
                       <button
                         type="button"
                         className="flashcards__option"
+                        dir="auto"
                         data-state={right ? 'right' : chosen ? 'wrong' : undefined}
                         aria-disabled={answered !== null}
                         onClick={() => choose(option)}
@@ -221,6 +225,7 @@ export function FlashcardLearn({
                   <input
                     id={`${id}-typed`}
                     className="field__input"
+                    dir="auto"
                     value={answered ? answered.response : typed}
                     readOnly={answered !== null}
                     autoComplete="off"
@@ -254,7 +259,7 @@ export function FlashcardLearn({
 
             {answered && (
               <div className="stack flashcards__feedback">
-                <p id={VERDICT_ID} tabIndex={-1} className="flashcards__verdict">
+                <p id={VERDICT_ID} tabIndex={-1} className="flashcards__verdict" dir="auto">
                   {answered.correct
                     ? answered.overridden
                       ? 'Counted as right, on your word.'
