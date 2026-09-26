@@ -193,14 +193,15 @@ are counted once they are due; the catalogue's are not.** `generation_waiting()`
 (`cost_cents > 0`, because an attempt ledgered at nothing such as a 429 is not a start) and
 nothing held for it today. A job that has started counts at what it holds or has been
 charged, which `spend_today()` already includes. Of the rest, it reads the `generation`
-queue (`20260926220000`):
+queue (`20260926220000`, `20260926230000`):
 
-| The job's messages                                  | Counted as | Why                                                                      |
-| --------------------------------------------------- | ---------- | ------------------------------------------------------------------------ |
-| one carries `budgetWaits > 0`                       | parked     | its reservation was refused, and it waits for a day that can fund it     |
-| one is visible now, or already delivered            | due        | a worker can start it now, or has                                        |
-| all still delayed (the stagger, a held-source wait) | nothing    | it cannot spend before it runs, and when it comes due the door counts it |
-| none at all                                         | nothing    | it is stranded, and the sweep fails it                                   |
+| The job's messages                                         | Counted as | Why                                                                        |
+| ---------------------------------------------------------- | ---------- | -------------------------------------------------------------------------- |
+| one carries `budgetWaits > 0` and was sent today           | parked     | its reservation was refused today, and it waits for a day that can fund it |
+| one carries `budgetWaits > 0` and was sent before midnight | due        | yesterday's refusal says nothing about today: it re-asks on a fresh day    |
+| one is visible now, or already delivered                   | due        | a worker can start it now, or has                                          |
+| all still delayed (the stagger, a held-source wait)        | nothing    | it cannot spend before it runs, and when it comes due the door counts it   |
+| none at all                                                | nothing    | it is stranded, and the sweep fails it                                     |
 
 **No reader holds more than three jobs' worth of the day.** A reader's parked and due
 summaries, of both kinds together, count at `min_job_cents()` each for at most three of them
@@ -209,15 +210,23 @@ summaries, of both kinds together, count at `min_job_cents()` each for at most t
 reader is never refused for having jobs waiting: the quota stays three fast, then a
 widening stagger, fifty in total.
 
-**A target with nothing to summarise is refused at the door**: no text and no URL (22023,
-"the generation target must carry text or a URL to summarise"). `resolve_identity` used to
-fail it for nothing, which made it free to submit. A `work_id` is not a source. The Studio
-always sends text and the catalogue always sends a URL.
+**A target with too little to summarise is refused at the door** (22023, "the generation
+target must carry at least 200 characters of text, or a URL, to summarise"). The pipeline
+fails such a job for nothing, which made it free to submit. Text is what the pipeline uses
+whenever there is any, and `acquire` refuses fewer than 200 characters of it. So the door
+asks for 200 once whitespace is trimmed, trimmed and counted as the Studio does before it
+sends (`text.trim().length`: JavaScript's whitespace set, UTF-16 code units). The Studio
+never sends less, so the door refuses nothing it would accept. With no text, the door asks
+for a URL with something in it. A `work_id` is not a source. The three 200s
+(`MIN_TEXT_CHARS`, `acquire` and the door's `min_text_chars`) move together. The catalogue
+does not come through this door: its jobs are queued by migration and by
+`scripts/seed-corpus.mjs`.
 
 **What is left.** A reader's due jobs are their fast ones, at most three, and they start
 within moments of being admitted. So one account can hold at most three jobs' worth of the
-day, and only until the worker picks those jobs up. A bad URL is still free to submit and
-fails at `acquire` for nothing, so an account can repeat this three jobs at a time, and
+day, and a delivered job counts until it reserves or fails. A malformed or dead URL is
+still free to submit and fails at `acquire` for nothing, since the door does not parse or
+fetch it. So an account can repeat this three jobs at a time, and
 enough accounts together can keep the door `committed` for those moments. The reservation
 bounds the day whatever the door admits.
 

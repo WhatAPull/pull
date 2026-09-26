@@ -37,6 +37,14 @@
 
 begin;
 
+/*
+ * A source the door accepts: at least the 200 characters of text, once trimmed, that
+ * `acquire` and the Studio ask for (20260926230000). Every submit below that is meant to
+ * reach the budget carries it, so that it is the budget being tested and not the target.
+ */
+create or replace function pg_temp.source() returns text
+language sql immutable as $fn$ select repeat('Enough to summarise. ', 10) $fn$;
+
 do $$
 declare
   reader      uuid := extensions.gen_random_uuid();
@@ -456,18 +464,33 @@ begin
     raise exception 'an unknown jobKind was accepted; the pipeline would never run it.';
   end if;
 
-  -- Nothing to summarise: no text and no URL. `resolve_identity` would fail it for
-  -- nothing, so it was free to submit (20260926220000). A `work_id` is not a source, and
-  -- neither is blank text or a text that is not a string.
+  -- Nothing to summarise. The pipeline fails these for nothing, so they were free to
+  -- submit (20260926220000, 20260926230000). Text is what the pipeline uses whenever there
+  -- is any, and `acquire` refuses fewer than 200 characters of it, so the door asks for 200
+  -- once whitespace is trimmed, trimmed and counted as the Studio does before it sends.
+  -- With no text, a URL with something in it. A `work_id` is not a source.
   declare
     empty jsonb;
     said  text;
+    -- 99 characters beyond the BMP, which JavaScript counts as 198, and one more.
+    astral_short text := repeat(U&'\+01F600', 99) || 'x';
   begin
     foreach empty in array array[
       '{"title":"Nothing"}'::jsonb,
       '{"title":"Blank","text":"   ","url":""}'::jsonb,
       '{"title":"A number","text":42}'::jsonb,
-      jsonb_build_object('title', 'Only a work', 'work_id', theirs::text)
+      jsonb_build_object('title', 'Only a work', 'work_id', theirs::text),
+      '{"title":"One letter","text":"x"}'::jsonb,
+      jsonb_build_object('title', 'Tab and newline', 'text', E'\n\t'),
+      jsonb_build_object('title', 'No-break spaces', 'text', U&'\00A0\00A0'),
+      '{"title":"A URL of spaces","url":"   "}'::jsonb,
+      jsonb_build_object('title', 'One short', 'text', repeat('x', 199)),
+      jsonb_build_object('title', 'Padded short',
+                         'text', U&'\3000 ' || repeat('x', 199) || U&'\00A0\FEFF\2029'),
+      jsonb_build_object('title', 'Short beyond the BMP', 'text', astral_short),
+      -- Text wins in the pipeline, so a short text is not rescued by a URL beside it.
+      jsonb_build_object('title', 'Short, with a URL', 'text', 'x',
+                         'url', 'https://example.test/b')
     ] loop
       said := null;
       begin
@@ -475,22 +498,45 @@ begin
       exception when invalid_parameter_value then
         said := sqlerrm;
       end;
-      if said is distinct from 'the generation target must carry text or a URL to summarise' then
+      if said is distinct from
+         'the generation target must carry at least 200 characters of text, or a URL, to '
+         'summarise' then
         raise exception 'a target with nothing to summarise (%) was answered with %',
           empty, coalesce(said, 'a job');
       end if;
     end loop;
+
+    -- And exactly enough is enough: 200 characters, 200 once padded and trimmed, and 100
+    -- characters beyond the BMP, which the Studio counts as 200 and so would send.
+    foreach empty in array array[
+      jsonb_build_object('title', 'Exactly enough', 'text', repeat('x', 200)),
+      jsonb_build_object('title', 'Padded enough',
+                         'text', E'\n\t ' || repeat('x', 200) || U&'\00A0'),
+      jsonb_build_object('title', 'Enough beyond the BMP', 'text', repeat(U&'\+01F600', 100)),
+      -- Text the pipeline does not read -- empty, or not a string -- leaves the URL to it.
+      '{"title":"Empty text, a URL","text":"","url":"https://example.test/c"}'::jsonb,
+      '{"title":"A number, a URL","text":42,"url":"https://example.test/d"}'::jsonb
+    ] loop
+      if (public.enqueue_generation_job(empty) ->> 'jobId') is null then
+        raise exception 'a target with enough to summarise (%) was refused', empty ->> 'title';
+      end if;
+    end loop;
   end;
-  -- And a URL alone is something to summarise: it is what the catalogue sends.
+  -- And a URL alone is something to summarise, even one that will not fetch: a malformed
+  -- URL fails at `acquire` for nothing, and that is the residual docs/generation.md states.
   if (public.enqueue_generation_job('{"title":"A page","url":"https://example.test/a"}'::jsonb)
         ->> 'jobId') is null then
     raise exception 'a target with only a URL was refused';
+  end if;
+  if (public.enqueue_generation_job('{"title":"Not a URL","url":"not a url"}'::jsonb)
+        ->> 'jobId') is null then
+    raise exception 'a target with only a malformed URL was refused; the door does not parse URLs';
   end if;
 
   refused := false;
   begin
     perform public.enqueue_generation_job(
-      jsonb_build_object('title', repeat('t', 201), 'text', 'x'));
+      jsonb_build_object('title', repeat('t', 201), 'text', pg_temp.source()));
   exception when check_violation then
     refused := true;
   end;
@@ -516,7 +562,7 @@ begin
   -- private generation to a work they have nothing to do with.
   queued := public.enqueue_generation_job(
     jsonb_build_object('jobKind', 'private_summary', 'title', 'Mine',
-                       'text', 'x', 'work_id', theirs::text));
+                       'text', pg_temp.source(), 'work_id', theirs::text));
   select gj.target, gj.kind into stored, kept
   from public.generation_jobs gj where gj.id = (queued ->> 'jobId')::uuid;
   if stored ? 'work_id' then
@@ -534,7 +580,7 @@ begin
 
   queued := public.enqueue_generation_job(
     jsonb_build_object('jobKind', 'private_summary', 'title', 'Mine',
-                       'text', 'x', 'work_id', theirs::text, 'visibility', 'public'));
+                       'text', pg_temp.source(), 'work_id', theirs::text, 'visibility', 'public'));
   select gj.target into stored
   from public.generation_jobs gj where gj.id = (queued ->> 'jobId')::uuid;
   if (stored ->> 'work_id') <> theirs::text then
@@ -550,7 +596,7 @@ begin
   -- A malformed work_id is stripped rather than raised: it is a key the caller
   -- should not have sent, not an error they can act on.
   queued := public.enqueue_generation_job(
-    jsonb_build_object('title', 'Mine', 'text', 'x', 'work_id', 'not-a-uuid'));
+    jsonb_build_object('title', 'Mine', 'text', pg_temp.source(), 'work_id', 'not-a-uuid'));
   if queued ->> 'jobId' is null then
     raise exception 'a malformed work_id failed the whole call';
   end if;
@@ -582,9 +628,9 @@ begin
     json_build_object('sub', reader, 'role', 'authenticated')::text, true);
 
   once := public.enqueue_generation_job(
-    jsonb_build_object('title', 'Replayed', 'text', 'x'), mut);
+    jsonb_build_object('title', 'Replayed', 'text', pg_temp.source()), mut);
   twice := public.enqueue_generation_job(
-    jsonb_build_object('title', 'Replayed', 'text', 'x'), mut);
+    jsonb_build_object('title', 'Replayed', 'text', pg_temp.source()), mut);
 
   if (twice ->> 'jobId') <> (once ->> 'jobId') then
     raise exception
@@ -608,7 +654,7 @@ begin
     -- Past the free allowance, so the next job is genuinely delayed.
     for i in 1..4 loop
       perform public.enqueue_generation_job(
-        jsonb_build_object('title', 'Filler ' || i, 'text', 'x'));
+        jsonb_build_object('title', 'Filler ' || i, 'text', pg_temp.source()));
     end loop;
 
     -- Backdated, because `now()` is the TRANSACTION's clock: every row inserted in this
@@ -622,13 +668,13 @@ begin
       json_build_object('sub', reader, 'role', 'authenticated')::text, true);
 
     staggered := public.enqueue_generation_job(
-      jsonb_build_object('title', 'Late', 'text', 'x'), late);
+      jsonb_build_object('title', 'Late', 'text', pg_temp.source()), late);
     if (staggered ->> 'queue') <> 'normal' or (staggered ->> 'delaySeconds')::int <= 0 then
       raise exception 'the fixture did not produce a staggered job: %', staggered;
     end if;
 
     staggered := public.enqueue_generation_job(
-      jsonb_build_object('title', 'Late', 'text', 'x'), late);
+      jsonb_build_object('title', 'Late', 'text', pg_temp.source()), late);
     if (staggered ->> 'queue') <> 'normal' or (staggered ->> 'delaySeconds')::int <= 0 then
       raise exception
         'a replay of a staggered job reported %, so the screen says "Started." for a job '
@@ -644,7 +690,7 @@ begin
   end if;
 
   -- A DIFFERENT id from the same reader is a different submission, not a replay.
-  if (public.enqueue_generation_job(jsonb_build_object('title', 'Another', 'text', 'x'),
+  if (public.enqueue_generation_job(jsonb_build_object('title', 'Another', 'text', pg_temp.source()),
                                     extensions.gen_random_uuid()) ->> 'jobId')
      = (once ->> 'jobId') then
     raise exception 'a second submission was mistaken for a replay of the first';
@@ -663,7 +709,7 @@ begin
     json_build_object('sub', reader, 'role', 'authenticated')::text, true);
 
   twice := public.enqueue_generation_job(
-    jsonb_build_object('title', 'Replayed', 'text', 'x'), mut);
+    jsonb_build_object('title', 'Replayed', 'text', pg_temp.source()), mut);
   if (twice ->> 'finished')::boolean is not true or (twice ->> 'status') <> 'failed' then
     raise exception
       'a replay of a job that had already failed answered %, so the screen says a summary '
@@ -811,7 +857,7 @@ declare
   detail  text;
 begin
   perform public.enqueue_generation_job(
-    jsonb_build_object('title', p_title, 'text', 'x'), p_mutation);
+    jsonb_build_object('title', p_title, 'text', pg_temp.source()), p_mutation);
   return null;
 exception when configuration_limit_exceeded then
   get stacked diagnostics message = message_text, detail = pg_exception_detail;
@@ -1149,6 +1195,25 @@ begin
     if sqlerrm is distinct from 'probe done' then raise; end if;
   end;
 
+  -- 6d. And a PARKED course counts under the same share: for a reader whose share is
+  --     already spent today, it adds nothing. Its reservation cannot fit the share, today
+  --     or at any point before midnight.
+  begin
+    perform pg_temp.door_day(cap - share - 2 * least_);
+    job := pg_temp.door_stage(other, 'study_course', 'running', 'nothing', 'none');
+    insert into public.cost_ledger (job_id, provider, operation, unit, quantity, cost_cents)
+    values (job, 'test', 'study_extract', 'call', 1, share);
+    perform pg_temp.door_stage(other, 'study_course', 'running', 'nothing', 'parked');
+    if public.spend_today() <> cap - 2 * least_ then
+      raise exception 'the fixture for a spent share did not take; spend_today() is %',
+        public.spend_today();
+    end if;
+    perform pg_temp.door_admits_exactly(reader, 2, 'beside a parked course, its share spent');
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+
   -- 7. `low` is four fifths of the day spent, due or parked. A day spent a job short of
   --    it, with one job due or one parked, is low; the same day with neither is open.
   foreach state in array array['due', 'parked'] loop
@@ -1273,6 +1338,29 @@ begin
     if sqlerrm is distinct from 'probe done' then raise; end if;
   end;
 
+  -- 10b. A budget wait sent YESTERDAY is not a parked job today. Such a job re-asks within
+  --      fifteen minutes of midnight on a fresh day, so it counts as due, and a day it
+  --      closes is committed, not spent. The edge is today's UTC midnight: a wait sent at
+  --      midnight is today's, and one sent a moment before it is yesterday's. Both staged
+  --      on a day a cent short of room for the job and one more.
+  foreach charged in array array[0, 1] loop
+    begin
+      perform pg_temp.door_day(cap - 2 * least_ + 1);
+      job := pg_temp.door_stage(other, 'private_summary', 'running', 'nothing', 'parked');
+      update pgmq.q_generation q
+         set enqueued_at = date_trunc('day', (now() at time zone 'utc')) at time zone 'utc'
+                           - charged * interval '1 microsecond'
+       where q.message ->> 'jobId' = job::text;
+      perform pg_temp.door_admits_exactly(reader, 0,
+        case when charged = 0 then 'beside a job parked at midnight'
+             else 'beside a job parked a moment before midnight' end,
+        case when charged = 0 then 'spent' else 'committed' end);
+      raise exception using errcode = 'P0001', message = 'probe done';
+    exception when raise_exception then
+      if sqlerrm is distinct from 'probe done' then raise; end if;
+    end;
+  end loop;
+
   -- 11. The catalogue's jobs are not a reader's, and do not close the door to one. More
   --     of them queued than the whole day could fund, plus one that has attempted and been
   --     ledgered at nothing, leave a day with room for two admitting exactly two. The
@@ -1299,7 +1387,7 @@ begin
       json_build_object('sub', reader, 'role', 'authenticated')::text, true);
 
     first := public.enqueue_generation_job(
-      jsonb_build_object('title', 'The last room', 'text', 'x'), mut);
+      jsonb_build_object('title', 'The last room', 'text', pg_temp.source()), mut);
     if pg_temp.door_refusal('After the last room', extensions.gen_random_uuid())
        is distinct from 'committed' then
       raise exception
@@ -1307,7 +1395,7 @@ begin
         'day is committed.';
     end if;
     again := public.enqueue_generation_job(
-      jsonb_build_object('title', 'The last room', 'text', 'x'), mut);
+      jsonb_build_object('title', 'The last room', 'text', pg_temp.source()), mut);
     if (again ->> 'replayed')::boolean is not true
        or (again ->> 'jobId') is distinct from (first ->> 'jobId') then
       raise exception 'a replay on a full day answered % rather than the job %',
@@ -1373,7 +1461,8 @@ begin
     json_build_object('sub', reader, 'role', 'authenticated')::text, true);
 
   begin
-    perform public.enqueue_generation_job('{"title":"After the budget","text":"x"}'::jsonb);
+    perform public.enqueue_generation_job(
+      jsonb_build_object('title', 'After the budget', 'text', pg_temp.source()));
   exception when configuration_limit_exceeded then
     refused := true;
   end;
@@ -1435,7 +1524,8 @@ begin
     json_build_object('sub', reader, 'role', 'authenticated')::text, true);
 
   begin
-    perform public.enqueue_generation_job('{"title":"Ten cents left","text":"x"}'::jsonb);
+    perform public.enqueue_generation_job(
+      jsonb_build_object('title', 'Ten cents left', 'text', pg_temp.source()));
   exception when configuration_limit_exceeded then
     refused := true;
   end;
