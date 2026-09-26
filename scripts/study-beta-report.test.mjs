@@ -178,7 +178,8 @@ test('connects read-only, in UTC, past the operator’s psqlrc, with TLS off loo
     'postgres',
   ]);
   assert.equal(local.env.PGPASSWORD, 'pw');
-  assert.equal(local.env.PGOPTIONS, '-c TimeZone=UTC -c default_transaction_read_only=on');
+  // Not a startup option, which a pooler may refuse: the statement says it (below).
+  assert.equal(local.env.PGOPTIONS, undefined);
   assert.equal(local.env.PGHOST, undefined);
   assert.equal(local.env.PSQLRC, undefined);
   assert.equal(local.env.PGPASSFILE, undefined);

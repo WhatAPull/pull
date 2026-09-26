@@ -11,7 +11,8 @@
  *
  * On the hosted database this holds the owner's password, so it reads and nothing else: one
  * read-only transaction, one snapshot for every section, in UTC -- said by the statement
- * itself, and again in PGOPTIONS, which a connection pooler need not pass on. psql is handed
+ * itself, not by PGOPTIONS: a connection pooler need not pass that on, and a pgbouncer that
+ * does not know the startup parameter refuses the connection over it. psql is handed
  * the URL's parsed parts, never the URL; no PG* or PSQL* variable of the operator's reaches
  * it, and neither does their ~/.psqlrc, so nothing it would read on its own can point it
  * elsewhere or change what it prints. No command line or error it prints carries the
@@ -219,8 +220,6 @@ export function connection(url, parent = {}) {
     Object.entries(parent).filter(([k]) => !k.startsWith('PG') && !k.startsWith('PSQL')),
   );
   env.PGPASSWORD = decodeURIComponent(target.password);
-  // Read-only, and in UTC, whatever the server's or the operator's defaults.
-  env.PGOPTIONS = '-c TimeZone=UTC -c default_transaction_read_only=on';
   const loopback = ['127.0.0.1', 'localhost', '::1'].includes(host);
   const sslmode = target.searchParams.get('sslmode');
   if (sslmode !== null && !SSL_MODES.includes(sslmode)) {
