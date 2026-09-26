@@ -31,8 +31,8 @@
 -- 4. INSTRUMENTATION. An answer now records whether the study Delta counted every claim it
 --    tests as known just before it was given (`claims_known_before`), so false mastery --
 --    a claim the course would have skipped, answered wrong -- is measured rather than
---    guessed. `study_claim_known` is the one definition of "known", and
---    `study_claim_knowledge` is redefined through it.
+--    guessed. `study_claim_known` is 20260925210000's rule for one claim, held to
+--    `study_claim_knowledge` by the suite.
 --
 -- 5. OPERATORS' DASHBOARDS. Schema `ops`, not exposed through the API, readable by the
 --    service role: aggregate views of preparation, validation, cost, learning, trust and the
@@ -543,11 +543,13 @@ grant execute on function public.study_goal_kind(text) to service_role;
 -- ------------------------------------------------------------------ 5. instrumentation
 
 /*
- * Whether the study Delta counts a claim as known at a moment -- the rule 20260925210000
- * wrote into `study_claim_knowledge`, moved here unchanged so the stamp on each answer reads
- * the same one: the claim is validated, its last deterministic outcome was a success -- by
- * `p_at`, when given, so a success after the moment asked about does not count -- that
- * success still proves recall, and its recall then is above `known_retrievability_floor()`.
+ * Whether the study Delta counts a claim as known at a moment: 20260925210000's rule for one
+ * claim, for the stamp on each answer -- the claim is validated, its last outcome was a
+ * success by `p_at` (when given), that success still proves recall, and its recall then is
+ * above `known_retrievability_floor()`, days counted to at most a thousand stabilities.
+ * `study_claim_knowledge` keeps its own set-shaped copy, which the course page reads for
+ * every claim at once; calling this per claim from there was three times slower. The suite
+ * holds the two to one answer (`supabase/tests/study_beta.sql`).
  */
 create function public.study_claim_known(
   p_owner uuid,
@@ -562,7 +564,10 @@ as $fn$
   select coalesce((
     select m.last_outcome = 'success'
            and (p_at is null or m.last_success_at <= p_at)
-           and public.retrievability(m.stability::real, m.last_success_at, coalesce(p_at, now()))
+           and public.retrievability(
+                 m.stability::real, m.last_success_at,
+                 least(coalesce(p_at, now()),
+                       m.last_success_at + make_interval(secs => m.stability * 86400 * 1000)))
                > public.known_retrievability_floor()
            and public.study_answer_proves_recall(m.last_success_id)
     from public.study_claim_memory m
@@ -574,41 +579,6 @@ $fn$;
 revoke all on function public.study_claim_known(uuid, uuid, timestamptz) from public, anon;
 grant execute on function public.study_claim_known(uuid, uuid, timestamptz)
   to authenticated, service_role;
-
-/* As 20260925210000, with `known` read through study_claim_known. */
-create or replace function public.study_claim_knowledge(
-  p_course_id uuid,
-  p_at timestamptz default null
-)
-returns table (
-  claim_id       uuid,
-  known          boolean,
-  retrievability double precision,
-  due_at         timestamptz,
-  lapsed         boolean
-)
-language sql
-stable
-set search_path = ''
-as $fn$
-  with at as (select coalesce(p_at, now()) as t)
-  select c.id,
-         public.study_claim_known(c.owner_id, c.id, p_at),
-         case when m.last_success_at is not null and (p_at is null or m.last_success_at <= p_at)
-              then public.retrievability(m.stability::real, m.last_success_at, at.t) end,
-         case when m.last_outcome = 'lapse' then m.last_answered_at
-              when m.last_success_at is not null
-              then m.last_success_at + make_interval(secs => m.stability * 86400) end,
-         coalesce(m.last_outcome = 'lapse', false)
-           and exists (select 1 from public.study_item_claims ic
-                       join public.study_items i on i.id = ic.item_id
-                       where ic.claim_id = c.id and i.status = 'validated')
-  from public.study_claims c
-  cross join at
-  left join public.study_claim_memory m on m.claim_id = c.id and m.owner_id = c.owner_id
-  where c.generation_id = (select public.study_course_generation(p_course_id))
-    and c.status = 'validated'
-$fn$;
 
 alter table public.study_answer_events add column claims_known_before boolean;
 

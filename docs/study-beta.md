@@ -71,8 +71,9 @@ Admit readers who cover what is missing rather than opening past it.
 
 Everything is computed from rows the product already keeps, plus one stamp: an answer
 records whether the study Delta counted every claim its question tests as known just before
-it was given (`study_answer_events.claims_known_before`, through `study_claim_known`, the
-one definition `study_claim_knowledge` also reads). The proof rule never reads it.
+it was given (`study_answer_events.claims_known_before`, through `study_claim_known`: the
+study Delta's rule for one claim, which the suite holds to `study_claim_knowledge`'s answer
+for every claim). The proof rule never reads it.
 
 Learning is measured over deterministic answers to model-written questions; a self-graded
 answer or the reader's own question proves nothing either way.
