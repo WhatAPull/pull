@@ -5,6 +5,7 @@ import {
   cacheFlashcardSet,
   cachePulls,
   clearFlashcardSets,
+  clearFlashcardStorage,
   clearPending,
   clearReviewPack,
   drainPending,
@@ -12,6 +13,7 @@ import {
   isOfflineFailure,
   onPendingQueued,
   pendingRecallPullIds,
+  pruneFlashcardSets,
   queueIfOffline,
   queueMutation,
   readCachedPulls,
@@ -618,6 +620,90 @@ describe('flashcard sets on the device', () => {
     raw.close();
     expect((await readFlashcardSets(user)).map((s) => s.id)).toEqual(['fine']);
     expect(await readFlashcardSet(user, 'drifted')).toBeNull();
+  });
+
+  /** A browser's `Storage`, enough of it for walking and removing keys. */
+  const fakeStorage = (keys: string[]) => {
+    const items = new Map(keys.map((k) => [k, '1']));
+    return {
+      get length() {
+        return items.size;
+      },
+      key: (i: number) => [...items.keys()][i] ?? null,
+      removeItem: (k: string) => void items.delete(k),
+      keys: () => [...items.keys()].sort(),
+    };
+  };
+
+  it('drops the copies of sets a whole list no longer has, and their keys, but not a draft', async () => {
+    const user = 'fc-prune';
+    const local = fakeStorage([
+      `wap:flashcards:round:${user}:gone`,
+      `wap:flashcards:match-best:${user}:gone`,
+      `wap:flashcards:round:${user}:kept`,
+      `wap:flashcards:round:fc-other:gone`,
+    ]);
+    const session = fakeStorage([
+      `wap:flashcards:draft:${user}:gone`,
+      `wap:flashcards:draft:${user}:new`,
+    ]);
+    vi.stubGlobal('localStorage', local);
+    vi.stubGlobal('sessionStorage', session);
+    try {
+      await cacheFlashcardSet(user, flashcardSet('gone'));
+      await cacheFlashcardSet(user, flashcardSet('kept'));
+      await cacheFlashcardSet('fc-other', flashcardSet('gone'));
+      await pruneFlashcardSets(user, new Set(['kept']));
+      expect((await readFlashcardSets(user)).map((s) => s.id)).toEqual(['kept']);
+      expect(await readFlashcardSet('fc-other', 'gone')).not.toBeNull();
+      expect(local.keys()).toEqual([
+        'wap:flashcards:round:fc-other:gone',
+        `wap:flashcards:round:${user}:kept`,
+      ]);
+      // The reader's unsaved typing is theirs to save or let go, whatever the list says.
+      expect(session.keys()).toEqual([
+        `wap:flashcards:draft:${user}:gone`,
+        `wap:flashcards:draft:${user}:new`,
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('clears every key a reader’s flashcards keep, in both storages, when they leave', async () => {
+    const user = 'fc-leave';
+    const local = fakeStorage([
+      `wap:flashcards:round:${user}:a`,
+      `wap:flashcards:match-best:${user}:b`,
+      `wap:flashcards:round:${user}0:a`,
+      'wap:other:thing',
+    ]);
+    const session = fakeStorage([
+      `wap:flashcards:draft:${user}:new`,
+      `wap:flashcards:draft:${user}:a`,
+    ]);
+    vi.stubGlobal('localStorage', local);
+    vi.stubGlobal('sessionStorage', session);
+    try {
+      await cacheFlashcardSet(user, flashcardSet('a'));
+      await clearFlashcardSets(user);
+      expect(await readFlashcardSets(user)).toEqual([]);
+      expect(local.keys()).toEqual([`wap:flashcards:round:${user}0:a`, 'wap:other:thing']);
+      expect(session.keys()).toEqual([]);
+      // One set's keys only, when that set is deleted here.
+      local.removeItem('wap:other:thing');
+      const more = fakeStorage([
+        `wap:flashcards:round:${user}:x`,
+        `wap:flashcards:round:${user}:y`,
+      ]);
+      vi.stubGlobal('localStorage', more);
+      clearFlashcardStorage(user, (_, setId) => setId === 'x');
+      expect(more.keys()).toEqual([`wap:flashcards:round:${user}:y`]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    // And with no storage at all, there is nothing to clear and nothing thrown.
+    expect(() => clearFlashcardStorage(user)).not.toThrow();
   });
 });
 

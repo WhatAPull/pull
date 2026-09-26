@@ -20,7 +20,12 @@ import {
   type SavePayload,
 } from '../lib/flashcards.js';
 import { fetchSets, saveSet } from '../lib/flashcards-api.js';
-import { isOfflineFailure, onReconnect, readFlashcardSets } from '../lib/offline.js';
+import {
+  isOfflineFailure,
+  onReconnect,
+  pruneFlashcardSets,
+  readFlashcardSets,
+} from '../lib/offline.js';
 import { sqlDetail, sqlState } from '../lib/rpc-error.js';
 import { mutationId } from '../lib/submission.js';
 
@@ -55,12 +60,15 @@ export function Flashcards({
   useEffect(() => {
     const controller = new AbortController();
     fetchSets(controller.signal)
-      .then((list) => {
+      .then(({ sets: list, complete }) => {
         if (controller.signal.aborted) return;
         setSets(list);
         setFromDevice(false);
         setError(null);
         setSettled(true);
+        // A set the whole list does not have is gone from the account -- deleted on another
+        // device -- and its copy goes from this one.
+        if (complete) void pruneFlashcardSets(userId, new Set(list.map((s) => s.id)));
       })
       .catch(async (e: unknown) => {
         if (controller.signal.aborted) return;

@@ -12,6 +12,7 @@
  * single request would silently study, export and cache a fraction of either.
  */
 import {
+  newestFirst,
   shapeSet,
   shapeSetSummaries,
   type FlashcardSet,
@@ -32,29 +33,51 @@ function laterPages(count: number): number[] {
   return Array.from({ length: Math.max(0, Math.ceil(count / PAGE) - 1) }, (_, i) => (i + 1) * PAGE);
 }
 
-/** The reader's sets, most recently changed first, each with its number of cards. */
-export async function fetchSets(signal?: AbortSignal): Promise<FlashcardSetSummary[]> {
-  const page = (from: number, counted: boolean) => {
-    const request = supabase
+export interface SetList {
+  /** Most recently changed first. */
+  sets: FlashcardSetSummary[];
+  /**
+   * Whether this is every set the reader has: as many as the first page counted. Only a
+   * complete list may say a copy on this device is of a set that is gone.
+   */
+  complete: boolean;
+}
+
+/**
+ * The reader's sets, most recently changed first, each with its number of cards.
+ *
+ * PAGED BY ID, AND SORTED HERE. The pages were once read by `updated_at`, which a save moves:
+ * a set saved while the later pages were on their way jumped to the first, already read, and
+ * was left out of the list -- and a list a set short would, from this device's point of view,
+ * say that set was gone. An id never moves, so each page starts after the last id read, and
+ * every set that exists throughout the read is read exactly once. The first page's exact count
+ * says whether any was made or deleted meanwhile.
+ */
+export async function fetchSets(signal?: AbortSignal): Promise<SetList> {
+  const rows: unknown[] = [];
+  let count: number | null = null;
+  let after: string | null = null;
+  for (;;) {
+    let request = supabase
       .from('flashcard_sets')
       .select('id, title, description, updated_at, flashcards(count)', {
-        count: counted ? 'exact' : undefined,
+        count: after === null ? 'exact' : undefined,
       })
-      .order('updated_at', { ascending: false })
       .order('id', { ascending: true })
-      .range(from, from + PAGE - 1);
-    return signal ? request.abortSignal(signal) : request;
-  };
-  const first = await page(0, true);
-  if (first.error) throw rpcError(first.error);
-  const rest = await Promise.all(laterPages(first.count ?? 0).map((from) => page(from, false)));
-  const failed = rest.find((r) => r.error);
-  if (failed?.error) throw rpcError(failed.error);
-  // A set saved between two pages can appear on both; it is listed once.
-  const seen = new Set<string>();
-  return [first, ...rest]
-    .flatMap((r) => shapeSetSummaries(r.data))
-    .filter((s) => !seen.has(s.id) && seen.add(s.id) !== undefined);
+      .limit(PAGE);
+    if (after !== null) request = request.gt('id', after);
+    if (signal) request = request.abortSignal(signal);
+    const { data, error, count: counted } = await request;
+    if (error) throw rpcError(error);
+    if (after === null) count = counted ?? null;
+    const got: { id: string }[] = data ?? [];
+    rows.push(...got);
+    const last = got[got.length - 1];
+    if (got.length < PAGE || !last) break;
+    after = last.id;
+  }
+  const sets = shapeSetSummaries(rows).sort(newestFirst);
+  return { sets, complete: count !== null && sets.length === count };
 }
 
 /**

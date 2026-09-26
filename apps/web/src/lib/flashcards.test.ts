@@ -4,22 +4,30 @@ import {
   CHOICES,
   LEARN_ROUND,
   MATCH_CARDS,
+  SET_BYTES_LIMIT,
+  acceptedAnswers,
   answerKey,
   answerLearn,
   answerOf,
   beatsBest,
+  bestTimeKey,
   buildTest,
+  canMatch,
+  charCount,
   choiceOptions,
   claimRight,
   continueLearn,
   defaultTestCount,
   distractors,
+  draftKey,
   draftOf,
   draftUnsaved,
   elapsedTenths,
   formatTenths,
   gradeTest,
   isFlashcardSet,
+  isReadersFlashcardKey,
+  learnCorrect,
   learnDone,
   learnProgress,
   learnQuestion,
@@ -32,8 +40,11 @@ import {
   otherAnswers,
   promptOf,
   readBestTime,
+  readKeptDraft,
   restoreRound,
+  roundKey,
   roundOver,
+  saveConflict,
   saveRefusal,
   selectTile,
   shapeSet,
@@ -45,6 +56,7 @@ import {
   startMatch,
   stepRound,
   stillLearning,
+  utf8Length,
   validateDraft,
   writtenCorrect,
   type Flashcard,
@@ -415,6 +427,32 @@ describe('Learn', () => {
     expect(learnDone(nextLearnRound(s))).toBe(true);
   });
 
+  it('asks a two-card set as a choice of two first, not in writing', () => {
+    const two = VERBS.slice(0, 2);
+    const s = startLearn(two, ['c1', 'c2'], 'term', 'two');
+    expect(s.writtenOnly).toEqual([]);
+    const q = learnQuestion(s, two);
+    expect(q?.kind).toBe('choice');
+    expect(q?.kind === 'choice' && q.options).toHaveLength(2);
+  });
+
+  it('shuffles a card’s options again when it is asked again in a later round', () => {
+    // Where the right option was must not be how it is answered the second time.
+    const moved = Array.from({ length: 20 }, (_, k) => {
+      let s = startLearn(cards, ids, 'term', `again-${k}`);
+      const first = learnQuestion(s, cards);
+      s = answerLearn(s, false, 'wrong');
+      for (let i = 0; i < LEARN_ROUND; i += 1) s = continueLearn(answerLearn(s, true, 'right'));
+      s = nextLearnRound(s);
+      const again = learnQuestion(s, cards);
+      expect(again?.card.id).toBe(first?.card.id);
+      return first?.kind === 'choice' && again?.kind === 'choice'
+        ? first.options.join('|') !== again.options.join('|')
+        : false;
+    });
+    expect(moved.some(Boolean)).toBe(true);
+  });
+
   it('learns only the cards it is given, as "the ones you missed" asks', () => {
     const s = startLearn(cards, ['c3', 'c5', 'nope'], 'definition', 'x');
     expect([...s.order].sort()).toEqual(['c3', 'c5']);
@@ -484,7 +522,13 @@ describe('Test', () => {
       's',
     );
     expect(qs).toEqual([
-      { kind: 'written', cardId: 'c1', prompt: 'to be (lasting)', answer: 'ser' },
+      {
+        kind: 'written',
+        cardId: 'c1',
+        prompt: 'to be (lasting)',
+        answer: 'ser',
+        accepted: ['ser'],
+      },
     ]);
   });
 
@@ -492,17 +536,34 @@ describe('Test', () => {
     const qs: TestQuestion[] = [
       { kind: 'true_false', cardId: 'c1', prompt: 'ser', answer: 'a', shown: 'b', truth: false },
       { kind: 'true_false', cardId: 'c2', prompt: 'estar', answer: 'a', shown: 'a', truth: true },
-      { kind: 'choice', cardId: 'c3', prompt: 'ir', answer: 'to go', options: ['to go', 'to be'] },
-      { kind: 'written', cardId: 'c4', prompt: 'to have', answer: 'tener' },
-      { kind: 'written', cardId: 'c5', prompt: 'to do', answer: 'hacer' },
-      { kind: 'choice', cardId: 'c1', prompt: 'ser', answer: 'x', options: ['x', 'y'] },
+      {
+        kind: 'choice',
+        cardId: 'c3',
+        prompt: 'ir',
+        answer: 'to go',
+        accepted: ['to go'],
+        options: ['to go', 'to be'],
+      },
+      { kind: 'written', cardId: 'c4', prompt: 'to have', answer: 'tener', accepted: ['tener'] },
+      { kind: 'written', cardId: 'c5', prompt: 'to do', answer: 'hacer', accepted: ['hacer'] },
+      {
+        kind: 'choice',
+        cardId: 'c1',
+        prompt: 'ser',
+        answer: 'x',
+        accepted: ['x'],
+        options: ['x', 'y'],
+      },
     ];
     const result = gradeTest(qs, [false, false, 'to go', 'Tener.', '   ', null]);
     expect(result.correct).toEqual([true, false, true, true, false, false]);
     expect(result.score).toBe(3);
     expect(result.total).toBe(6);
-    // Once each, for "Learn the ones you missed".
+    // Once each, for "Learn the ones you missed" -- a card missed twice is one card to learn.
     expect(result.missed).toEqual(['c2', 'c5', 'c1']);
+    expect(gradeTest([qs[0] as TestQuestion, qs[5] as TestQuestion], [true, 'y']).missed).toEqual([
+      'c1',
+    ]);
     expect(gradeTest(qs, []).score).toBe(0);
   });
 });
@@ -530,6 +591,26 @@ describe('Match', () => {
     expect(chosen).toHaveLength(2);
     expect(chosen).toContain('d');
     expect(chosen).not.toContain('c');
+  });
+
+  it('offers a game exactly when it can lay one out, whatever the seed', () => {
+    // A's tiles clash with B's (y) and with C's (x); B and C are a game.
+    const abc = [card('A', 'x', 'y'), card('B', 'y', 'p'), card('C', 'q', 'x')];
+    expect(canMatch(abc)).toBe(true);
+    for (let i = 0; i < 1000; i += 1) {
+      const game = startMatch(abc, `s${i}`);
+      expect(game).not.toBeNull();
+      expect(new Set(game?.tiles.map((t) => t.cardId))).toEqual(new Set(['B', 'C']));
+    }
+    // A star -- every card sharing one tile's text -- and a triangle have no two cards apart.
+    const star = [card('1', 'hub', 'a'), card('2', 'hub', 'b'), card('3', 'c', 'hub')];
+    const triangle = [card('1', 'x', 'y'), card('2', 'y', 'z'), card('3', 'z', 'x')];
+    for (const cards of [star, triangle, [card('1', 'same', 'Same.'), card('2', 'a', 'b')]]) {
+      expect(canMatch(cards)).toBe(false);
+      expect(startMatch(cards, 'm')).toBeNull();
+    }
+    expect(canMatch(VERBS)).toBe(true);
+    expect(canMatch(VERBS.slice(0, 1))).toBe(false);
   });
 
   it('clears a card’s term and definition as a pair, and stops the clock at the last', () => {
@@ -676,6 +757,58 @@ describe('editing a set', () => {
     expect(validateDraft(tooMany).problems).toEqual(['A set holds at most 2,000 cards.']);
   });
 
+  it('refuses a language code longer than the database keeps, though its shape is right', () => {
+    const tag = 'en-aaaaaaaa-bbbbbbbb-cccccccc-dddddd';
+    expect(tag).toHaveLength(36);
+    const d = { ...newDraft('s', mint), title: 'T', definitionLang: tag };
+    d.cards = [{ id: 'a', term: 'a', definition: 'b' }];
+    expect(validateDraft(d).problems).toEqual([
+      'The definition language should be a language code, such as “fr” or “pt-BR”.',
+    ]);
+    expect(validateDraft({ ...d, definitionLang: tag.slice(0, 35) }).problems).toEqual([]);
+  });
+
+  it('counts characters as the database does, not UTF-16 units', () => {
+    const emoji = '\u{1F600}';
+    const d = { ...newDraft('s', mint), title: emoji.repeat(200) };
+    d.cards = [{ id: 'a', term: emoji.repeat(1000), definition: emoji.repeat(2000) }];
+    expect(validateDraft(d).problems).toEqual([]);
+    expect(validateDraft({ ...d, title: emoji.repeat(201) }).problems).toEqual([
+      'A title is at most 200 characters.',
+    ]);
+    // Blank as `.trim()` has it, which the database now shares: a no-break space is nothing.
+    expect(validateDraft({ ...d, title: '\u00a0\u3000' }).problems).toEqual([
+      'Give the set a title.',
+    ]);
+    expect(charCount(`a${emoji}b`)).toBe(3);
+    expect(utf8Length(`a${emoji}é`)).toBe(1 + 4 + 2);
+  });
+
+  it('weighs the set as the database does, and says when it is over 2 MB', () => {
+    const emoji = '\u{1F600}';
+    // 174 cards of four-byte characters at both limits, and the rest in one-byte ones: the
+    // database test's own set, exactly 2 MB.
+    const cards = [
+      ...Array.from({ length: 174 }, (_, i) => ({
+        id: `e${i}`,
+        term: emoji.repeat(1000),
+        definition: emoji.repeat(2000),
+      })),
+      ...Array.from({ length: 4 }, (_, i) => ({
+        id: `d${i}`,
+        term: 'x',
+        definition: 'd'.repeat(2000),
+      })),
+      { id: 'last', term: 'x', definition: 'd'.repeat(1144) },
+    ];
+    const d = { ...newDraft('s', mint), title: 'Big', cards };
+    expect(validateDraft(d).problems).toEqual([]);
+    expect(validateDraft({ ...d, description: 'd' }).problems).toEqual([
+      `This set’s text comes to 2.1 MB, and a set holds at most 2 MB. Split it into two.`,
+    ]);
+    expect(SET_BYTES_LIMIT).toBe(2 * 1024 * 1024);
+  });
+
   it('knows an unsaved change from a save that would change nothing', () => {
     const saved = set(VERBS.slice(0, 2));
     const d = draftOf(saved);
@@ -687,9 +820,138 @@ describe('editing a set', () => {
     expect(draftUnsaved({ ...d, title: 'Other' }, saved)).toBe(true);
     expect(draftUnsaved({ ...d, cards: moveDraftCard(d.cards, 0, 1) }, saved)).toBe(true);
     expect(draftUnsaved({ ...d, description: 'New' }, saved)).toBe(true);
+    // The same words under another card's id is another card: its memory would not follow.
+    const renamed = d.cards.map((c, i) => (i === 0 ? { ...c, id: 'another' } : c));
+    expect(draftUnsaved({ ...d, cards: renamed }, saved)).toBe(true);
     const fresh = newDraft('n', mint);
     expect(draftUnsaved(fresh, null)).toBe(false);
     expect(draftUnsaved({ ...fresh, title: 'x' }, null)).toBe(true);
+  });
+});
+
+describe('cards that share a prompt', () => {
+  // "bank" twice: each meaning is a right answer to it, so neither is ever a wrong one.
+  const BANKS = [
+    card('river', 'bank', 'the edge of a river'),
+    card('money', 'bank', 'a place that keeps money'),
+    card('cat', 'cat', 'a small animal that purrs'),
+    card('dog', 'dog', 'an animal that barks'),
+    card('sun', 'sun', 'the star at the centre of the solar system'),
+  ];
+  const river = BANKS[0] as Flashcard;
+
+  it('never offers the other meaning as a wrong option', () => {
+    expect(otherAnswers(BANKS, river, 'definition')).not.toContain('a place that keeps money');
+    for (let i = 0; i < 50; i += 1) {
+      const options = choiceOptions(BANKS, river, 'definition', `s${i}`);
+      expect(options).toContain('the edge of a river');
+      expect(options).not.toContain('a place that keeps money');
+    }
+  });
+
+  it('never makes a false statement of the other meaning', () => {
+    for (let i = 0; i < 50; i += 1) {
+      const qs = buildTest(
+        BANKS,
+        { count: 5, kinds: ['true_false'], answerWith: 'definition' },
+        `t${i}`,
+      );
+      for (const q of qs) {
+        if (q.kind !== 'true_false' || q.truth) continue;
+        const own = BANKS.find((c) => c.id === q.cardId) as Flashcard;
+        expect(acceptedAnswers(BANKS, own, 'definition')).not.toContain(q.shown);
+      }
+    }
+  });
+
+  it('accepts either meaning, typed or chosen, in Test and in Learn', () => {
+    expect(acceptedAnswers(BANKS, river, 'definition')).toEqual([
+      'the edge of a river',
+      'a place that keeps money',
+    ]);
+    const qs = buildTest(BANKS, { count: 5, kinds: ['written'], answerWith: 'definition' }, 'w');
+    const q = qs.find((x) => x.cardId === 'river') as TestQuestion;
+    const i = qs.indexOf(q);
+    const responses = qs.map((_, k) => (k === i ? 'A place that keeps money.' : null));
+    expect(gradeTest(qs, responses).correct[i]).toBe(true);
+
+    let s = startLearn(BANKS, ['river'], 'definition', 'l');
+    s = answerLearn(s, true, 'x');
+    s = nextLearnRound(continueLearn(s));
+    const written = learnQuestion(s, BANKS);
+    expect(written?.kind).toBe('written');
+    expect(written && learnCorrect(written, 'A place that keeps money.')).toBe(true);
+    expect(written && learnCorrect(written, 'a cat')).toBe(false);
+    expect(written && learnCorrect(written, '   ')).toBe(false);
+  });
+
+  it('asks in writing a card whose only other answers are right ones too', () => {
+    const pair = BANKS.slice(0, 2);
+    const s = startLearn(pair, ['river', 'money'], 'definition', 'p');
+    expect(s.writtenOnly).toEqual(expect.arrayContaining(['river', 'money']));
+    expect(learnQuestion(s, pair)?.kind).toBe('written');
+  });
+
+  it('keeps synonyms apart when answering with the term', () => {
+    const synonyms = [
+      card('b', 'big', 'grande'),
+      card('l', 'large', 'grande'),
+      card('s', 'small', 'pequeño'),
+    ];
+    const big = synonyms[0] as Flashcard;
+    expect(otherAnswers(synonyms, big, 'term')).toEqual(['small']);
+    expect(acceptedAnswers(synonyms, big, 'term')).toEqual(['big', 'large']);
+  });
+});
+
+describe('a large set', () => {
+  // The Learn and Test that froze: every card's answer keyed again for every other card.
+  const big = Array.from({ length: CARD_LIMIT }, (_, i) =>
+    card(`id-${i}`, `term number ${i} café`, `the definition of thing ${i}, a sentence long`),
+  );
+  // And a set whose answers are nearly all one answer, where a walk for three distinct
+  // distractors has least to find.
+  const alike = Array.from({ length: CARD_LIMIT }, (_, i) =>
+    card(`a-${i}`, `question ${i}`, i < 3 ? `answer ${i}` : 'the same answer'),
+  );
+  const ids = big.map((c) => c.id);
+  const all = { count: CARD_LIMIT, kinds: ['true_false', 'choice', 'written'] as const };
+  /*
+   * Each step alone takes tens of milliseconds, and took 46 seconds (Learn) and 32 (a Test of
+   * every card) before. The budget is thirty times the first, so a loaded machine running
+   * every package's tests at once does not fail it, and twenty times under the second.
+   */
+  const BUDGET_MS = 1500;
+
+  it('opens Learn, builds a test of every card, and asks each question, all at once', () => {
+    for (const cards of [big, alike]) {
+      const fresh = [...cards];
+      let t = performance.now();
+      const s = startLearn(
+        fresh,
+        fresh.map((c) => c.id),
+        'definition',
+        'seed',
+      );
+      expect(performance.now() - t).toBeLessThan(BUDGET_MS);
+      t = performance.now();
+      for (let i = 0; i < 1000; i += 1) learnQuestion(s, fresh);
+      expect(performance.now() - t).toBeLessThan(BUDGET_MS);
+      for (const answerWith of ['definition', 'term'] as const) {
+        t = performance.now();
+        expect(buildTest(fresh, { ...all, answerWith }, answerWith)).toHaveLength(CARD_LIMIT);
+        expect(performance.now() - t).toBeLessThan(BUDGET_MS);
+      }
+    }
+    expect(startLearn(big, ids, 'definition', 'seed').writtenOnly).toEqual([]);
+  });
+
+  it('still offers three distractors where there are three to offer', () => {
+    const q = choiceOptions(alike, alike[10] as Flashcard, 'definition', 'z');
+    expect(q).toHaveLength(CHOICES);
+    expect(new Set(q.map(answerKey)).size).toBe(CHOICES);
+    // The card that says "the same answer" has only three others to be wrong with.
+    expect(distractors(alike, alike[10] as Flashcard, 'definition', 9, 'z')).toHaveLength(3);
   });
 });
 
@@ -706,5 +968,56 @@ describe('a refused save, in words', () => {
       'The set could not be saved as it is. Card 3’s term is 1 to 1000 characters.',
     );
     expect(saveRefusal(undefined, undefined, 'x')).toBeNull();
+    expect(saveRefusal('54000', 'total', '')).toMatch(/20,000 cards across its sets/);
+    expect(saveRefusal('54000', 'size', '')).toMatch(/2 MB of text/);
+    expect(saveRefusal('40001', 'changed', '')).toMatch(/changed somewhere else/);
+    expect(saveRefusal('40001', undefined, '')).toBeNull();
+  });
+
+  it('knows a set changed or deleted elsewhere from any other refusal', () => {
+    expect(saveConflict('40001', 'changed')).toBe('changed');
+    expect(saveConflict('P0002', undefined)).toBe('gone');
+    expect(saveConflict('40001', undefined)).toBeNull();
+    expect(saveConflict('54000', 'total')).toBeNull();
+    expect(saveConflict(undefined, undefined)).toBeNull();
+  });
+});
+
+describe('what the screens keep in this browser', () => {
+  it('keys everything by reader and set, so a reader’s keys can be found together', () => {
+    const keys = [
+      roundKey('u1', 's1'),
+      bestTimeKey('u1', 's2'),
+      draftKey('u1', 's3'),
+      draftKey('u1', null),
+    ];
+    expect(keys).toEqual([
+      'wap:flashcards:round:u1:s1',
+      'wap:flashcards:match-best:u1:s2',
+      'wap:flashcards:draft:u1:s3',
+      'wap:flashcards:draft:u1:new',
+    ]);
+    for (const key of keys) expect(isReadersFlashcardKey(key, 'u1')).toBe(true);
+    for (const key of keys) expect(isReadersFlashcardKey(key, 'u')).toBe(false);
+    expect(isReadersFlashcardKey('wap:flashcards:round:u10:s1', 'u1')).toBe(false);
+    expect(isReadersFlashcardKey('wap:other:u1:s1', 'u1')).toBe(false);
+  });
+
+  it('reads back a kept draft for its own set, in the shape this build writes, or nothing', () => {
+    const draft = draftOf(set(VERBS.slice(0, 2)));
+    const raw = JSON.stringify({ draft, base: '2026-09-26T10:00:00.123456+00:00' });
+    expect(readKeptDraft(raw, 's1')).toEqual({ draft, base: '2026-09-26T10:00:00.123456+00:00' });
+    // A new set's draft may have any id: the one minted when it was begun.
+    expect(readKeptDraft(JSON.stringify({ draft, base: null }), null)?.draft.id).toBe('s1');
+    expect(readKeptDraft(raw, 'another set')).toBeNull();
+    expect(readKeptDraft(null, 's1')).toBeNull();
+    expect(readKeptDraft('not json', 's1')).toBeNull();
+    expect(
+      readKeptDraft(JSON.stringify({ draft: { ...draft, cards: [{ id: 1 }] }, base: null }), 's1'),
+    ).toBeNull();
+    expect(
+      readKeptDraft(JSON.stringify({ draft: { ...draft, title: 7 }, base: null }), 's1'),
+    ).toBeNull();
+    expect(readKeptDraft(JSON.stringify({ draft, base: 5 }), 's1')).toBeNull();
   });
 });

@@ -12,7 +12,9 @@ import { mutationId as newMutationId } from './submission.js';
 import type { SavePatch } from './stash-api.js';
 import type { DueReview, FeedRow } from './types.js';
 import {
+  flashcardKeyOf,
   isFlashcardSet,
+  newestFirst,
   summaryOf,
   type FlashcardSet,
   type FlashcardSetSummary,
@@ -899,7 +901,7 @@ export async function readFlashcardSets(userId: string): Promise<FlashcardSetSum
       .map((e) => e.set)
       .filter(isFlashcardSet)
       .map(summaryOf)
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
+      .sort(newestFirst);
   } catch {
     return [];
   }
@@ -917,12 +919,67 @@ export async function removeFlashcardSet(userId: string, setId: string): Promise
 }
 
 /**
- * Every set this account left on the device, for a sign-out and for an account deleted: a
- * set is the reader's own text, and scoping it by user keeps it from the next reader's
- * screen without taking it off the machine. The cached feed is cleared on sign-out for the
- * same reason (`App.tsx`), and this is cleared beside it.
+ * Drop the copies of sets the account no longer has. A set deleted on another device used to
+ * stay on this one for good -- listed offline, studied, never told it was gone.
+ *
+ * Given only a list read whole: one a set short -- saved or made between two of its pages --
+ * would take the copy of a set that exists. And never a draft, which is the reader's own
+ * unsaved typing, kept in the tab until they save it or let it go.
+ */
+export async function pruneFlashcardSets(userId: string, keep: ReadonlySet<string>): Promise<void> {
+  try {
+    const database = await db();
+    if (database) {
+      const tx = database.transaction('flashcardSets', 'readwrite');
+      // The keys alone, which say the set: a copy can be two megabytes, and none is read.
+      const keys = await tx.store.index('by-user').getAllKeys(userId);
+      await Promise.all(
+        keys
+          .filter((key) => !keep.has(key.slice(userId.length + 1)))
+          .map((key) => tx.store.delete(key)),
+      );
+      await tx.done;
+    }
+  } catch {
+    /* best effort, as above */
+  }
+  clearFlashcardStorage(userId, (kind, setId) => kind !== 'draft' && !keep.has(setId));
+}
+
+/**
+ * This reader's flashcard keys in the browser's `localStorage` and `sessionStorage` -- a round
+ * in progress, a best Match time, a draft -- every one, or those `which` picks by kind and set.
+ * Storage can be absent or refuse; then there is nothing here to clear.
+ */
+export function clearFlashcardStorage(
+  userId: string,
+  which: (kind: string, setId: string) => boolean = () => true,
+): void {
+  for (const storage of [() => globalThis.localStorage, () => globalThis.sessionStorage]) {
+    try {
+      const store = storage();
+      const doomed: string[] = [];
+      for (let i = 0; i < store.length; i += 1) {
+        const key = store.key(i);
+        const of = key === null ? null : flashcardKeyOf(key, userId);
+        if (key !== null && of && which(of.kind, of.setId)) doomed.push(key);
+      }
+      for (const key of doomed) store.removeItem(key);
+    } catch {
+      /* no storage here */
+    }
+  }
+}
+
+/**
+ * Everything of this account's flashcards on the device, for a sign-out and for an account
+ * deleted: the copies of its sets, and every key the screens keep -- rounds, best times and
+ * drafts. A set is the reader's own text, and scoping it by user keeps it from the next
+ * reader's screen without taking it off the machine. The cached feed is cleared on sign-out
+ * for the same reason (`App.tsx`), and this is cleared beside it.
  */
 export async function clearFlashcardSets(userId: string): Promise<void> {
+  clearFlashcardStorage(userId);
   try {
     const database = await db();
     if (!database) return;
