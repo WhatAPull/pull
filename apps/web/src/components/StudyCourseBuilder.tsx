@@ -15,7 +15,7 @@ import { mutationId } from '../lib/submission.js';
 /**
  * Turn saved sources into a course: choose one to five, say what the course is for, and
  * agree -- each time -- that the chosen text goes to the model provider. Offered only to a
- * reader the server says may prepare courses (the beta allowlist); for anyone else it says
+ * reader the server says may prepare courses (the allowlist, or the open beta); for anyone else it says
  * so rather than showing a form that would be refused.
  */
 export function StudyCourseBuilder({

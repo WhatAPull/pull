@@ -1,6 +1,4 @@
 import { describe, expect, it } from 'vitest';
-// The beta's goal kinds (20260925220000) read the builder's suggestions by their text.
-import betaMigration from '../../../../supabase/migrations/20260925220000_study_beta.sql?raw';
 import {
   applyProgress,
   asSentence,
@@ -765,13 +763,39 @@ describe('the study Delta in a session', () => {
   });
 });
 
-describe('the builder\u2019s goals and the beta\u2019s goal kinds', () => {
-  it('names every suggestion the builder offers, so none is counted as the reader\u2019s own', () => {
-    // `study_goal_kind` sorts the beta's courses by what they are for; a suggestion it did
-    // not name would be counted as a goal in the reader's own words.
-    const kinds = betaMigration.slice(betaMigration.indexOf('function public.study_goal_kind'));
-    for (const goal of GOAL_SUGGESTIONS) {
-      expect(kinds).toContain(`when '${goal.toLowerCase()}' then`);
+/*
+ * `study_goal_kind` sorts the beta's courses by what they are for, reading the builder's
+ * suggestions by their text; a suggestion it did not name would be counted as a goal in the
+ * reader's own words. Read from its latest definition -- a later migration replaces it, as
+ * law 6 has it -- and only that function's body.
+ */
+const migrations = import.meta.glob('../../../../supabase/migrations/*.sql', {
+  query: '?raw',
+  import: 'default',
+  eager: true,
+}) as Record<string, string>;
+
+function goalKinds(): Map<string, string> {
+  const latest = Object.keys(migrations)
+    .sort()
+    .filter((path) => /function\s+public\.study_goal_kind\s*\(/i.test(migrations[path]!))
+    .at(-1);
+  const sql = latest ? migrations[latest]! : '';
+  const start = sql.search(/function\s+public\.study_goal_kind\s*\(/i);
+  const end = sql.indexOf('$fn$;', start);
+  const body = start < 0 || end < 0 ? '' : sql.slice(start, end);
+  const pairs = [...body.matchAll(/when\s+'([^']+)'\s+then\s+'([a-z]+)'/gi)];
+  return new Map(pairs.map((m) => [m[1]!, m[2]!]));
+}
+
+describe('the builder’s goals and the beta’s goal kinds', () => {
+  it('sorts every suggestion the builder offers into a kind of its own', () => {
+    const kinds = goalKinds();
+    const sorted = GOAL_SUGGESTIONS.map((goal) => kinds.get(goal.toLowerCase()));
+    for (const kind of sorted) {
+      expect(kind).toBeDefined();
+      expect(kind).not.toBe('own');
     }
+    expect(new Set(sorted).size).toBe(GOAL_SUGGESTIONS.length);
   });
 });

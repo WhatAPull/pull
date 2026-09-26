@@ -70,6 +70,30 @@ export function buildStudyEvalRun({ manifest, generations, items, calls, ledger,
   const providerAttemptIds = calls.filter((c) => sourceOfJob.has(c.jobId)).map((c) => c.id);
 
   /*
+   * What made the run, and when: the pipelines its preparations were assembled with --
+   * prompt, schema and model, as each generation recorded them -- and the last of them to
+   * be saved. A release gate is for one pipeline, and as fresh as its run.
+   */
+  const pipelines = [];
+  let ranAt = null;
+  for (const generation of generations) {
+    const p = generation.provenance ?? null;
+    const pipeline = p
+      ? {
+          promptHash: p.promptHash ?? null,
+          schemaHash: p.schemaHash ?? null,
+          model: p.model ?? null,
+        }
+      : null;
+    if (pipeline && !pipelines.some((q) => JSON.stringify(q) === JSON.stringify(pipeline))) {
+      pipelines.push(pipeline);
+    }
+    if (generation.assembledAt && (ranAt === null || generation.assembledAt > ranAt)) {
+      ranAt = generation.assembledAt;
+    }
+  }
+
+  /*
    * What the validator decided, which is what the gate measures. A question validation
    * passed reached learners -- even if it was reported and suspended since, or retired --
    * so it is visible; one it quarantined, or one malformed at generation (`rejected`), is
@@ -103,6 +127,8 @@ export function buildStudyEvalRun({ manifest, generations, items, calls, ledger,
     attempts,
     ledger: ledgerRows,
     providerAttemptIds,
+    pipelines,
+    ranAt,
   };
 }
 
@@ -143,6 +169,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     generations: psqlJson(`
       select coalesce(json_agg(json_build_object(
         'generationId', g.id, 'jobId', g.job_id,
+        'provenance', g.assembly_provenance,
+        -- UTC, so the lexical comparison above is a comparison of times.
+        'assembledAt', to_char(g.assembled_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
         'versionIds', (select json_agg(s.source_version_id order by s.position)
                        from public.study_generation_sources s where s.generation_id = g.id))), '[]')
       from public.study_generations g where g.job_id in (${inList});`),

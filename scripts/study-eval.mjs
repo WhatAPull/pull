@@ -111,6 +111,12 @@ export function evaluateStudyRun(run) {
     );
   }
 
+  // One pipeline for the whole run, and when it ran: what a release gate is a gate for.
+  const pipelines = run?.pipelines == null ? [] : requireArray(run.pipelines, 'pipelines');
+  const pipeline = pipelines.length === 1 ? pipelines[0] : null;
+  const ranAt =
+    typeof run?.ranAt === 'string' && !Number.isNaN(Date.parse(run.ranAt)) ? run.ranAt : null;
+
   let visibleItems = 0;
   let quarantinedItems = 0;
   let doubleReviewedVisible = 0;
@@ -203,18 +209,29 @@ export function evaluateStudyRun(run) {
       providerAttempts.size > 0 &&
       providerAttempts.size === attempts.size &&
       [...providerAttempts].every((id) => attempts.has(id)),
+    singlePipeline:
+      pipeline !== null &&
+      /^[0-9a-f]{64}$/.test(pipeline.promptHash ?? '') &&
+      /^[0-9a-f]{64}$/.test(pipeline.schemaHash ?? '') &&
+      typeof pipeline.model === 'string' &&
+      pipeline.model.length > 0,
   };
   gates.ready = Object.values(gates).every(Boolean);
 
   return {
+    pipeline,
+    ranAt,
     counts: {
       sources: sources.size,
       visibleItems,
       quarantinedItems,
       doubleReviewedVisible,
+      groundedVisible,
+      answerableVisible,
       usableVisibleItems,
       materialErrors,
       ambiguousVisible,
+      adversarialItems,
       adversarialLeaks,
       doubleReviewedAdversarial,
       visibleSources: visibleSourceIds.size,

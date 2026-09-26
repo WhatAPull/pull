@@ -2209,6 +2209,7 @@ export type Database = {
         Row: {
           at: string
           changed_by: string | null
+          db_user: string
           gate_id: string | null
           id: number
           open_to_all: boolean
@@ -2217,6 +2218,7 @@ export type Database = {
         Insert: {
           at?: string
           changed_by?: string | null
+          db_user?: string
           gate_id?: string | null
           id?: never
           open_to_all: boolean
@@ -2225,6 +2227,7 @@ export type Database = {
         Update: {
           at?: string
           changed_by?: string | null
+          db_user?: string
           gate_id?: string | null
           id?: never
           open_to_all?: boolean
@@ -3135,6 +3138,8 @@ export type Database = {
           id: string
           note: string | null
           passed: boolean
+          pipeline: Json
+          ran_at: string
           recorded_at: string
           recorded_by: string
           report: Json
@@ -3144,6 +3149,8 @@ export type Database = {
           id?: string
           note?: string | null
           passed: boolean
+          pipeline: Json
+          ran_at: string
           recorded_at?: string
           recorded_by: string
           report: Json
@@ -3153,6 +3160,8 @@ export type Database = {
           id?: string
           note?: string | null
           passed?: boolean
+          pipeline?: Json
+          ran_at?: string
           recorded_at?: string
           recorded_by?: string
           report?: Json
@@ -4917,6 +4926,7 @@ export type Database = {
         Args: { p_generation_id: string }
         Returns: string[]
       }
+      study_daily_cap_cents: { Args: never; Returns: number }
       study_enqueue_course: {
         Args: {
           p_course_id: string
@@ -5071,6 +5081,7 @@ export type Database = {
         Returns: Json
       }
       study_space_class: { Args: never; Returns: string }
+      study_spend_today: { Args: never; Returns: number }
       study_strip_punctuation: { Args: { p_base: string }; Returns: string }
       study_text_problems: {
         Args: { p_links: Json; p_texts: string[] }

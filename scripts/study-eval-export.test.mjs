@@ -58,6 +58,34 @@ test('maps courses to fixture sources by their exact version set, in any order',
   assert.equal(run.ledger[1].costCents, 0.25);
 });
 
+test('says which pipelines made the run, once each, and when its last course was saved', () => {
+  const p = { promptHash: 'a'.repeat(64), schemaHash: 'b'.repeat(64), model: 'm' };
+  const run = buildStudyEvalRun({
+    manifest,
+    generations: [
+      { ...generations[0], provenance: p, assembledAt: '2026-09-20T10:00:00.000000Z' },
+      { ...generations[1], provenance: { ...p }, assembledAt: '2026-09-21T09:00:00.000000Z' },
+    ],
+    items,
+    calls,
+    ledger,
+  });
+  assert.deepEqual(run.pipelines, [p]);
+  assert.equal(run.ranAt, '2026-09-21T09:00:00.000000Z');
+  const two = buildStudyEvalRun({
+    manifest,
+    generations: [
+      { ...generations[0], provenance: p },
+      { ...generations[1], provenance: { ...p, model: 'n' } },
+    ],
+    items,
+    calls,
+    ledger,
+  });
+  assert.equal(two.pipelines.length, 2);
+  assert.equal(two.ranAt, null);
+});
+
 test('the evaluator certifies the ledger when journal and ledger agree', () => {
   const run = buildStudyEvalRun({ manifest, generations, items, calls, ledger });
   assert.equal(evaluateStudyRun(run).gates.ledgerComplete, true);

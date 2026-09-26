@@ -7,54 +7,19 @@
  *
  * Every figure is an aggregate, and every rate is printed with its numerator and denominator
  * (docs/eval/study-quality.md). Nothing here calls a model, and nothing it reads names a
- * reader. psql is handed the connection's parsed parts, never the URL, and no PG* variable
- * but the password, so nothing libpq would read on its own can point it elsewhere and no
- * command line or error it prints carries the password.
+ * reader.
+ *
+ * On the hosted database this holds the owner's password, so it reads and nothing else: one
+ * read-only transaction, one snapshot for every section, in UTC. psql is handed the URL's
+ * parsed parts, never the URL; no PG* or PSQL* variable of the operator's reaches it, and
+ * neither does their ~/.psqlrc, so nothing it would read on its own can point it elsewhere,
+ * change what it prints, or change the time zone the views' days are in. No command line or
+ * error it prints carries the password. TLS is asked for off loopback, and verified when
+ * the URL says `sslmode=verify-full` with an `sslrootcert`.
  */
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
-
-/** Rows of a `psql --csv` answer, as objects keyed by the header. */
-export function parseCsv(text) {
-  const records = [];
-  let field = '';
-  let record = [];
-  let quoted = false;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    if (quoted) {
-      if (ch === '"' && text[i + 1] === '"') {
-        field += '"';
-        i += 1;
-      } else if (ch === '"') {
-        quoted = false;
-      } else {
-        field += ch;
-      }
-    } else if (ch === '"') {
-      quoted = true;
-    } else if (ch === ',') {
-      record.push(field);
-      field = '';
-    } else if (ch === '\n' || ch === '\r') {
-      if (ch === '\r' && text[i + 1] === '\n') i += 1;
-      record.push(field);
-      records.push(record);
-      record = [];
-      field = '';
-    } else {
-      field += ch;
-    }
-  }
-  if (field !== '' || record.length > 0) {
-    record.push(field);
-    records.push(record);
-  }
-  const [header, ...rows] = records.filter((r) => !(r.length === 1 && r[0] === ''));
-  if (!header) return [];
-  return rows.map((r) => Object.fromEntries(header.map((h, i) => [h, r[i] ?? ''])));
-}
 
 /** A rate with what it is a rate of: "12.5% (1/8)", or "no data (0/0)". */
 export function rate(numerator, denominator) {
@@ -72,28 +37,69 @@ function table(rows, columns) {
   return [head, rule, ...body].join('\n') + '\n';
 }
 
-const cell = (key) => (r) => (r[key] === '' || r[key] === undefined ? '–' : r[key]);
-const minutes = (key) => (r) => (r[key] === '' ? '–' : Number(r[key]).toFixed(1));
+const blank = (v) => v === '' || v === undefined || v === null;
+const cell = (key) => (r) => (blank(r[key]) ? '–' : String(r[key]));
+const minutes = (key) => (r) => (blank(r[key]) ? '–' : Number(r[key]).toFixed(1));
+const yes = (v) => v === true || v === 't' || v === 'true';
+const readers = (n) => `${n} ${Number(n) === 1 ? 'reader' : 'readers'}`;
+/** A Postgres array as JSON gives it, or as text: the values, comma-separated. */
+const list = (v) =>
+  Array.isArray(v)
+    ? v.join(', ')
+    : String(v ?? '')
+        .replace(/^\{|\}$/g, '')
+        .split(',')
+        .filter(Boolean)
+        .join(', ');
 
 /** The dashboard, from the views' rows. Pure, so it can be tested without a database. */
 export function renderReport({ status, daily, validation, learning, trust, mix }) {
-  const s = status[0] ?? {};
-  const open = s.open_to_all === 't' || s.open_to_all === 'true';
-  const uncovered = (s.uncovered ?? '').replace(/^\{|\}$/g, '');
+  if (status.length !== 1) {
+    // The switch is one row; without it, "closed" would be a guess.
+    throw new Error(`ops.study_beta_status answered ${status.length} rows, not one`);
+  }
+  const s = status[0];
+  const open = yes(s.open_to_all);
+  const uncovered = list(s.uncovered);
+  const pipeline = s.gate_pipeline
+    ? `${s.gate_pipeline.model}, prompt ${String(s.gate_pipeline.promptHash).slice(0, 12)}…`
+    : '–';
   const lines = [];
   lines.push('# Study beta');
   lines.push('');
-  lines.push(
-    open
-      ? `**Open to every reader with an account**, since ${s.changed_at} (by ${s.changed_by}), on release gate ${s.gate_id} recorded ${s.gate_recorded_at}.`
-      : `**Allowlist only** (${s.allowlisted_readers ?? 0} readers admitted).`,
-  );
+  if (open) {
+    lines.push(
+      `**Open to every reader with an account**, since ${s.changed_at} (by ${s.changed_by}), on release gate ${s.gate_id}: a run of ${s.gate_ran_at} (${s.gate_age_days} days ago), pipeline ${pipeline}.`,
+    );
+    if (yes(s.admission_lapsed)) {
+      lines.push('');
+      lines.push(
+        "**Admission has lapsed**: the gate's run is sixty days old, so only the allowlist is admitted. Record a new gate and open on it, or close.",
+      );
+    }
+    if (Number(s.preparations_off_gate) > 0) {
+      lines.push('');
+      lines.push(
+        `${s.preparations_off_gate} preparations since opening used a pipeline other than the gate's: record a gate for it.`,
+      );
+    }
+  } else {
+    lines.push(`**Allowlist only** (${readers(s.allowlisted_readers ?? 0)} admitted).`);
+  }
+  if (Number(s.queued_for_readers_not_admitted) > 0) {
+    lines.push('');
+    lines.push(
+      `${s.queued_for_readers_not_admitted} courses are still queued for readers no longer admitted; they finish within their shares and the study ceiling.`,
+    );
+  }
   lines.push('');
-  lines.push(`Daily spend ceiling: ${s.daily_cap_cents ?? '–'}¢ (law 2), open or not.`);
+  lines.push(
+    `Spend today: study ${Number(s.study_spend_today_cents ?? 0).toFixed(2)}¢ of its ${s.study_cap_cents ?? '–'}¢ ceiling, everything else ${Number(s.other_spend_today_cents ?? 0).toFixed(2)}¢; the day's ceiling is ${s.daily_cap_cents ?? '–'}¢ (law 2), open or not.`,
+  );
   lines.push('');
   lines.push(
     uncovered
-      ? `Not yet covered by the beta (each needs 3 courses from 2 readers): ${uncovered.split(',').join(', ')}.`
+      ? `Not yet covered by the beta (each needs 3 courses from 2 readers): ${uncovered}.`
       : 'Every kind of source and goal is covered.',
   );
   lines.push('');
@@ -105,7 +111,11 @@ export function renderReport({ status, daily, validation, learning, trust, mix }
       { label: 'Courses', value: cell('courses_created') },
       { label: 'Readers', value: cell('readers_creating') },
       { label: 'Jobs', value: cell('jobs') },
-      { label: 'Succeeded', value: (r) => rate(r.succeeded, r.jobs) },
+      // Of the jobs that have finished: one still in flight has not failed.
+      {
+        label: 'Succeeded',
+        value: (r) => rate(r.succeeded, Number(r.jobs || 0) - Number(r.in_flight || 0)),
+      },
       { label: 'Failed', value: cell('failed') },
       { label: 'In flight', value: cell('in_flight') },
       { label: 'Median min', value: minutes('median_minutes') },
@@ -133,7 +143,7 @@ export function renderReport({ status, daily, validation, learning, trust, mix }
   lines.push('## Learning, by week answered');
   lines.push('');
   lines.push(
-    'Deterministic answers to model-written questions only. Seven-day recall: right and unhinted at least seven days after a right, unhinted answer to the same question. False mastery: wrong when the course counted every claim the question tests as known.',
+    'Deterministic answers to model-written questions only. Seven-day recall: right and unhinted at least seven days after a right, unhinted answer to the same question, with no answer between. False mastery: an unhinted answer, wrong when the course counted every claim the question tests as known.',
   );
   lines.push('');
   lines.push(
@@ -153,7 +163,13 @@ export function renderReport({ status, daily, validation, learning, trust, mix }
       { label: 'Lessons shown', value: cell('lessons_shown') },
       { label: 'Read', value: (r) => rate(r.lessons_read, r.lessons_shown) },
       { label: 'Skipped', value: cell('lessons_skipped') },
-      { label: 'Reports', value: (r) => rate(r.reports, r.lessons_shown) },
+      // Each kind of report over what it could be about: a lesson's over lessons shown, a
+      // question's over questions shown. A claim is shown inside a lesson, so its reports are
+      // a count.
+      { label: 'Lesson reports', value: (r) => rate(r.lesson_reports, r.lessons_shown) },
+      { label: 'Questions shown', value: cell('questions_shown') },
+      { label: 'Question reports', value: (r) => rate(r.question_reports, r.questions_shown) },
+      { label: 'Claim reports', value: cell('claim_reports') },
       { label: 'Restored', value: cell('reports_restored') },
       { label: 'Corrected', value: cell('corrected') },
       { label: 'Withdrawn', value: cell('withdrawn') },
@@ -172,7 +188,14 @@ export function renderReport({ status, daily, validation, learning, trust, mix }
   return lines.join('\n');
 }
 
-function connect(url) {
+const SSL_MODES = ['disable', 'allow', 'prefer', 'require', 'verify-ca', 'verify-full'];
+
+/**
+ * How psql is to be run for a URL: its arguments and its environment. Pure, so what it
+ * refuses and what it passes on can be tested. The password goes in the environment, never
+ * the arguments.
+ */
+export function connection(url, parent = {}) {
   let target;
   try {
     target = new URL(url);
@@ -185,49 +208,91 @@ function connect(url) {
   if (!/^postgres(ql)?:$/.test(target.protocol) || !simple.test(database) || !simple.test(user)) {
     throw new Error(`refusing ${target.protocol}//${target.host}${target.pathname}`);
   }
-  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('PG')));
+  const host = target.hostname.replace(/^\[(.*)\]$/, '$1');
+  const env = Object.fromEntries(
+    Object.entries(parent).filter(([k]) => !k.startsWith('PG') && !k.startsWith('PSQL')),
+  );
   env.PGPASSWORD = decodeURIComponent(target.password);
-  const loopback = ['127.0.0.1', 'localhost'].includes(target.hostname);
-  if (!loopback) env.PGSSLMODE = 'require';
-  const args = ['-h', target.hostname, '-p', target.port || '5432', '-U', user, '-d', database];
-  return (sql) =>
-    parseCsv(
-      execFileSync('psql', [...args, '-v', 'ON_ERROR_STOP=1', '-q', '--csv'], {
-        encoding: 'utf8',
-        maxBuffer: 16 * 1024 * 1024,
-        env,
-        input: sql,
-      }),
-    );
+  // Read-only, and in UTC, whatever the server's or the operator's defaults.
+  env.PGOPTIONS = '-c TimeZone=UTC -c default_transaction_read_only=on';
+  const loopback = ['127.0.0.1', 'localhost', '::1'].includes(host);
+  const sslmode = target.searchParams.get('sslmode');
+  if (sslmode !== null && !SSL_MODES.includes(sslmode)) {
+    throw new Error(`sslmode ${sslmode} is not one libpq knows`);
+  }
+  if (sslmode !== null) env.PGSSLMODE = sslmode;
+  else if (!loopback) env.PGSSLMODE = 'require';
+  const rootcert = target.searchParams.get('sslrootcert');
+  if (rootcert !== null) env.PGSSLROOTCERT = rootcert;
+  const args = ['-X', '-w', '-h', host, '-p', target.port || '5432', '-U', user, '-d', database];
+  return { args, env };
 }
 
-function flag(name, fallback) {
-  const at = process.argv.indexOf(name);
-  const value = at >= 0 ? Number(process.argv[at + 1]) : fallback;
-  if (!Number.isInteger(value) || value < 1 || value > 366) {
-    throw new Error(`${name} takes a whole number from 1 to 366`);
+/** The flags, all of them known, each a whole number from 1 to 366. */
+export function flags(argv) {
+  const out = { days: 14, weeks: 8 };
+  for (let i = 0; i < argv.length; i += 1) {
+    const [name, inline] = argv[i].split('=', 2);
+    if (name !== '--days' && name !== '--weeks') throw new Error(`unknown argument ${argv[i]}`);
+    const raw = inline ?? argv[(i += 1)];
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value < 1 || value > 366) {
+      throw new Error(`${name} takes a whole number from 1 to 366`);
+    }
+    out[name.slice(2)] = value;
   }
-  return value;
+  return out;
+}
+
+/** Every section in one query, so one snapshot: rows as JSON. */
+export function reportQuery({ days, weeks }) {
+  const recent = (view, column, n) =>
+    `(select coalesce(json_agg(v order by v.${column} desc), '[]') from ops.${view} v
+      where v.${column} >= (now() - interval '${n} days')::date)`;
+  return `select json_build_object(
+    'status', (select coalesce(json_agg(s), '[]') from ops.study_beta_status s),
+    'daily', ${recent('study_daily', 'day', days)},
+    'validation', ${recent('study_validation_weekly', 'week', weeks * 7)},
+    'learning', ${recent('study_learning_weekly', 'week', weeks * 7)},
+    'trust', ${recent('study_trust_weekly', 'week', weeks * 7)},
+    'mix', (select coalesce(json_agg(m order by m.dimension, m.value), '[]') from ops.study_beta_mix m));`;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const days = flag('--days', 14);
-  const weeks = flag('--weeks', 8);
-  const query = connect(
-    process.env.DATABASE_URL ?? 'postgresql://postgres:postgres@127.0.0.1:54322/postgres',
-  );
-  const recent = (view, column, unit, n) =>
-    query(
-      `select * from ops.${view} where ${column} >= (now() - interval '${n} ${unit}')::date order by ${column} desc;`,
+  let options;
+  let psql;
+  try {
+    options = flags(process.argv.slice(2));
+    psql = connection(
+      process.env.DATABASE_URL ?? 'postgresql://postgres:postgres@127.0.0.1:54322/postgres',
+      process.env,
     );
-  process.stdout.write(
-    renderReport({
-      status: query('select * from ops.study_beta_status;'),
-      daily: recent('study_daily', 'day', 'days', days),
-      validation: recent('study_validation_weekly', 'week', 'days', weeks * 7),
-      learning: recent('study_learning_weekly', 'week', 'days', weeks * 7),
-      trust: recent('study_trust_weekly', 'week', 'days', weeks * 7),
-      mix: query('select * from ops.study_beta_mix order by dimension, value;'),
-    }) + '\n',
-  );
+  } catch (e) {
+    process.stderr.write(`study-beta-report: ${e.message}\n`);
+    process.exit(2);
+  }
+  let out;
+  try {
+    out = execFileSync('psql', [...psql.args, '-v', 'ON_ERROR_STOP=1', '-q', '-A', '-t'], {
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      env: psql.env,
+      input: reportQuery(options),
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+  } catch (e) {
+    const said = String(e.stderr ?? e.message)
+      .trim()
+      .split('\n')[0];
+    process.stderr.write(
+      `study-beta-report: the database refused or could not be reached: ${said}\n`,
+    );
+    process.exit(3);
+  }
+  try {
+    process.stdout.write(renderReport(JSON.parse(out)) + '\n');
+  } catch (e) {
+    process.stderr.write(`study-beta-report: ${e.message}\n`);
+    process.exit(4);
+  }
 }

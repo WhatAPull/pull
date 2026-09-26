@@ -11,22 +11,29 @@
 --
 -- 1. RELEASE GATES. `study_release_gates` records what the evaluator
 --    (`scripts/study-eval.mjs`) reported for a reviewed fixture run, with the digest of the
---    run export kept outside the repository. Whether it passed is computed here from the
---    report's gates AND its counts, never supplied: a report whose gates say ready while
---    its counts say otherwise does not pass. Rows are final.
+--    run export kept outside the repository, the pipeline the run used (prompt, schema and
+--    model) and when it ran. Whether it passed is computed here from the report's gates AND
+--    its counts, never supplied: a report whose gates say ready while its counts say
+--    otherwise does not pass. Rows are final, and a digest is recorded once. What the schema
+--    checks is the report; that a person reviewed the run is the operator's word, recorded
+--    with their name.
 --
 -- 2. ONE FLAG, WHICH OPENS ONLY ON A GATE. `study_beta_settings` is a single row. It can be
---    set open only with a gate that passed in the last thirty days -- checked by a trigger,
---    so a direct write by the service role cannot skip it -- and `open_study_beta` also
---    asks that the allowlisted beta so far covered every kind of source and goal, or that
---    the operator says why not. Every change is logged in `study_beta_log`. Closing is
---    always allowed.
+--    set open only with a gate whose run passed in the last thirty days -- checked by a
+--    trigger -- and `open_study_beta` also asks that the allowlisted beta so far covered
+--    every kind of source and goal, or that the operator says why not. Every change is
+--    logged in `study_beta_log`, which is append-only. Only the database owner writes any
+--    of the three or calls open and close: not the service role, whose key every Edge
+--    Function holds. An open beta admits no one once its gate's run is sixty days old.
+--    Closing is always allowed; courses already queued finish, within their readers'
+--    shares and the study ceiling.
 --
 -- 3. ADMISSION IN ONE PLACE. `study_generation_admitted` is the allowlist or the open flag,
 --    and both doors -- `study_enqueue_course` and `study_generation_available` -- now ask
---    it. Nothing else about the door changes: consent, size, the global daily cap, each
---    reader's share of study spend, and the per-reader job counts are what bound a day,
---    open or not (CLAUDE.md, law 2).
+--    it. What bounds a day, open or not (CLAUDE.md, law 2): consent, size, the global daily
+--    cap, each reader's share of study spend, the per-reader job counts -- and, new here, a
+--    ceiling on study spend for all readers together (`study_daily_cap_cents()`, half the
+--    day), so opening the beta cannot leave the catalogue's generation with nothing.
 --
 -- 4. INSTRUMENTATION. An answer now records whether the study Delta counted every claim it
 --    tests as known just before it was given (`claims_known_before`), so false mastery --
@@ -43,9 +50,11 @@
 
 /*
  * Whether an evaluator report clears the broad-beta bar. Every gate must be true, and the
- * counts behind the gates are read again: at least 24 sources with visible questions and
- * 300 visible questions, every visible question reviewed twice, no material error, no
- * adversarial leak, at most 3% ambiguous, no fixture category missing.
+ * counts behind the gates are read again, each a whole number not below zero: at least 24
+ * sources with visible questions and 300 visible questions, every visible question reviewed
+ * twice and found grounded and answerable, no material error, adversarial items present
+ * and every one reviewed twice with none leaked, at most 3% ambiguous, no fixture category
+ * missing, and one pipeline -- prompt, schema and model -- for the whole run.
  */
 create function public.study_gate_passes(p_report jsonb)
 returns boolean
@@ -63,18 +72,29 @@ begin
     return false;
   end if;
   foreach gate in array array['ready', 'minimumFixture', 'fixtureCoverage', 'answersSupported',
-                               'ambiguity', 'adversarial', 'ledgerComplete'] loop
+                               'ambiguity', 'adversarial', 'ledgerComplete',
+                               'singlePipeline'] loop
     if (p_report -> 'gates' -> gate) is distinct from 'true'::jsonb then
       return false;
     end if;
   end loop;
   counts := p_report -> 'counts';
   foreach count_ in array array['visibleSources', 'visibleItems', 'doubleReviewedVisible',
-                                 'materialErrors', 'ambiguousVisible', 'adversarialLeaks'] loop
-    if jsonb_typeof(counts -> count_) is distinct from 'number' then
+                                 'groundedVisible', 'answerableVisible', 'materialErrors',
+                                 'ambiguousVisible', 'adversarialItems', 'adversarialLeaks',
+                                 'doubleReviewedAdversarial'] loop
+    if jsonb_typeof(counts -> count_) is distinct from 'number'
+       or (counts ->> count_)::numeric < 0
+       or (counts ->> count_)::numeric <> trunc((counts ->> count_)::numeric) then
       return false;
     end if;
   end loop;
+  if jsonb_typeof(p_report -> 'pipeline') is distinct from 'object'
+     or coalesce(p_report -> 'pipeline' ->> 'promptHash', '') !~ '^[0-9a-f]{64}$'
+     or coalesce(p_report -> 'pipeline' ->> 'schemaHash', '') !~ '^[0-9a-f]{64}$'
+     or coalesce(char_length(p_report -> 'pipeline' ->> 'model'), 0) not between 1 and 100 then
+    return false;
+  end if;
   if jsonb_typeof(p_report -> 'coverage' -> 'missing') is distinct from 'array' then
     return false;
   end if;
@@ -82,6 +102,10 @@ begin
   return (counts ->> 'visibleSources')::numeric >= 24
      and visible >= 300
      and (counts ->> 'doubleReviewedVisible')::numeric = visible
+     and (counts ->> 'groundedVisible')::numeric = visible
+     and (counts ->> 'answerableVisible')::numeric = visible
+     and (counts ->> 'adversarialItems')::numeric > 0
+     and (counts ->> 'doubleReviewedAdversarial')::numeric = (counts ->> 'adversarialItems')::numeric
      and (counts ->> 'materialErrors')::numeric = 0
      and (counts ->> 'adversarialLeaks')::numeric = 0
      and (counts ->> 'ambiguousVisible')::numeric <= 0.03 * visible
@@ -90,7 +114,6 @@ end
 $fn$;
 
 revoke all on function public.study_gate_passes(jsonb) from public, anon, authenticated;
-grant execute on function public.study_gate_passes(jsonb) to service_role;
 
 create table public.study_release_gates (
   id             uuid primary key default extensions.gen_random_uuid(),
@@ -102,14 +125,21 @@ create table public.study_release_gates (
   fixture_digest text not null check (fixture_digest ~ '^[0-9a-f]{64}$'),
   report         jsonb not null
                  check (jsonb_typeof(report) = 'object' and pg_column_size(report) <= 65536),
+  -- When the reviewed run was made, and with what, from the report: a gate is as fresh as
+  -- its run, not as its recording, and says what it is a gate for.
+  ran_at         timestamptz not null,
+  pipeline       jsonb not null check (jsonb_typeof(pipeline) = 'object'),
   passed         boolean not null,
-  note           text check (note is null or char_length(note) <= 1000)
+  note           text check (note is null or char_length(note) <= 1000),
+  -- One run, one gate: the same export recorded again would restart its clock.
+  constraint study_release_gates_one_per_run unique (fixture_digest)
 );
 
 comment on table public.study_release_gates is
   'What the study evaluator reported for a human-reviewed fixture run. `passed` is computed '
-  'from the report on insert (study_gate_passes), never supplied. Final once written. '
-  'Service role only. See 20260925220000 and docs/study-beta.md.';
+  'from the report on insert (study_gate_passes), never supplied, and `ran_at` and '
+  '`pipeline` are read from it. Final once written. Written by the database owner only. '
+  'See 20260925220000 and docs/study-beta.md.';
 
 alter table public.study_release_gates enable row level security;
 create policy study_release_gates_no_api_access on public.study_release_gates
@@ -125,6 +155,19 @@ begin
   if tg_op <> 'INSERT' then
     raise exception 'a release gate is final once recorded' using errcode = '55000';
   end if;
+  begin
+    new.ran_at := (new.report ->> 'ranAt')::timestamptz;
+  exception when others then
+    new.ran_at := null;
+  end;
+  if new.ran_at is null or new.ran_at > now() + interval '5 minutes' then
+    raise exception 'a release gate needs the time its run was made (ranAt), not in the future'
+      using errcode = '22023';
+  end if;
+  new.pipeline := coalesce(new.report -> 'pipeline', '{}'::jsonb);
+  if jsonb_typeof(new.pipeline) is distinct from 'object' then
+    new.pipeline := '{}'::jsonb;
+  end if;
   new.passed := public.study_gate_passes(new.report);
   new.recorded_at := now();
   new.recorded_by := btrim(new.recorded_by);
@@ -137,6 +180,24 @@ revoke all on function public.study_release_gate_recorded() from public, anon, a
 create trigger study_release_gates_recorded
   before insert or update or delete on public.study_release_gates
   for each row execute function public.study_release_gate_recorded();
+
+/* TRUNCATE passes by every row trigger; the three tables of the switch refuse it. */
+create function public.study_beta_not_truncated()
+returns trigger
+language plpgsql
+set search_path = ''
+as $fn$
+begin
+  raise exception '% is not truncated: it is the record of the beta', tg_table_name
+    using errcode = '55000';
+end
+$fn$;
+
+revoke all on function public.study_beta_not_truncated() from public, anon, authenticated;
+
+create trigger study_release_gates_not_truncated
+  before truncate on public.study_release_gates
+  for each statement execute function public.study_beta_not_truncated();
 
 -- ------------------------------------------------------------------ 2. the flag
 
@@ -153,9 +214,9 @@ create index study_beta_settings_gate_idx on public.study_beta_settings (gate_id
 
 comment on table public.study_beta_settings is
   'The one row saying whether study courses are open to every reader with an account, and '
-  'on which release gate. Opens only on a gate that passed in the last thirty days. Service '
-  'role only; readers learn the answer through study_generation_available(). See '
-  '20260925220000.';
+  'on which release gate. Opens only on a gate whose run passed in the last thirty days. '
+  'Written by the database owner only; readers learn the answer through '
+  'study_generation_available(). See 20260925220000.';
 
 insert into public.study_beta_settings (id) values (true);
 
@@ -169,15 +230,18 @@ create table public.study_beta_log (
   at              timestamptz not null default now(),
   open_to_all     boolean not null,
   gate_id         uuid references public.study_release_gates (id),
-  changed_by      text,
+  changed_by      text check (changed_by is null or char_length(changed_by) <= 200),
   -- Why the beta opened although its mix so far did not cover every kind of source and goal.
-  override_reason text check (override_reason is null or char_length(override_reason) <= 1000)
+  override_reason text check (override_reason is null or char_length(override_reason) <= 1000),
+  -- The database role that made the change, whatever name it gave.
+  db_user         text not null default session_user
 );
 
 create index study_beta_log_gate_idx on public.study_beta_log (gate_id);
 
 comment on table public.study_beta_log is
-  'Every change to study_beta_settings, written by its trigger. Service role only.';
+  'Every change to study_beta_settings, written by its trigger. Append-only; written by the '
+  'database owner only.';
 
 alter table public.study_beta_log enable row level security;
 create policy study_beta_log_no_api_access on public.study_beta_log for select using (false);
@@ -197,8 +261,8 @@ begin
      and not (old.open_to_all and new.gate_id is not distinct from old.gate_id)
      and not exists (select 1 from public.study_release_gates g
                      where g.id = new.gate_id and g.passed
-                       and g.recorded_at > now() - interval '30 days') then
-    raise exception 'the beta opens only on a release gate that passed in the last thirty days'
+                       and g.ran_at > now() - interval '30 days') then
+    raise exception 'the beta opens only on a release gate whose run passed in the last thirty days'
       using errcode = '55000', detail = 'gate';
   end if;
   new.changed_at := now();
@@ -211,6 +275,10 @@ revoke all on function public.study_beta_settings_guard() from public, anon, aut
 create trigger study_beta_settings_guard
   before insert or update or delete on public.study_beta_settings
   for each row execute function public.study_beta_settings_guard();
+
+create trigger study_beta_settings_not_truncated
+  before truncate on public.study_beta_settings
+  for each statement execute function public.study_beta_not_truncated();
 
 create function public.study_beta_settings_logged()
 returns trigger
@@ -231,9 +299,43 @@ create trigger study_beta_settings_logged
   after update on public.study_beta_settings
   for each row execute function public.study_beta_settings_logged();
 
+/* The log is the record of every change: appended to, never changed or removed. */
+create function public.study_beta_log_appended()
+returns trigger
+language plpgsql
+set search_path = ''
+as $fn$
+begin
+  raise exception 'the beta''s log is appended to, never changed' using errcode = '55000';
+end
+$fn$;
+
+revoke all on function public.study_beta_log_appended() from public, anon, authenticated;
+
+create trigger study_beta_log_appended
+  before update or delete on public.study_beta_log
+  for each row execute function public.study_beta_log_appended();
+
+create trigger study_beta_log_not_truncated
+  before truncate on public.study_beta_log
+  for each statement execute function public.study_beta_not_truncated();
+
+-- The owner writes these three, from the SQL editor or psql, and calls open and close. The
+-- service role's key is in every Edge Function's environment, and Supabase's default
+-- privileges had given it every write on them: a key taken from a function could have
+-- minted a gate, opened the beta, or rewritten the log. It keeps reading them.
+revoke all on public.study_release_gates, public.study_beta_settings, public.study_beta_log
+  from service_role;
+grant select on public.study_release_gates, public.study_beta_settings, public.study_beta_log
+  to service_role;
+
 -- ------------------------------------------------------------------ 3. admission
 
-/* Whether a reader may prepare a course: on the allowlist, or the beta is open. */
+/*
+ * Whether a reader may prepare a course: on the allowlist, or the beta is open -- on a gate
+ * whose run is less than sixty days old. A pipeline two months past its review is not the
+ * one that was reviewed; an open beta lapses rather than staying open on it for ever.
+ */
 create function public.study_generation_admitted(p_user uuid)
 returns boolean
 language sql
@@ -242,10 +344,56 @@ security definer
 set search_path = ''
 as $fn$
   select exists (select 1 from public.study_generation_access a where a.user_id = p_user)
-      or coalesce((select s.open_to_all from public.study_beta_settings s where s.id), false)
+      or exists (select 1 from public.study_beta_settings s
+                 join public.study_release_gates g on g.id = s.gate_id
+                 where s.id and s.open_to_all and g.ran_at > now() - interval '60 days')
 $fn$;
 
 revoke all on function public.study_generation_admitted(uuid) from public, anon, authenticated;
+
+/*
+ * The day's ceiling on study spend, every reader's together: half the global cap. Each
+ * reader's share bounds one reader; with the beta open, four could spend the whole day and
+ * leave the catalogue's generation none of it. A narrower bound than law 2's, named there.
+ */
+create function public.study_daily_cap_cents()
+returns numeric
+language sql
+immutable
+set search_path = ''
+as $fn$
+  select 100::numeric
+$fn$;
+
+/* Study spend today, every reader's: charged, and held in open reservations, as the cap counts. */
+create function public.study_spend_today()
+returns numeric
+language sql
+stable
+security definer
+set search_path = ''
+as $fn$
+  select coalesce(
+           (select sum(cl.cost_cents)
+              from public.cost_ledger cl
+              join public.generation_jobs j on j.id = cl.job_id
+             where j.kind = 'study_course'
+               and cl.created_at >= date_trunc('day', (now() at time zone 'utc')) at time zone 'utc'),
+           0)
+       + coalesce(
+           (select sum(br.reserved_cents)
+              from public.budget_reservations br
+              join public.generation_jobs j on j.id = br.job_id
+             where j.kind = 'study_course'
+               and br.settled_at is null
+               and br.created_at >= now() - public.budget_reservation_ttl()
+               and br.created_at >= date_trunc('day', (now() at time zone 'utc')) at time zone 'utc'),
+           0);
+$fn$;
+
+revoke all on function public.study_daily_cap_cents() from public, anon;
+revoke all on function public.study_spend_today() from public, anon, authenticated;
+grant execute on function public.study_spend_today() to service_role;
 
 /* As 20260925010000, admitting through study_generation_admitted. */
 create or replace function public.study_generation_available()
@@ -432,6 +580,10 @@ begin
     raise exception 'your share of today''s study generation budget is spent. It resets at 00:00 UTC.'
       using errcode = '53400';
   end if;
+  if public.study_spend_today() + public.study_min_job_cents() > public.study_daily_cap_cents() then
+    raise exception 'today''s study generation budget is spent. Study generation resumes at 00:00 UTC.'
+      using errcode = '53400';
+  end if;
 
   select count(*) into used
   from public.generation_jobs
@@ -540,7 +692,107 @@ revoke all on function public.study_goal_kind(text) from public, anon, authentic
 grant execute on function public.study_format_family(text) to service_role;
 grant execute on function public.study_goal_kind(text) to service_role;
 
--- ------------------------------------------------------------------ 5. instrumentation
+-- ------------------------------------------------------------------ 5. the study ceiling
+
+/* As 20260925040000, with a study job also held to the study ceiling. */
+create or replace function public.reserve_budget(p_job_id uuid, p_step text, p_cents numeric)
+returns numeric
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  cap       numeric := public.daily_spend_cap_cents();
+  want      numeric := greatest(coalesce(p_cents, 0), 0);
+  committed numeric;
+  held      numeric;
+  job_kind  public.generation_jobs.kind%type;
+  requester uuid;
+  mine      numeric;
+begin
+  if p_job_id is null or p_step is null or p_step = '' then
+    raise exception 'reserve_budget needs a job and a step' using errcode = '22023';
+  end if;
+
+  -- One lock for the whole budget. The constant is arbitrary and only has to be
+  -- the same one every caller uses.
+  perform pg_advisory_xact_lock(pg_catalog.hashtextextended('what-a-pull:budget', 0));
+
+  -- A study job is also bounded by its reader's share, under the same lock, so two of
+  -- one reader's calls cannot both fit in what is left of it.
+  select j.kind, j.requester_id into job_kind, requester
+  from public.generation_jobs j
+  where j.id = p_job_id;
+  if job_kind = 'study_course' then
+    mine := public.study_requester_spend_today(requester);
+    if mine + want > public.study_requester_daily_cap_cents() then
+      raise exception
+        'this reader''s share of the day''s study budget is spent (% of % cents held or '
+        'charged); this step needs % more',
+        round(mine, 4), public.study_requester_daily_cap_cents(), round(want, 4)
+        using errcode = '53400';
+    end if;
+    -- And every reader's together, under the same lock (20260925220000).
+    if public.study_spend_today() + want > public.study_daily_cap_cents() then
+      raise exception
+        'the day''s study budget is spent (% of % cents held or charged); this step needs % more',
+        round(public.study_spend_today(), 4), public.study_daily_cap_cents(), round(want, 4)
+        using errcode = '53400';
+    end if;
+  end if;
+
+  select coalesce(sum(cl.cost_cents), 0) into committed
+  from public.cost_ledger cl
+  where cl.created_at >= date_trunc('day', (now() at time zone 'utc')) at time zone 'utc';
+
+  -- Every open hold, including this step's own, inside the TTL and inside today.
+  select coalesce(sum(br.reserved_cents), 0) into held
+  from public.budget_reservations br
+  where br.settled_at is null
+    and br.created_at >= now() - public.budget_reservation_ttl()
+    and br.created_at >= date_trunc('day', (now() at time zone 'utc')) at time zone 'utc';
+
+  if committed + held + want > cap then
+    raise exception
+      'the daily generation budget is spent (% of % cents held or charged); this step '
+      'needs % more', round(committed + held, 4), cap, round(want, 4)
+      using errcode = '53400';
+  end if;
+
+  -- Stacked onto an unsettled hold inside the TTL and inside today; anything else is
+  -- replaced. Stacking is the safe direction (20260914100000 says why).
+  insert into public.budget_reservations (job_id, step, reserved_cents, open_calls)
+  values (p_job_id, p_step, want, 1)
+  on conflict (job_id, step) do update
+    set reserved_cents =
+          case
+            when budget_reservations.settled_at is null
+             and budget_reservations.created_at >= now() - public.budget_reservation_ttl()
+             and budget_reservations.created_at >=
+                 date_trunc('day', (now() at time zone 'utc')) at time zone 'utc'
+            then budget_reservations.reserved_cents + excluded.reserved_cents
+            else excluded.reserved_cents
+          end,
+        open_calls =
+          case
+            when budget_reservations.settled_at is null
+             and budget_reservations.created_at >= now() - public.budget_reservation_ttl()
+             and budget_reservations.created_at >=
+                 date_trunc('day', (now() at time zone 'utc')) at time zone 'utc'
+            then budget_reservations.open_calls + 1
+            else 1
+          end,
+        created_at = now(),
+        settled_at = null;
+
+  return cap - (committed + held + want);
+end;
+$$;
+
+revoke all on function public.reserve_budget(uuid, text, numeric) from public, anon, authenticated;
+grant execute on function public.reserve_budget(uuid, text, numeric) to service_role;
+
+-- ------------------------------------------------------------------ 6. instrumentation
 
 /*
  * Whether the study Delta counts a claim as known at a moment: 20260925210000's rule for one
@@ -584,8 +836,10 @@ alter table public.study_answer_events add column claims_known_before boolean;
 
 comment on column public.study_answer_events.claims_known_before is
   'Whether the study Delta counted every claim this question tests as known just before this '
-  'answer (study_claim_known). Stamped on insert; null for answers recorded before '
-  '20260925220000. Measures false mastery (docs/study-beta.md); the proof rule never reads it.';
+  'answer (study_claim_known). Stamped on insert for a deterministically graded answer to a '
+  'question the model wrote -- the only answers the measure reads; null for the rest and '
+  'for answers recorded before 20260925220000. Measures false mastery (docs/study-beta.md); '
+  'the proof rule never reads it.';
 
 create function public.study_answer_known_before()
 returns trigger
@@ -593,7 +847,16 @@ language plpgsql
 set search_path = ''
 as $fn$
 begin
-  -- Before the insert, so before the recorder moves the memory for this answer.
+  -- Before the insert, so before the recorder moves the memory for this answer; after the
+  -- stamp trigger (triggers fire by name), so at the time the answer is recorded at. Only
+  -- where the measure reads it: the per-claim rule costs, and the recorder holds its locks
+  -- while it runs.
+  if new.grading <> 'deterministic'
+     or not exists (select 1 from public.study_items i
+                    where i.id = new.item_id and i.authored_by = 'model') then
+    new.claims_known_before := null;
+    return new;
+  end if;
   new.claims_known_before := coalesce((
     select bool_and(public.study_claim_known(new.owner_id, ic.claim_id, new.answered_at))
     from public.study_item_claims ic
@@ -605,11 +868,11 @@ $fn$;
 
 revoke all on function public.study_answer_known_before() from public, anon, authenticated;
 
-create trigger study_answer_events_known_before
+create trigger study_answer_events_with_known_before
   before insert on public.study_answer_events
   for each row execute function public.study_answer_known_before();
 
--- ------------------------------------------------------------------ 6. dashboards
+-- ------------------------------------------------------------------ 7. dashboards
 
 create schema ops;
 
@@ -694,8 +957,8 @@ begin
   if not gate.passed then
     raise exception 'that release gate did not pass' using errcode = '55000', detail = 'gate_failed';
   end if;
-  if gate.recorded_at <= now() - interval '30 days' then
-    raise exception 'that release gate is more than thirty days old; review again'
+  if gate.ran_at <= now() - interval '30 days' then
+    raise exception 'that release gate''s run is more than thirty days old; review again'
       using errcode = '55000', detail = 'gate_stale';
   end if;
   missing := public.study_beta_unrepresented();
@@ -711,6 +974,11 @@ begin
   update public.study_beta_settings
      set open_to_all = true, gate_id = p_gate_id, changed_by = btrim(p_by)
    where id;
+  if not found then
+    raise exception 'the beta''s settings row is missing' using errcode = '55000';
+  end if;
+  -- Not left behind for a later write in the same transaction to be logged with.
+  perform set_config('study.beta_override', '', true);
   return jsonb_build_object('open', true, 'gateId', p_gate_id, 'uncovered', to_jsonb(missing));
 end
 $fn$;
@@ -728,25 +996,52 @@ begin
   end if;
   perform set_config('study.beta_override', '', true);
   update public.study_beta_settings set open_to_all = false, changed_by = btrim(p_by) where id;
+  if not found then
+    raise exception 'the beta''s settings row is missing' using errcode = '55000';
+  end if;
   return jsonb_build_object('open', false);
 end
 $fn$;
 
-revoke all on function public.open_study_beta(uuid, text, text) from public, anon, authenticated;
-revoke all on function public.close_study_beta(text) from public, anon, authenticated;
-grant execute on function public.open_study_beta(uuid, text, text) to service_role;
-grant execute on function public.close_study_beta(text) to service_role;
+-- The owner's alone, as the tables are.
+revoke all on function public.open_study_beta(uuid, text, text)
+  from public, anon, authenticated, service_role;
+revoke all on function public.close_study_beta(text)
+  from public, anon, authenticated, service_role;
 
-/* The beta's state: open or not, on which gate, how many readers are admitted. */
+/*
+ * The beta's state: open or not, on which gate and how old its run is, whether admission
+ * through it has lapsed, preparations since it opened whose pipeline is not the gate's,
+ * courses still queued for readers no longer admitted, how many readers are allowlisted,
+ * and today's spend -- study and everything else -- against the caps.
+ */
 create view ops.study_beta_status as
 select s.open_to_all,
        s.changed_at,
        s.changed_by,
        g.id as gate_id,
-       g.recorded_at as gate_recorded_at,
+       g.ran_at as gate_ran_at,
+       floor(extract(epoch from now() - g.ran_at) / 86400)::int as gate_age_days,
        g.passed as gate_passed,
+       g.pipeline as gate_pipeline,
+       s.open_to_all and not coalesce(g.ran_at > now() - interval '60 days', false)
+         as admission_lapsed,
+       (select count(*) from public.study_generations sg
+        where s.open_to_all and sg.created_at >= s.changed_at
+          and sg.assembly_provenance is not null
+          and (sg.assembly_provenance ->> 'promptHash', sg.assembly_provenance ->> 'schemaHash',
+               sg.assembly_provenance ->> 'model')
+              is distinct from (g.pipeline ->> 'promptHash', g.pipeline ->> 'schemaHash',
+                                g.pipeline ->> 'model'))::int as preparations_off_gate,
+       (select count(*) from public.generation_jobs j
+        where j.kind = 'study_course' and j.status = 'queued'
+          and not public.study_generation_admitted(j.requester_id))::int
+         as queued_for_readers_not_admitted,
        (select count(*) from public.study_generation_access)::int as allowlisted_readers,
        public.study_beta_unrepresented() as uncovered,
+       public.study_spend_today() as study_spend_today_cents,
+       public.study_daily_cap_cents() as study_cap_cents,
+       public.spend_today() - public.study_spend_today() as other_spend_today_cents,
        public.daily_spend_cap_cents() as daily_cap_cents
 from public.study_beta_settings s
 left join public.study_release_gates g on g.id = s.gate_id;
@@ -759,13 +1054,13 @@ with jobs as (
   where j.kind = 'study_course'
 ),
 spend as (
-  select date_trunc('day', l.created_at)::date as day, sum(l.cost_cents) as cents
+  select date_trunc('day', l.created_at, 'UTC')::date as day, sum(l.cost_cents) as cents
   from public.cost_ledger l
   join jobs j on j.id = l.job_id
   group by 1
 ),
 per_day as (
-  select date_trunc('day', j.created_at)::date as day,
+  select date_trunc('day', j.created_at, 'UTC')::date as day,
          count(*)::int as jobs,
          count(*) filter (where j.status = 'succeeded')::int as succeeded,
          count(*) filter (where j.status = 'failed')::int as failed,
@@ -781,7 +1076,7 @@ per_day as (
   group by 1
 ),
 courses as (
-  select date_trunc('day', c.created_at)::date as day, count(*)::int as courses,
+  select date_trunc('day', c.created_at, 'UTC')::date as day, count(*)::int as courses,
          count(distinct c.owner_id)::int as readers
   from public.study_courses c
   group by 1
@@ -804,7 +1099,7 @@ full join spend s on s.day = coalesce(p.day, c.day);
 /* What validation passed, by the UTC week the generation was made. */
 create view ops.study_validation_weekly as
 with gens as (
-  select g.id, date_trunc('week', g.created_at)::date as week, g.text_status
+  select g.id, date_trunc('week', g.created_at, 'UTC')::date as week, g.text_status
   from public.study_generations g
 )
 select gens.week,
@@ -837,26 +1132,32 @@ group by gens.week;
  * are practice, and prove nothing either way.
  *
  * - Seven-day unhinted recall: an answer given at least seven days after the reader's last
- *   answer to the same question (in any of its versions) was right and unhinted -- recalled
- *   when it is right and unhinted again.
- * - False mastery: an answer to a question whose every claim the study Delta counted as
- *   known just before it (`claims_known_before`) -- false when it is wrong.
+ *   answer to the same question (in any of its versions, however graded) was right,
+ *   unhinted and graded by the rule -- recalled when it is right and unhinted again.
+ * - False mastery: an unhinted answer to a question whose every claim the study Delta
+ *   counted as known just before it (`claims_known_before`) -- false when it is wrong.
  */
 create view ops.study_learning_weekly as
-with answers as (
+with every_answer as (
+  -- Every answer to the question, in any of its versions and however graded, before the
+  -- measure is filtered: a self-graded "not had" or a wrong answer to the reader's own
+  -- version between two right ones is the last answer before the second.
   select e.owner_id,
          e.answered_at,
          e.correct,
          e.hinted,
          e.claims_known_before,
+         e.grading = 'deterministic' and i.authored_by = 'model' as counted,
          lag(e.answered_at) over w as previous_at,
-         lag(e.correct and not e.hinted) over w as previous_clean
+         lag(e.correct and not e.hinted and e.grading = 'deterministic') over w as previous_clean
   from public.study_answer_events e
   join public.study_items i on i.id = e.item_id and i.owner_id = e.owner_id
-  where e.grading = 'deterministic' and i.authored_by = 'model'
   window w as (partition by e.owner_id, i.lineage_id order by e.answered_at, e.id)
+),
+answers as (
+  select * from every_answer where counted
 )
-select date_trunc('week', a.answered_at)::date as week,
+select date_trunc('week', a.answered_at, 'UTC')::date as week,
        count(*)::int as answers,
        count(distinct a.owner_id)::int as readers,
        count(*) filter (where a.correct and not a.hinted)::int as right_unhinted,
@@ -867,15 +1168,17 @@ select date_trunc('week', a.answered_at)::date as week,
                           and a.answered_at - a.previous_at >= interval '7 days'
                           and a.correct and not a.hinted)::int
          as delayed_recalled,
-       count(*) filter (where a.claims_known_before)::int as answers_when_known,
-       count(*) filter (where a.claims_known_before and not a.correct)::int as wrong_when_known
+       -- Unhinted only: a hinted answer is not a test of what the reader knew.
+       count(*) filter (where a.claims_known_before and not a.hinted)::int as answers_when_known,
+       count(*) filter (where a.claims_known_before and not a.hinted and not a.correct)::int
+         as wrong_when_known
 from answers a
 group by 1;
 
 /* Reading, reporting and correcting, by UTC week. */
 create view ops.study_trust_weekly as
 with shown as (
-  select date_trunc('week', p.recorded_at)::date as week,
+  select date_trunc('week', p.recorded_at, 'UTC')::date as week,
          count(*) filter (where p.kind = 'lesson_shown')::int as lessons_shown,
          count(*) filter (where p.kind = 'lesson_read')::int as lessons_read,
          count(*) filter (where p.kind = 'lesson_skipped')::int as lessons_skipped,
@@ -884,7 +1187,7 @@ with shown as (
   group by 1
 ),
 reports as (
-  select date_trunc('week', r.created_at)::date as week,
+  select date_trunc('week', r.created_at, 'UTC')::date as week,
          count(*)::int as reports,
          count(*) filter (where r.lesson_id is not null)::int as lesson_reports,
          count(*) filter (where r.claim_id is not null)::int as claim_reports,
@@ -896,13 +1199,13 @@ reports as (
 withdrawals as (
   -- The lesson, claim or question withdrawn; what rests on a withdrawn claim is logged as
   -- `claim_retired` and not counted again.
-  select date_trunc('week', s.at)::date as week, count(*)::int as withdrawn
+  select date_trunc('week', s.at, 'UTC')::date as week, count(*)::int as withdrawn
   from public.study_status_log s
   where s.reason = 'retired'
   group by 1
 ),
 corrections as (
-  select date_trunc('week', x.created_at)::date as week, count(*)::int as corrected
+  select date_trunc('week', x.created_at, 'UTC')::date as week, count(*)::int as corrected
   from (select l.created_at from public.study_lessons l where l.authored_by = 'reader'
         union all
         select i.created_at from public.study_items i where i.authored_by = 'reader') as x

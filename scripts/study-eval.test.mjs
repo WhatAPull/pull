@@ -43,9 +43,12 @@ describe('study generation evaluation', () => {
       visibleItems: 1,
       quarantinedItems: 0,
       doubleReviewedVisible: 1,
+      groundedVisible: 1,
+      answerableVisible: 1,
       usableVisibleItems: 1,
       materialErrors: 0,
       ambiguousVisible: 0,
+      adversarialItems: 0,
       adversarialLeaks: 0,
       doubleReviewedAdversarial: 0,
       visibleSources: 1,
@@ -185,6 +188,25 @@ describe('study generation evaluation', () => {
     data.attempts = [];
     data.ledger = [];
     assert.equal(evaluateStudyRun(data).gates.ledgerComplete, false);
+  });
+
+  it('says what made the run and when, and is ready for one pipeline only', () => {
+    const one = { promptHash: 'a'.repeat(64), schemaHash: 'b'.repeat(64), model: 'm' };
+    const other = { ...one, model: 'n' };
+    const report = evaluateStudyRun(
+      run({ pipelines: [one], ranAt: '2026-09-20T10:00:00.000000Z' }),
+    );
+    assert.deepEqual(report.pipeline, one);
+    assert.equal(report.ranAt, '2026-09-20T10:00:00.000000Z');
+    assert.equal(report.gates.singlePipeline, true);
+    // Two pipelines in one run, none recorded, or one without its hashes: no gate for it.
+    assert.equal(evaluateStudyRun(run({ pipelines: [one, other] })).gates.singlePipeline, false);
+    assert.equal(evaluateStudyRun(run()).gates.singlePipeline, false);
+    assert.equal(
+      evaluateStudyRun(run({ pipelines: [{ ...one, schemaHash: null }] })).gates.singlePipeline,
+      false,
+    );
+    assert.equal(evaluateStudyRun(run({ ranAt: 'yesterday' })).ranAt, null);
   });
 
   it('keeps failed provider attempts in cost and refuses an unledgered call', () => {

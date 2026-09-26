@@ -7,21 +7,26 @@ they are open, and where an operator reads it.
 
 The schema is `supabase/migrations/20260925220000_study_beta.sql`, asserted in
 `supabase/tests/study_beta.sql`. Nothing here calls a model (law 2), and opening the beta
-changes none of the bounds law 2 names: the global daily ceiling, each reader's share of
-study spend, and the per-reader job counts bound a day, open or not.
+loosens none of the bounds law 2 names: the global daily ceiling, each reader's share of
+study spend, and the per-reader job counts bound a day, open or not. It adds one: study
+courses, every reader's together, are held to `study_daily_cap_cents()` -- 100 cents, half
+the day -- at the door and at each reservation, so an open beta cannot leave the catalogue's
+generation nothing.
 
 ## The release gate
 
 The bar is [`eval/study-quality.md`](./eval/study-quality.md)'s: a human-reviewed fixture
 of at least 24 source versions with visible questions and 300 visible questions, every
 visible question reviewed twice and adjudicated, no material error in a visible answer
-key, at most 3% ambiguous questions, no adversarial item reaching a learner, every fixture
-category covered, and a ledger entry for every provider attempt.
+key, every visible question grounded and answerable, at most 3% ambiguous questions,
+adversarial items present, each reviewed twice and none reaching a learner, every fixture
+category covered, a ledger entry for every provider attempt, and one pipeline -- prompt,
+schema and model -- for the whole run.
 
 1. Run the fixture through the pipeline and export it:
    `node scripts/study-eval-export.mjs --manifest m.json --reviews r.json --jobs ... > run.json`.
 2. Evaluate it: `node scripts/study-eval.mjs run.json > report.json`.
-3. Record it, as the service role:
+3. Record it, as the database owner (the SQL editor, or psql with the owner's password):
 
    ```sql
    insert into public.study_release_gates (recorded_by, fixture_digest, report, note)
@@ -29,9 +34,18 @@ category covered, and a ledger entry for every provider attempt.
    ```
 
 `passed` is computed on insert by `study_gate_passes`, from the report's gates **and** the
-counts behind them, never taken from the writer: a report whose gates say ready while its
-counts fall short does not pass. A gate is final once recorded. The run export and the
+counts behind them -- each a whole number, not below zero -- never taken from the writer: a
+report whose gates say ready while its counts fall short does not pass. The run's date
+(`ranAt`, the last preparation in it) and pipeline come from the report, which the export
+takes from the generations themselves; a gate is as fresh as its run, not its recording. A
+gate is final once recorded, and a run's digest is recorded once. The run export and the
 reviewed material stay outside the public repository; the digest ties the record to them.
+
+What the schema checks is the report. That a person reviewed the run is the operator's
+word, recorded with their name: the schema cannot see a review happen, and does not say it
+can. What it can do is keep the word to the people who hold the database owner's password:
+the gates, the switch and its log are written by the owner alone, not by the service role,
+whose key every Edge Function holds.
 
 ## The switch
 
@@ -46,13 +60,20 @@ select public.open_study_beta('<gate id>', '<operator>', '<reason>'); -- open, u
 select public.close_study_beta('<operator>');                         -- close
 ```
 
-Opening is refused with 55000 when the gate did not pass (`gate_failed`) or is more than
-thirty days old (`gate_stale`) -- a trigger holds the row to the same rule, so a direct
-write cannot skip it -- and when the allowlisted beta so far leaves a kind of source or
-goal uncovered (`unrepresentative`), unless the operator gives a reason of at least twenty
-characters, which is logged. Closing is always allowed. Every change is logged in
-`study_beta_log`. A change to the prompts, the schema or the model is a new pipeline: record
-a new gate before opening on it.
+Opening is refused with 55000 when the gate did not pass (`gate_failed`) or its run is more
+than thirty days old (`gate_stale`) -- a trigger holds the row to the same rule -- and when
+the allowlisted beta so far leaves a kind of source or goal uncovered (`unrepresentative`),
+unless the operator gives a reason of at least twenty characters, which is logged. An open
+beta admits no one past the allowlist once its gate's run is sixty days old: it lapses
+rather than stay open on a pipeline reviewed two months before. Every change is logged in
+`study_beta_log`, which is only ever appended to, with the database role that made it.
+Only the owner calls open and close.
+
+Closing is always allowed. It stops new courses at the door; a course already queued for a
+reader it no longer admits still finishes, within that reader's share and the study
+ceiling, and `ops.study_beta_status` counts them. A change to the prompts, the schema or the
+model is a new pipeline: record a new gate before opening on it; the status view counts
+preparations since opening whose pipeline is not the gate's.
 
 ### A representative beta
 
@@ -79,10 +100,10 @@ Learning is measured over deterministic answers to model-written questions; a se
 answer or the reader's own question proves nothing either way.
 
 - **Seven-day unhinted recall** -- an answer given at least seven days after the reader's
-  last answer to the same question (any version) was right and unhinted: recalled when it
-  is right and unhinted again.
-- **False mastery** -- an answer to a question whose every claim was known just before it:
-  false when it is wrong. This is the study Delta's false-suppression rate
+  last answer to the same question (any version, however graded) was right, unhinted and
+  graded by the rule: recalled when it is right and unhinted again.
+- **False mastery** -- an unhinted answer to a question whose every claim was known just
+  before it: false when it is wrong. This is the study Delta's false-suppression rate
   ([`study-adaptation.md`](./study-adaptation.md)), measured rather than argued.
 
 Every rate is reported with its numerator and denominator.
@@ -92,15 +113,17 @@ Every rate is reported with its numerator and denominator.
 Schema `ops` holds aggregate views, readable by the service role and not exposed through the
 API. No row in them names a reader.
 
-| View                          | What it says                                                                                                   |
-| ----------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `ops.study_beta_status`       | Open or not, on which gate, how many readers are allowlisted, what the mix leaves uncovered, the daily ceiling |
-| `ops.study_daily`             | By UTC day: courses made, preparation jobs by outcome, median and p95 minutes, spend in cents                  |
-| `ops.study_validation_weekly` | By week prepared: preparations held back or awaiting, and claims, lessons and questions passed                 |
-| `ops.study_learning_weekly`   | By week answered: seven-day recall and false mastery, with their counts                                        |
-| `ops.study_trust_weekly`      | By week: lessons shown, read and skipped, reports by target, restores, corrections, withdrawals                |
-| `ops.study_beta_mix`          | Courses with a current generation, by kind of source and goal, with distinct readers                           |
+| View                          | What it says                                                                                                                                                                                                                                                                                    |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ops.study_beta_status`       | Open or not; on which gate, its pipeline and its run's age; whether admission has lapsed; preparations since opening off the gate's pipeline; courses queued for readers no longer admitted; readers allowlisted; what the mix leaves uncovered; today's study and other spend against the caps |
+| `ops.study_daily`             | By UTC day: courses made, preparation jobs by outcome, median and p95 minutes, spend in cents                                                                                                                                                                                                   |
+| `ops.study_validation_weekly` | By week prepared: preparations held back or awaiting, and claims, lessons and questions passed                                                                                                                                                                                                  |
+| `ops.study_learning_weekly`   | By week answered: seven-day recall and false mastery, with their counts                                                                                                                                                                                                                         |
+| `ops.study_trust_weekly`      | By week: lessons shown, read and skipped, reports by target, restores, corrections, withdrawals                                                                                                                                                                                                 |
+| `ops.study_beta_mix`          | Courses with a current generation, by kind of source and goal, with distinct readers                                                                                                                                                                                                            |
 
 `node scripts/study-beta-report.mjs [--days 14] [--weeks 8]` prints them as Markdown, with
-`DATABASE_URL` pointing at the database (the hosted one needs TLS, which the script asks
-for).
+`DATABASE_URL` pointing at the database. It reads in one read-only session, in UTC, and
+ignores the operator's `~/.psqlrc`. The hosted database needs TLS: the script asks for it,
+and takes `sslmode` and `sslrootcert` from the URL -- `?sslmode=verify-full&sslrootcert=...`
+with Supabase's CA verifies the server, which `require` alone does not.

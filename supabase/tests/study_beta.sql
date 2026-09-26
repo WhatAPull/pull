@@ -91,19 +91,30 @@ grant execute on function pg_temp.answer(uuid, jsonb, text, boolean, uuid) to au
 create or replace function pg_temp.report(p_patch jsonb default '{}'::jsonb)
 returns jsonb language sql as $fn$
   select jsonb_build_object(
+    'pipeline', jsonb_build_object('promptHash', repeat('a', 64), 'schemaHash', repeat('b', 64),
+                                   'model', 'm'),
+    'ranAt', now() - interval '1 day',
     'counts', jsonb_build_object('sources', 26, 'visibleItems', 320, 'quarantinedItems', 40,
-                                 'doubleReviewedVisible', 320, 'usableVisibleItems', 311,
+                                 'doubleReviewedVisible', 320, 'groundedVisible', 320,
+                                 'answerableVisible', 320, 'usableVisibleItems', 311,
                                  'materialErrors', 0, 'ambiguousVisible', 9,
-                                 'adversarialLeaks', 0, 'doubleReviewedAdversarial', 30,
-                                 'visibleSources', 25),
+                                 'adversarialItems', 30, 'adversarialLeaks', 0,
+                                 'doubleReviewedAdversarial', 30, 'visibleSources', 25),
     'coverage', jsonb_build_object('present', jsonb_build_array('notes', 'pdf'),
                                    'missing', '[]'::jsonb),
     'gates', jsonb_build_object('minimumFixture', true, 'fixtureCoverage', true,
                                 'answersSupported', true, 'ambiguity', true,
-                                'adversarial', true, 'ledgerComplete', true, 'ready', true))
+                                'adversarial', true, 'ledgerComplete', true,
+                                'singlePipeline', true, 'ready', true))
   || p_patch
 $fn$;
 grant execute on function pg_temp.report(jsonb) to service_role;
+
+/* A report's counts with some replaced. */
+create or replace function pg_temp.counts(p_patch jsonb)
+returns jsonb language sql as $fn$
+  select pg_temp.report(jsonb_build_object('counts', pg_temp.report() -> 'counts' || p_patch))
+$fn$;
 
 do $test$
 declare
@@ -122,6 +133,11 @@ declare
   gen       uuid;
   course    uuid;
   q1        uuid;
+  q2        uuid;
+  q1_mine   uuid;
+  c1        uuid;
+  lapsed    uuid;
+  other_job uuid;
   first_id  uuid;
   r         jsonb;
   state     text;
@@ -141,15 +157,62 @@ begin
   insert into public.study_generation_access (user_id) values (admitted);
 
   -- ---------------------------------------------------------------- release gates
+  -- Recorded by the database owner: the service role, whose key every Edge Function holds,
+  -- can read the gates, the switch and its log, and write none of them.
   perform pg_temp.become_worker();
-  insert into public.study_release_gates (recorded_by, fixture_digest, report)
-  values ('An operator', repeat('a', 64), pg_temp.report()) returning id into good;
+  begin
+    insert into public.study_release_gates (recorded_by, fixture_digest, report)
+    values ('An Edge Function', repeat('9', 64), pg_temp.report());
+    raise exception 'the service role recorded a release gate';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    update public.study_beta_settings set changed_by = 'An Edge Function' where id;
+    raise exception 'the service role wrote the beta''s settings';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.close_study_beta('An Edge Function');
+    raise exception 'the service role could close the beta';
+  exception when insufficient_privilege then null;
+  end;
+  if has_table_privilege('service_role', 'public.study_beta_log', 'insert')
+     or has_table_privilege('service_role', 'public.study_release_gates', 'truncate')
+     or has_function_privilege('service_role', 'public.open_study_beta(uuid, text, text)',
+                               'execute')
+     or not has_table_privilege('service_role', 'public.study_release_gates', 'select') then
+    raise exception 'the service role''s rights on the switch are not read-only';
+  end if;
+
+  perform pg_temp.as_owner();
+  insert into public.study_release_gates (recorded_by, fixture_digest, report, recorded_at)
+  values ('An operator', repeat('a', 64), pg_temp.report(), now() + interval '1 year')
+  returning id into good;
+  -- Its time is the run's, from the report, and it was recorded now whatever the writer said.
+  if (select row(recorded_at = now(), ran_at = now() - interval '1 day', pipeline ->> 'model')::text
+      from public.study_release_gates where id = good) is distinct from row(true, true, 'm')::text then
+    raise exception 'a gate''s times or pipeline were taken from the writer, not the report';
+  end if;
   if (select passed from public.study_release_gates where id = good) is not true then
     raise exception 'a report that clears the bar did not pass';
   end if;
 
-  -- Each shortfall fails, whatever the report's own gates say.
-  if public.study_gate_passes(pg_temp.report(jsonb_build_object('counts',
+  -- Each shortfall fails, whatever the report's own gates say: a count below the bar, or not
+  -- a whole number at or above zero; a visible question not grounded or not answerable; no
+  -- adversarial item, or one not reviewed twice; no single pipeline.
+  if public.study_gate_passes(pg_temp.counts('{"ambiguousVisible": -500}'))
+     or public.study_gate_passes(pg_temp.counts('{"ambiguousVisible": 8.5}'))
+     or public.study_gate_passes(pg_temp.counts('{"groundedVisible": 319}'))
+     or public.study_gate_passes(pg_temp.counts('{"answerableVisible": 0}'))
+     or public.study_gate_passes(pg_temp.counts(
+          '{"adversarialItems": 0, "doubleReviewedAdversarial": 0}'))
+     or public.study_gate_passes(pg_temp.counts('{"doubleReviewedAdversarial": 29}'))
+     or public.study_gate_passes(pg_temp.report() - 'pipeline')
+     or public.study_gate_passes(pg_temp.report(
+          '{"pipeline": {"promptHash": "x", "schemaHash": "y", "model": "m"}}'))
+     or public.study_gate_passes(pg_temp.report(jsonb_build_object('gates',
+          pg_temp.report() -> 'gates' || '{"singlePipeline": false}')))
+     or public.study_gate_passes(pg_temp.report(jsonb_build_object('counts',
        pg_temp.report() -> 'counts' || '{"visibleItems": 299, "doubleReviewedVisible": 299}')))
      or public.study_gate_passes(pg_temp.report(jsonb_build_object('counts',
        pg_temp.report() -> 'counts' || '{"visibleSources": 23}')))
@@ -174,8 +237,8 @@ begin
     raise exception 'a report short of the bar passed';
   end if;
   -- The boundary: nine ambiguous of three hundred is 3%.
-  if not public.study_gate_passes(pg_temp.report(jsonb_build_object('counts',
-       pg_temp.report() -> 'counts' || '{"visibleItems": 300, "doubleReviewedVisible": 300}'))) then
+  if not public.study_gate_passes(pg_temp.counts('{"visibleItems": 300, "doubleReviewedVisible": 300,
+                                                    "groundedVisible": 300, "answerableVisible": 300}')) then
     raise exception 'a report exactly at the bar did not pass';
   end if;
 
@@ -206,14 +269,41 @@ begin
     raise exception 'a gate was recorded without a sha256 digest';
   exception when check_violation then null;
   end;
+  -- One gate per run: the same export again would restart its clock.
+  begin
+    insert into public.study_release_gates (recorded_by, fixture_digest, report)
+    values ('An operator', repeat('a', 64), pg_temp.report());
+    raise exception 'a run''s digest was recorded twice';
+  exception when unique_violation then null;
+  end;
+  -- A report without its run's time, or one from the future, is not recorded.
+  begin
+    insert into public.study_release_gates (recorded_by, fixture_digest, report)
+    values ('An operator', repeat('d', 64), pg_temp.report() - 'ranAt');
+    raise exception 'a gate was recorded without its run''s time';
+  exception when sqlstate '22023' then null;
+  end;
+  begin
+    insert into public.study_release_gates (recorded_by, fixture_digest, report)
+    values ('An operator', repeat('e', 64),
+            pg_temp.report(jsonb_build_object('ranAt', now() + interval '1 day')));
+    raise exception 'a gate was recorded for a run in the future';
+  exception when sqlstate '22023' then null;
+  end;
+  begin
+    truncate public.study_release_gates cascade;
+    raise exception 'the release gates were truncated';
+  exception when sqlstate '55000' then null;
+  end;
 
-  -- A passing gate recorded 31 days ago, made as the owner with the trigger held.
-  perform pg_temp.as_owner();
-  alter table public.study_release_gates disable trigger study_release_gates_recorded;
-  insert into public.study_release_gates (recorded_at, recorded_by, fixture_digest, report, passed)
-  values (now() - interval '31 days', 'An operator', repeat('c', 64), pg_temp.report(), true)
+  -- A passing gate whose run was 31 days ago: as old as its run, however recently recorded.
+  insert into public.study_release_gates (recorded_by, fixture_digest, report)
+  values ('An operator', repeat('c', 64),
+          pg_temp.report(jsonb_build_object('ranAt', now() - interval '31 days')))
   returning id into stale;
-  alter table public.study_release_gates enable trigger study_release_gates_recorded;
+  if (select passed from public.study_release_gates where id = stale) is not true then
+    raise exception 'the stale fixture gate did not pass';
+  end if;
 
   -- ---------------------------------------------------------------- closed: allowlist only
   perform pg_temp.become_reader(outsider);
@@ -239,7 +329,7 @@ begin
   end if;
 
   -- ---------------------------------------------------------------- the flag's guards
-  perform pg_temp.become_worker();
+  perform pg_temp.as_owner();
   begin
     update public.study_beta_settings set open_to_all = true, gate_id = bad where id;
     raise exception 'the beta opened on a failed gate';
@@ -267,6 +357,11 @@ begin
   begin
     delete from public.study_beta_settings;
     raise exception 'the settings row was deleted';
+  exception when sqlstate '55000' then null;
+  end;
+  begin
+    truncate public.study_beta_settings;
+    raise exception 'the settings row was truncated';
   exception when sqlstate '55000' then null;
   end;
 
@@ -318,9 +413,28 @@ begin
      or (select override_reason from public.study_beta_log order by id desc limit 1)
         is distinct from 'Pilot cohort is small; scanned sources ship in the next wave.'
      or (select changed_by from public.study_beta_log order by id desc limit 1)
-        is distinct from 'An operator' then
+        is distinct from 'An operator'
+     or (select db_user from public.study_beta_log order by id desc limit 1)
+        is distinct from session_user::text
+     or current_setting('study.beta_override', true) is distinct from '' then
     raise exception 'opening on a passing gate with a reason was not done and logged: %', r;
   end if;
+  -- The log is appended to, never changed.
+  begin
+    update public.study_beta_log set changed_by = 'Someone else';
+    raise exception 'the beta''s log was changed';
+  exception when sqlstate '55000' then null;
+  end;
+  begin
+    delete from public.study_beta_log;
+    raise exception 'the beta''s log was deleted';
+  exception when sqlstate '55000' then null;
+  end;
+  begin
+    truncate public.study_beta_log;
+    raise exception 'the beta''s log was truncated';
+  exception when sqlstate '55000' then null;
+  end;
 
   -- ---------------------------------------------------------------- open: every account
   perform pg_temp.become_reader(outsider);
@@ -333,6 +447,50 @@ begin
   if out ->> 'jobId' is null then
     raise exception 'the open beta did not queue a course: %', out;
   end if;
+  -- Study spend, every reader's together, is held to its ceiling: with two other readers'
+  -- jobs having spent 80 of the study day's 100 cents -- 40 each, inside their shares -- a
+  -- new course cannot be funded, though the global cap and this reader's share both could.
+  -- Probed, and undone.
+  begin
+    perform pg_temp.as_owner();
+    insert into public.generation_jobs (kind, requester_id, status)
+    values ('study_course', admitted, 'running') returning id into other_job;
+    insert into public.cost_ledger (job_id, provider, operation, unit, quantity, cost_cents)
+    values (other_job, 'test', 'study_extract', 'call', 1, 40);
+    insert into public.generation_jobs (kind, requester_id, status)
+    values ('study_course', guest, 'running') returning id into other_job;
+    insert into public.cost_ledger (job_id, provider, operation, unit, quantity, cost_cents)
+    values (other_job, 'test', 'study_extract', 'call', 1, 40);
+    if public.study_spend_today() < 80 then
+      raise exception 'the study spend did not count other readers'' jobs';
+    end if;
+    perform pg_temp.become_reader(outsider);
+    begin
+      perform public.enqueue_study_generation(array[(saved ->> 'versionId')::uuid],
+                                              'Remember the key findings',
+                                              extensions.gen_random_uuid(), true);
+      raise exception 'a course was queued past the study ceiling';
+    exception when sqlstate '53400' then
+      if sqlerrm not like 'today''s study generation budget is spent%' then
+        raise exception 'the study ceiling refused as %', sqlerrm;
+      end if;
+    end;
+    -- And at each reservation, under the budget lock: this reader's own queued course, well
+    -- inside their share, is refused a step that would take the study day past its ceiling.
+    perform pg_temp.become_worker();
+    begin
+      perform public.reserve_budget((out ->> 'jobId')::uuid, 'study_extract', 25);
+      raise exception 'a study reservation went past the study ceiling';
+    exception when sqlstate '53400' then
+      if sqlerrm not like 'the day''s study budget is spent%' then
+        raise exception 'the reservation was refused as %', sqlerrm;
+      end if;
+    end;
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+  perform pg_temp.become_reader(outsider);
   -- The rest of the door stands: consent is still asked for.
   begin
     perform public.enqueue_study_generation(array[(saved ->> 'versionId')::uuid],
@@ -372,7 +530,24 @@ begin
   exception when insufficient_privilege then null;
   end;
 
-  perform pg_temp.become_worker();
+  -- An open beta lapses once its gate's run is sixty days old. Probed, and undone.
+  begin
+    perform pg_temp.as_owner();
+    alter table public.study_release_gates disable trigger study_release_gates_recorded;
+    update public.study_release_gates set ran_at = now() - interval '61 days' where id = good;
+    alter table public.study_release_gates enable trigger study_release_gates_recorded;
+    if public.study_generation_admitted(outsider) then
+      raise exception 'an open beta admitted a reader on a gate sixty days old';
+    end if;
+    if (select admission_lapsed from ops.study_beta_status) is not true then
+      raise exception 'the status view did not say admission has lapsed';
+    end if;
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+
+  perform pg_temp.as_owner();
   perform public.close_study_beta('An operator');
   perform pg_temp.become_reader(outsider);
   if public.study_generation_available() then
@@ -381,6 +556,10 @@ begin
   perform pg_temp.become_worker();
   if (select count(*) from public.study_beta_log where gate_id = good) is distinct from 2::bigint then
     raise exception 'opening and closing were not both logged';
+  end if;
+  -- Closing leaves the course already queued for a reader it no longer admits, and says so.
+  if (select queued_for_readers_not_admitted from ops.study_beta_status) < 1 then
+    raise exception 'the status view did not count a course queued for a reader not admitted';
   end if;
 
   -- ---------------------------------------------------------------- the known-before stamp
@@ -399,20 +578,28 @@ begin
                                  'objectives', jsonb_build_array('Explain the contrast.')),
     'claims', jsonb_build_array(
       pg_temp.claim('s1c1', v, 'At five minutes, restudying beat the recall test.',
-                    'the group that restudied remembered more', note)),
-    'lessons', jsonb_build_array(pg_temp.lesson('l1', 1, array['s1c1'])),
+                    'the group that restudied remembered more', note),
+      pg_temp.claim('s1c2', v, 'The students read prose.', 'had students read prose', note)),
+    'lessons', jsonb_build_array(pg_temp.lesson('l1', 1, array['s1c1', 's1c2'])),
     'items', jsonb_build_array(
       pg_temp.q('q1', 'l1', 'multiple_choice', 'Which strategy won at five minutes?',
                 'Restudying', array['s1c1'], jsonb_build_object('distractors',
                   jsonb_build_array(
                     jsonb_build_object('text', 'The recall test', 'why', 'Only after a week.'),
-                    jsonb_build_object('text', 'Neither', 'why', 'The note reports a winner.'))))),
+                    jsonb_build_object('text', 'Neither', 'why', 'The note reports a winner.')))),
+      pg_temp.q('q2', 'l1', 'multiple_choice', 'What did the students read, and what won early?',
+                'Prose; restudying', array['s1c1', 's1c2'], jsonb_build_object('distractors',
+                  jsonb_build_array(
+                    jsonb_build_object('text', 'Poetry; testing', 'why', 'Neither.'),
+                    jsonb_build_object('text', 'Prose; testing', 'why', 'Testing won later.'))))),
     'provenance', jsonb_build_object('promptHash', repeat('a', 64),
                                      'schemaHash', repeat('b', 64), 'model', 'm')));
   perform public.validate_study_course(job);
   perform pg_temp.as_owner();
   update public.generation_jobs set status = 'succeeded' where id = job;
   select id into q1 from public.study_items where generation_id = gen and item_key = 'q1';
+  select id into q2 from public.study_items where generation_id = gen and item_key = 'q2';
+  select id into c1 from public.study_claims where generation_id = gen and claim_key = 's1c1';
 
   perform pg_temp.become_reader(admitted);
   r := pg_temp.answer(q1, '"Restudying"');
@@ -423,8 +610,16 @@ begin
     raise exception 'a first answer was stamped as given when the claim was known';
   end if;
   -- Known now: the next answer is stamped so, and a wrong one is false mastery.
-  if (select known from public.study_claim_knowledge(course) limit 1) is distinct from true then
+  if (select known from public.study_claim_knowledge(course) where claim_id = c1)
+     is distinct from true then
     raise exception 'the fixture''s proof did not make its claim known';
+  end if;
+  -- A question on a known claim and one not yet known: not every claim known before it.
+  r := pg_temp.answer(q2, '"Prose; restudying"');
+  if (select claims_known_before from public.study_answer_events
+      where client_event_id = (r -> 'results' -> 0 ->> 'clientEventId')::uuid)
+     is distinct from false then
+    raise exception 'an answer was stamped known before with one of its claims unknown';
   end if;
   -- Wrong while known: false mastery. Then right again, which the wrong answer's feedback
   -- made hinted, and which is not known before: the lapse took the knowledge away.
@@ -445,13 +640,31 @@ begin
     raise exception 'study_claim_knowledge and study_claim_known disagree';
   end if;
 
+  -- Stamped only where the measure reads it: not the reader's own version.
+  q1_mine := public.revise_study_item(q1, '{"prompt": "Which won early, in my words?"}');
+  r := pg_temp.answer(q1_mine, '"Restudying"');
+  if (r ->> 'recorded')::int is distinct from 1
+     or (select claims_known_before from public.study_answer_events
+         where client_event_id = (r -> 'results' -> 0 ->> 'clientEventId')::uuid) is not null then
+    raise exception 'an answer to the reader''s own version was stamped, or not recorded: %', r;
+  end if;
+
   -- ---------------------------------------------------------------- the learning measures
   -- The first, clean answer moved eight days back: the next deterministic answer is a
   -- seven-day attempt.
+  -- And a hinted answer is no test of what the reader knew: the last answer to q1, hinted by
+  -- the wrong one before it, made wrong and stamped known before, must not count.
   perform pg_temp.as_owner();
   alter table public.study_answer_events disable trigger study_answer_events_are_final;
   update public.study_answer_events set answered_at = now() - interval '8 days'
    where id = first_id;
+  update public.study_answer_events set correct = false, claims_known_before = true
+   where id = (select id from public.study_answer_events where item_id = q1
+               order by answered_at desc, id desc limit 1)
+     and hinted;
+  if not found then
+    raise exception 'the fixture''s last answer to q1 was not hinted';
+  end if;
   alter table public.study_answer_events enable trigger study_answer_events_are_final;
 
   -- The wrong answer came more than seven days after a clean one: a seven-day attempt, not
@@ -462,19 +675,40 @@ begin
                            answers_when_known, wrong_when_known), ',' order by week)
     into rows
   from ops.study_learning_weekly
-  where week >= date_trunc('week', now() - interval '8 days')::date;
+  where week >= date_trunc('week', now() - interval '8 days', 'UTC')::date;
   if (select sum(delayed_attempts) from ops.study_learning_weekly
-      where week >= date_trunc('week', now() - interval '8 days')::date) is distinct from 1::bigint
+      where week >= date_trunc('week', now() - interval '8 days', 'UTC')::date) is distinct from 1::bigint
      or (select sum(delayed_recalled) from ops.study_learning_weekly
-         where week >= date_trunc('week', now() - interval '8 days')::date)
+         where week >= date_trunc('week', now() - interval '8 days', 'UTC')::date)
         is distinct from 0::bigint
      or (select sum(answers_when_known) from ops.study_learning_weekly
-         where week >= date_trunc('week', now() - interval '8 days')::date)
+         where week >= date_trunc('week', now() - interval '8 days', 'UTC')::date)
         is distinct from 1::bigint
      or (select sum(wrong_when_known) from ops.study_learning_weekly
-         where week >= date_trunc('week', now() - interval '8 days')::date)
+         where week >= date_trunc('week', now() - interval '8 days', 'UTC')::date)
         is distinct from 1::bigint then
     raise exception 'the learning view is wrong: % (attempts/recalled/known/wrong by week)', rows;
+  end if;
+  -- The last answer before one is the last in the question's line, however graded: moved to
+  -- four days back, the reader's own version answered between the clean one and the wrong
+  -- one leaves the wrong one no seven-day attempt.
+  perform pg_temp.as_owner();
+  alter table public.study_answer_events disable trigger study_answer_events_are_final;
+  update public.study_answer_events set answered_at = now() - interval '4 days'
+   where item_id = q1_mine;
+  alter table public.study_answer_events enable trigger study_answer_events_are_final;
+  perform pg_temp.become_worker();
+  if (select sum(delayed_attempts) from ops.study_learning_weekly
+      where week >= date_trunc('week', now() - interval '8 days', 'UTC')::date)
+     is distinct from 0::bigint then
+    raise exception 'an answer between two was skipped in finding the one before';
+  end if;
+  -- The mix counts only courses with a current generation.
+  if (select courses from ops.study_beta_mix where dimension = 'goal' and value = 'explain')
+     is distinct from (select count(*)::int from public.study_courses c
+                       where public.study_course_generation(c.id) is not null
+                         and public.study_goal_kind(c.goal) = 'explain') then
+    raise exception 'the mix counted a course with no current generation';
   end if;
 
   -- The mix sees the courses with a current generation, by source kind and goal.
@@ -485,7 +719,10 @@ begin
     raise exception 'the beta mix missed the fixture course: %',
       (select jsonb_agg(m) from ops.study_beta_mix m);
   end if;
-  if public.study_goal_kind('  Prepare for an ASSESSMENT ') is distinct from 'assess'
+  if public.study_goal_kind('Explain the argument') is distinct from 'explain'
+     or public.study_goal_kind('Prepare for a discussion') is distinct from 'discuss'
+     or public.study_goal_kind('Remember the key findings') is distinct from 'remember'
+     or public.study_goal_kind('  Prepare for an ASSESSMENT ') is distinct from 'assess'
      or public.study_goal_kind('Learn it for my job') is distinct from 'own'
      or public.study_format_family('pdf_ocr') is distinct from 'scanned' then
     raise exception 'the goal or format kinds are wrong';
