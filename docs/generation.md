@@ -174,7 +174,38 @@ a price for it here would inflate every hold for a step that spends nothing.
 `embed` — and `generation_budget_state()` reports `spent` at exactly the same point, so
 the screen never offers room the door will refuse. A floor rather than the ceiling for the
 largest source: a door pinned to the book would turn away an essay with 30 cents of the day
-unspent. The hold is taken
+unspent.
+
+The door also counts **what it has already admitted**. A job that is queued and not yet
+started is neither charged nor held, so `spend_today()` cannot see it. A door that asked
+only about spend admitted every reader who asked on an empty day, fifty jobs each, and the
+jobs the day could not fund waited out the 24-hour budget wait below and failed under a
+screen that had said "Started." Since `20260926200000` the door refuses when
+
+```
+spend_today() + generation_waiting_cents() + min_job_cents() > daily_spend_cap_cents()
+```
+
+and `generation_budget_state()` applies the same test. `generation_waiting_cents()` counts
+every job, of every kind and requester, that is queued or running with nothing charged to it
+today (`cost_cents > 0`, because an attempt ledgered at nothing such as a 429 is not a
+start) and nothing held for it today. Each summary counts at `min_job_cents()`. Each study
+course counts at `study_min_job_cents()`, but a reader's waiting courses together count for
+no more than their study share can still fund, so one reader's queue cannot close the door
+for everyone. A job that has started counts at what it holds or has been charged, which
+`spend_today()` already includes. The door is an estimate: a large source reserves more
+than the floor, and a started job's remaining steps are not counted. Two readers at the
+door at the same moment can each miss the other's job, because the count runs under the
+requester's lock and not the budget's. The reservation is what holds the cap exactly.
+
+That includes the catalogue. A seeding run that queues more than a day can fund closes the
+Studio until those jobs have started or failed, because the day really is committed. On a
+database replayed from zero, `20260907011000` has just queued the whole manifest and nothing
+locally dispatches it, so the local Studio reads `spent` until that backlog drains or is
+cancelled (`update generation_jobs set status = 'cancelled', finished_at = now() where
+requester_id is null and status = 'queued'`, as the owner).
+
+The hold is taken
 **after** the source claim — a job that is only ever going to wait on a source another job
 is synthesising should not take a hold it will not use — and **immediately before** the
 provider, because a reservation taken afterwards is a receipt rather than a cap.
