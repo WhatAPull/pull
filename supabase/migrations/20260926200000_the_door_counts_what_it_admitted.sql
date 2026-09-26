@@ -19,9 +19,14 @@
 -- still apply one test. 20260914170000 exists to keep them in agreement, and changing the
 -- door alone would bring back the live submit button over a refused day that it removed.
 --
--- What counts as waiting is set by three rules. Each one prevents a way of getting the count
+-- What counts as waiting is set by four rules. Each one prevents a way of getting the count
 -- wrong:
 --
+--   * Only jobs a READER asked for count. The catalogue's own jobs, which have no requester,
+--     do not. The door answers a reader's request, and the catalogue is scheduled by the
+--     operator. Counted, one seeding run closed the Studio to every reader until its backlog
+--     drained, and a database replayed from zero, where 20260907011000 queues the whole
+--     manifest and nothing locally runs it, showed the day as spent from the start.
 --   * A job is WAITING while it is queued or running and today's spend does not include it:
 --     nothing it cost has been charged today and nothing is held for it today. "Cost" means
 --     `cost_cents > 0`. An attempt ledgered at nothing, such as a provider's 429 or a refused
@@ -42,13 +47,12 @@
 /*
  * What jobs the day has admitted and not started will reserve, at the least.
  *
- * Every kind and every requester is counted, including the catalogue's requester-less jobs,
- * because the door's promise is about the day's money, and whoever queued a job, it takes
- * that money when it runs. So a catalogue seeding run that queues more than a day can fund
- * closes the door until those jobs have started or failed. The door is only reporting a day
- * that is already fully committed. On a database replayed from zero, 20260907011000 has just
- * queued the whole manifest and nothing locally dispatches it, so the local Studio shows the
- * day as spent until the backlog is cancelled. See docs/generation.md.
+ * Readers' jobs only: `requester_id is not null`. A catalogue job, which has no requester,
+ * spends the same cap once it runs, but it does not close the door. A seeding backlog waits
+ * behind readers instead of shutting them out. The operator decides when the catalogue runs
+ * and how much of it, and `reserve_budget` still bounds the day whoever holds the money. So
+ * a day with a large catalogue backlog can admit a reader whose job then waits for the
+ * catalogue's holds. That is the operator's schedule showing, and the cap still holds.
  *
  * `security definer` like `spend_today()`, and granted like it: `service_role` only. A
  * reader gets `generation_budget_state()`'s `open | low | spent` and never a figure.
@@ -71,7 +75,8 @@ as $$
   from (
     select j.requester_id, (j.kind = 'study_course') as study, count(*) as jobs
     from public.generation_jobs j
-    where j.status in ('queued', 'running')
+    where j.requester_id is not null
+      and j.status in ('queued', 'running')
       and not exists (
         select 1 from public.cost_ledger cl
         where cl.job_id = j.id
@@ -88,8 +93,9 @@ as $$
 $$;
 
 comment on function public.generation_waiting_cents() is
-  'What the jobs the day has admitted and not started will reserve, at the least: every '
-  'queued or running job with nothing charged (cost_cents > 0) and nothing held today, at '
+  'What the jobs readers asked for, admitted and not started, will reserve at the least: '
+  'every queued or running job with a requester, nothing charged (cost_cents > 0) and '
+  'nothing held today, at '
   'min_job_cents(), or at study_min_job_cents() capped by what its reader''s study share '
   'can still fund. The door in enqueue_generation_job and generation_budget_state() add it '
   'to spend_today(). See 20260926200000.';
@@ -390,8 +396,8 @@ begin
    * throwing away a sixth of every day and parking the rare largest job, the job waits.
    *
    * AND WHAT IT HAS ALREADY ADMITTED (20260926200000). The day's spend does not include
-   * a job that is queued and not yet started, so a test on spend alone admitted every
-   * reader who asked on an empty day. The ones the day could not fund then waited out the
+   * a job a reader asked for that is queued and not yet started, so a test on spend alone
+   * admitted every reader who asked on an empty day. The ones the day could not fund then waited out the
    * worker's day of budget waits and failed. `generation_waiting_cents()` counts each of
    * those jobs at the least it will reserve, and the rules for what counts are stated
    * there.

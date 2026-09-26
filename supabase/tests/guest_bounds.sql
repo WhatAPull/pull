@@ -177,13 +177,6 @@ begin
       'testing anything. The seed lives in the migrations -- replay them first.';
   end if;
 
-  -- The catalogue that 20260907011000 queues on a database replayed from zero, cancelled
-  -- and rolled back with the rest. Nothing locally dispatches it, and the door counts
-  -- every job admitted and not yet started (20260926200000), so a reader asking below
-  -- would be refused because of the catalogue's backlog, not the bounds this file is about.
-  update public.generation_jobs set status = 'cancelled', finished_at = now()
-   where status in ('queued', 'running');
-
   -- ------------------------------------------------------------ 1. as a guest
   perform set_config('role', 'authenticated', true);
   perform set_config('request.jwt.claims',

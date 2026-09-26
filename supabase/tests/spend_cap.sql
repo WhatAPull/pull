@@ -22,9 +22,10 @@
 --   * `enqueue_generation_job` refuses at the door when the day is spent, validates the
 --     job kind and the payload bounds, and keeps `work_id` only where the caller
 --     authored a summary on that work
---   * and it counts what it has already admitted: a job queued and not yet started is
---     neither charged nor held, so the door adds it at the least it will reserve, and
---     the screen reports `spent` at the same point
+--   * and it counts what it has already admitted: a job a reader asked for, queued and
+--     not yet started, is neither charged nor held, so the door adds it at the least it
+--     will reserve (the catalogue's own jobs are not counted), and the screen reports
+--     `spent` at the same point
 --   * the API roles cannot insert a `generation_jobs` row of their own
 --
 -- Run as the owner where the subject is the arithmetic, and as `authenticated` where
@@ -78,14 +79,6 @@ begin
   if some_work is null or some_work = other_work then
     raise exception 'the corpus has fewer than two works; this fixture needs two';
   end if;
-
-  -- Nothing waiting either. On a database replayed from zero, 20260907011000 has just
-  -- queued the whole catalogue and nothing locally dispatches it. Since 20260926200000
-  -- the door counts every job admitted and not yet started, so without this the sections
-  -- below, which enqueue through the door, would be refused because of the catalogue's
-  -- backlog and would test nothing. Cancelled here and rolled back with the rest.
-  update public.generation_jobs set status = 'cancelled', finished_at = now()
-   where status in ('queued', 'running');
 
   insert into public.generation_jobs (requester_id, target, status)
   values (reader, '{"text":"x"}'::jsonb, 'running') returning id into job_a;
@@ -553,12 +546,12 @@ begin
   select u.id into reader from auth.users u
    where u.email like 'spend-cap%' order by u.email limit 1;
 
-  -- The jobs the sections above left queued or running are finished first. The door
-  -- counts each of them at the least a job reserves (20260926200000), and this section
-  -- queues seven of its own. It is about the replay, not about where the day runs out;
-  -- 7c tests that, on a day it sets up for itself.
+  -- The reader's jobs that the sections above left queued or running are finished first.
+  -- The door counts each of them at the least a job reserves (20260926200000), and this
+  -- section queues seven of its own. It is about the replay, not about where the day runs
+  -- out; 7c tests that, on a day it sets up for itself.
   update public.generation_jobs set status = 'succeeded', finished_at = now()
-   where status in ('queued', 'running');
+   where status in ('queued', 'running') and requester_id is not null;
 
   perform set_config('role', 'authenticated', true);
   perform set_config('request.jwt.claims',
@@ -662,15 +655,18 @@ end $$;
 -- only `spend_today()` cannot see it. On an empty day it admitted every reader who asked,
 -- and the jobs the day could not fund waited out the worker's day of budget waits and
 -- failed under a screen that had said "Started." (20260926200000.) The door now refuses
--- at `spend + (waiting + 1) x min > cap`, and every figure below is derived from the
--- functions that state it, not written in here.
+-- at `spend + (waiting + 1) x min > cap`, where waiting counts only jobs readers asked
+-- for, and every figure below is derived from the functions that state it, not written
+-- in here. The catalogue's queued backlog is left in place throughout.
 --
 -- Each case is a probe: it sets up a day of its own, asserts, and raises 'probe done' so
 -- that everything it did is rolled back before the next one.
 
 /*
- * A day with exactly `p_charged` cents charged, nothing held and nothing waiting, set up
- * as the owner. The charge is on a finished job, so it is spend and not a job waiting.
+ * A day with exactly `p_charged` cents charged, nothing held and no reader's job waiting,
+ * set up as the owner. The charge is on a finished job, so it is spend and not a job
+ * waiting. The catalogue's queued backlog (20260907011000) is left where it is: it is not
+ * a reader's, so the door must not count it, and every case below runs beside it.
  */
 create or replace function pg_temp.door_day(p_charged numeric) returns void
 language plpgsql as $fn$
@@ -679,7 +675,7 @@ declare
 begin
   perform set_config('role', 'postgres', true);
   update public.generation_jobs set status = 'cancelled', finished_at = now()
-   where status in ('queued', 'running');
+   where status in ('queued', 'running') and requester_id is not null;
   delete from public.budget_reservations;
   delete from public.cost_ledger;
   insert into public.generation_jobs (target, status, finished_at)
@@ -932,7 +928,24 @@ begin
     end;
   end loop;
 
-  -- 6. A replay is still a replay on a full day. It is answered before the day is asked,
+  -- 6. The catalogue's jobs are not a reader's, and do not close the door to one. More
+  --    of them queued than the whole day could fund, plus one that has attempted and been
+  --    ledgered at nothing, leave a day with room for two admitting exactly two. The
+  --    reservation, not the door, is what stops them and the readers together passing the
+  --    cap.
+  begin
+    perform pg_temp.door_day(cap - 2 * least_);
+    for i in 1..(floor(cap / least_)::int + 1) loop
+      perform pg_temp.door_stage(null, 'canonical_summary', 'queued');
+    end loop;
+    perform pg_temp.door_stage(null, 'canonical_summary', 'running', 'a zero-cost attempt');
+    perform pg_temp.door_admits_exactly(reader, 2, 'beside a day''s worth of catalogue');
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+
+  -- 7. A replay is still a replay on a full day. It is answered before the day is asked,
   --    because it spends nothing: it returns the job that was already admitted.
   begin
     perform pg_temp.door_day(cap - least_);
@@ -967,8 +980,8 @@ begin
     if sqlerrm is distinct from 'probe done' then raise; end if;
   end;
 
-  raise notice 'spend_cap.sql: the door counts what it has admitted and not started, once, '
-    'at the least it reserves, and the screen agrees';
+  raise notice 'spend_cap.sql: the door counts what readers asked for and it has not '
+    'started, once, at the least it reserves, and the screen agrees';
 end $$;
 
 -- ------------------------------------------- 8. a spent day refuses at the door

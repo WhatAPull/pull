@@ -186,9 +186,10 @@ screen that had said "Started." Since `20260926200000` the door refuses when
 spend_today() + generation_waiting_cents() + min_job_cents() > daily_spend_cap_cents()
 ```
 
-and `generation_budget_state()` applies the same test. `generation_waiting_cents()` counts
-every job, of every kind and requester, that is queued or running with nothing charged to it
-today (`cost_cents > 0`, because an attempt ledgered at nothing such as a 429 is not a
+and `generation_budget_state()` applies the same test. **Readers' admitted, unstarted jobs
+are counted; the catalogue's are not.** `generation_waiting_cents()` counts every job a
+reader asked for (`requester_id is not null`) that is queued or running with nothing charged
+to it today (`cost_cents > 0`, because an attempt ledgered at nothing such as a 429 is not a
 start) and nothing held for it today. Each summary counts at `min_job_cents()`. Each study
 course counts at `study_min_job_cents()`, but a reader's waiting courses together count for
 no more than their study share can still fund, so one reader's queue cannot close the door
@@ -198,12 +199,12 @@ than the floor, and a started job's remaining steps are not counted. Two readers
 door at the same moment can each miss the other's job, because the count runs under the
 requester's lock and not the budget's. The reservation is what holds the cap exactly.
 
-That includes the catalogue. A seeding run that queues more than a day can fund closes the
-Studio until those jobs have started or failed, because the day really is committed. On a
-database replayed from zero, `20260907011000` has just queued the whole manifest and nothing
-locally dispatches it, so the local Studio reads `spent` until that backlog drains or is
-cancelled (`update generation_jobs set status = 'cancelled', finished_at = now() where
-requester_id is null and status = 'queued'`, as the owner).
+The catalogue's own jobs, which have no requester, are left out on purpose. The door
+answers a reader's request, and the catalogue is the operator's scheduling. A seeding
+backlog waits behind readers instead of closing the Studio to them, and the reservation
+still bounds the day whoever holds the money. It also keeps `pnpm dev` usable after a fresh
+`db reset`, where `20260907011000` has just queued the whole manifest and nothing locally
+runs it.
 
 The hold is taken
 **after** the source claim — a job that is only ever going to wait on a source another job
