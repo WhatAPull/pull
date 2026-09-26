@@ -35,16 +35,17 @@ everything through one generic book-summary shape:
 
 ## Navigation
 
-| Area         | Purpose                                                         |
-| ------------ | --------------------------------------------------------------- |
-| **For You**  | Personalised stream, with Cold Open and interleaved questions   |
-| **Explore**  | Topics, media, creators, collections                            |
-| **Search**   | Keyword + semantic                                              |
-| **Review**   | The deliberate recall destination (the feed is the ambient one) |
-| **Library**  | Saved Pulls, stashes, notes, history                            |
-| **Paths**    | Curated sequences that answer one question and have an end      |
-| **Studio**   | Generate or write _(round 2)_                                   |
-| **My Feeds** | User-defined channels _(round 3)_                               |
+| Area           | Purpose                                                                     |
+| -------------- | --------------------------------------------------------------------------- |
+| **For You**    | Personalised stream, with Cold Open and interleaved questions               |
+| **Explore**    | Topics, media, creators, collections                                        |
+| **Search**     | Keyword + semantic                                                          |
+| **Review**     | The deliberate recall destination (the feed is the ambient one)             |
+| **Library**    | Saved Pulls, stashes, notes, history                                        |
+| **Paths**      | Curated sequences that answer one question and have an end                  |
+| **Studio**     | Generate or write _(round 2)_                                               |
+| **Flashcards** | Your own term/definition sets, studied four ways: free, private and offline |
+| **My Feeds**   | User-defined channels _(round 3)_                                           |
 
 ## The six mechanics
 

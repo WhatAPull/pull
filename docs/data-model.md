@@ -1,6 +1,6 @@
 # Data model
 
-85 tables in `public`, created by the timestamped migrations in `supabase/migrations/`
+87 tables in `public`, created by the timestamped migrations in `supabase/migrations/`
 (`YYYYMMDDHHMMSS_name.sql`, applied in filename order). Every one has RLS enabled with
 at least one policy, every foreign key has a supporting index, and every
 `SECURITY DEFINER` function pins its `search_path`. CI check 4 replays the whole thing
@@ -50,6 +50,8 @@ User
  │                                                   reused across courses; gone with any
  │                                                   version it read
  ├── user_questions                               ← questions you wrote yourself
+ ├── flashcard_sets ─── flashcards                ← a reader's own term/definition sets;
+ │                                                   a card's id survives every edit
  ├── path_progress ─── path_step_done             ← learning path progress & test-outs
  ├── feed_recipes · feed_impressions
  ├── feedback                                     ← what a reader sent us from Settings
@@ -163,6 +165,15 @@ source, or through `delete_study_course`; its sources stay. It shares no key wit
 [`study-courses.md`](./study-courses.md). A course with a `public_course_id` is a reader's
 copy of a public course: its generation has no job, its one source holds the course's
 excerpts, and it is never prepared again. See [`study-public-courses.md`](./study-public-courses.md).
+
+**A flashcard set is written through two functions and nothing else.** `flashcard_sets`
+and `flashcards` carry a read-own policy and no write grant: `save_flashcard_set` upserts a
+set by the client's id and keeps the id of every card it names, and `delete_flashcard_set`
+removes one. Both limits — 500 sets a reader, 2,000 cards a set — are about a reader's whole
+collection, which a row policy cannot see, and a card id is never moved between sets
+because the per-card memory spaced review will key on it would move with it. Cards reference
+their set through `(set_id, owner_id)`, and carry `unique (id, owner_id)` for that memory's
+own composite key. See [`flashcards.md`](./flashcards.md).
 
 **A reader's own question lives in its own table.** `user_questions` rather than a row in
 `quiz_questions`, because the pipeline upserts canonical questions with
