@@ -24,14 +24,21 @@ const LIMITS = new Map<string, number>();
 vi.mock('./supabase.js', () => {
   /** Enough of PostgREST's builder to run the walk: chainable, and awaitable. */
   const builder = (table: string) => {
-    let key = 'id';
-    let after: string | number | null = null;
+    const keys: string[] = [];
+    let after: (string | number)[] | null = null;
     let limit = 100;
     const self = {
       select: () => self,
       eq: () => self,
       order: (column: string) => {
-        key = column;
+        keys.push(column);
+        return self;
+      },
+      // Only the one shape the walk sends for a pair key: `a.gt."x",and(a.eq."x",b.gt."y")`.
+      or: (filter: string) => {
+        const m = /^(\w+)\.gt\."([^"]*)",and\(\1\.eq\."\2",(\w+)\.gt\."([^"]*)"\)$/.exec(filter);
+        if (!m) throw new Error(`the fake cannot read ${filter}`);
+        after = [m[2] as string, m[4] as string];
         return self;
       },
       limit: (n: number) => {
@@ -40,7 +47,7 @@ vi.mock('./supabase.js', () => {
         return self;
       },
       gt: (_column: string, value: string) => {
-        after = value;
+        after = [value];
         return self;
       },
       then: (resolve: (r: { data: unknown[] | null; error: unknown }) => unknown): unknown => {
@@ -68,8 +75,22 @@ vi.mock('./supabase.js', () => {
           }
           return String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0;
         };
-        const sorted = [...all].sort((x, y) => cmp(x[key], y[key]));
-        const rest = after === null ? sorted : sorted.filter((r) => cmp(r[key], after) > 0);
+        const order = keys.length > 0 ? keys : ['id'];
+        const byKeys = (x: Record<string, unknown>, y: unknown[]) => {
+          for (const [i, k] of order.entries()) {
+            const c = cmp(x[k], y[i]);
+            if (c !== 0) return c;
+          }
+          return 0;
+        };
+        const sorted = [...all].sort((x, y) =>
+          byKeys(
+            x,
+            order.map((k) => y[k]),
+          ),
+        );
+        const from = after;
+        const rest = from === null ? sorted : sorted.filter((r) => byKeys(r, from) > 0);
         return resolve({ data: rest.slice(0, limit), error: null });
       },
     };
@@ -78,7 +99,7 @@ vi.mock('./supabase.js', () => {
   return { supabase: { from: (table: string) => builder(table) } };
 });
 
-const { buildAccountExport, isRecentSignInRequired } = await import('./account-api.js');
+const { buildAccountExport, isRecentSignInRequired, pairAfter } = await import('./account-api.js');
 const { rpcError } = await import('./rpc-error.js');
 
 /** `n` rows whose `id` is a JSON number, as PostgREST renders a bigint. */
@@ -224,6 +245,37 @@ describe('buildAccountExport', () => {
     expect(LIMITS.get('study_stage_cache')).toBe(10);
     expect(LIMITS.get('study_claims')).toBe(100);
   });
+  it('takes every step of a long path once, paging by path and step together', async () => {
+    // 150 steps on one path and 30 on another: a cursor on `path_id` alone would stop
+    // after the first page, every later step of that path sorting as "not after it".
+    const steps = [
+      ...Array.from({ length: 150 }, (_, i) => ({ path_id: 'path-a', ordinal: i + 1 })),
+      ...Array.from({ length: 30 }, (_, i) => ({ path_id: 'path-b', ordinal: i + 1 })),
+    ].map((s) => ({ ...s, user_id: 'u1', tested_out: false }));
+    TABLES.set('path_step_done', steps);
+    TABLES.set('path_progress', [
+      { user_id: 'u1', path_id: 'path-a' },
+      { user_id: 'u1', path_id: 'path-b' },
+    ]);
+
+    const out = await buildAccountExport('u1', null);
+
+    const got = out.data['path_step_done'] as { path_id: string; ordinal: number }[];
+    expect(got).toHaveLength(180);
+    expect(new Set(got.map((s) => `${s.path_id}:${s.ordinal}`)).size).toBe(180);
+    expect(out.data['path_progress']).toHaveLength(2);
+    expect(out.incomplete).toEqual([]);
+  });
+
+  it('quotes a pair cursor so its value cannot be read as the filter’s syntax', () => {
+    expect(pairAfter(['path_id', 'ordinal'], ['p', '7'])).toBe(
+      'path_id.gt."p",and(path_id.eq."p",ordinal.gt."7")',
+    );
+    expect(pairAfter(['a', 'b'], ['x,y)"z', '1'])).toBe(
+      'a.gt."x,y)\\"z",and(a.eq."x,y)\\"z",b.gt."1")',
+    );
+  });
+
   it('names every table it walked, so a missing one is visible in the file', async () => {
     const out = await buildAccountExport('u1', null);
     // Empty tables still appear as empty arrays. A table that vanished from `data`
@@ -231,6 +283,9 @@ describe('buildAccountExport', () => {
     expect(Object.keys(out.data)).toContain('history_events');
     expect(Object.keys(out.data)).toContain('feed_impressions');
     expect(Object.keys(out.data)).toContain('recall_events');
+    // The privacy policy lists a reader's path progress among what is stored against them.
+    expect(Object.keys(out.data)).toContain('path_progress');
+    expect(Object.keys(out.data)).toContain('path_step_done');
   });
 });
 

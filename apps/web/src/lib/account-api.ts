@@ -180,9 +180,14 @@ export async function unusedRecoveryCodeCount(): Promise<number> {
  *
  * `key` is therefore a column unique WITHIN one reader's rows, which makes it both a
  * total order and a usable cursor: the primary key where it is a single `id`, and the
- * other half of a composite key where it is not.
+ * other half of a composite key where it is not. Where no one column is unique within a
+ * reader's rows -- `path_step_done` is a step of a path, `(path_id, ordinal)` -- `key` is
+ * the pair, and the cursor is the pair: a single column there would skip every row that
+ * shares the last one's first half at a page's end.
  */
-const EXPORTED: { table: string; column: string; key: string; page?: number }[] = [
+type ExportKey = string | readonly [string, string];
+
+const EXPORTED: { table: string; column: string; key: ExportKey; page?: number }[] = [
   { table: 'profiles', column: 'id', key: 'id' },
   { table: 'preference_profiles', column: 'user_id', key: 'user_id' },
   { table: 'stashes', column: 'user_id', key: 'id' },
@@ -271,7 +276,23 @@ const EXPORTED: { table: string; column: string; key: string; page?: number }[] 
   { table: 'study_courses', column: 'owner_id', key: 'id' },
   { table: 'study_course_sources', column: 'owner_id', key: 'id' },
   { table: 'study_progress_events', column: 'owner_id', key: 'id' },
+  // Where the reader is on the curated learning paths (20260908030000): each path they
+  // started, and each step they finished or tested out of. Listed in the privacy policy
+  // among what is stored against the account, and missing from the file until now.
+  { table: 'path_progress', column: 'user_id', key: 'path_id' },
+  { table: 'path_step_done', column: 'user_id', key: ['path_id', 'ordinal'] },
 ];
+
+/**
+ * A cursor value as PostgREST's `or` filter reads it: double-quoted, so a comma, a dot or
+ * a parenthesis in it is not taken for the filter's own syntax.
+ */
+const quoted = (value: string) => `"${value.replace(/["\\]/g, '\\$&')}"`;
+
+/** What sorts after `after` by a pair key: a later first half, or the same and a later second. */
+export function pairAfter([first, second]: readonly [string, string], after: [string, string]) {
+  return `${first}.gt.${quoted(after[0])},and(${first}.eq.${quoted(after[0])},${second}.gt.${quoted(after[1])})`;
+}
 
 /*
  * WHAT IS DELIBERATELY NOT HERE, so a future reader does not assume an omission.
@@ -311,25 +332,31 @@ export async function buildAccountExport(
     const rows: unknown[] = [];
     try {
       // The cursor: the `key` of the last row taken, or nothing on the first page.
-      let after: string | null = null;
+      let after: string[] | null = null;
+      const keys = typeof key === 'string' ? [key] : [...key];
       for (;;) {
         let query = supabase
           .from(table as never)
           .select('*')
-          .eq(column, userId)
-          // A column unique within this reader's rows, so this is a total order and
-          // every row has a distinct place in it — which is what makes it usable as a
-          // cursor as well as an order.
-          .order(key, { ascending: true })
-          .limit(pageSize);
-        if (after !== null) query = query.gt(key, after);
+          .eq(column, userId);
+        // Unique within this reader's rows, so this is a total order and every row has a
+        // distinct place in it — which is what makes it usable as a cursor as well as an
+        // order.
+        for (const k of keys) query = query.order(k, { ascending: true });
+        query = query.limit(pageSize);
+        if (after !== null) {
+          query =
+            typeof key === 'string'
+              ? query.gt(key, after[0] as string)
+              : query.or(pairAfter(key, after as [string, string]));
+        }
         const { data: page, error } = await query;
         if (error) throw rpcError(error);
         const got = (page ?? []) as unknown[];
         rows.push(...got);
         if (got.length < pageSize) break;
         const last = got[got.length - 1] as Record<string, unknown>;
-        const cursor = last[key];
+        const cursor = keys.map((k) => last[k]);
         /*
          * A NUMBER IS A CURSOR TOO, and requiring a string here lost whole tables.
          *
@@ -348,10 +375,10 @@ export async function buildAccountExport(
          * that is absent or of a type no cursor can be made from — looping on that
          * would repeat one page forever — and it still catches exactly that.
          */
-        if (typeof cursor !== 'string' && typeof cursor !== 'number') {
-          throw new Error(`the ${key} of the last row on a page was not readable`);
+        if (cursor.some((c) => typeof c !== 'string' && typeof c !== 'number')) {
+          throw new Error(`the ${keys.join(', ')} of the last row on a page was not readable`);
         }
-        after = String(cursor);
+        after = cursor.map(String);
       }
       data[table] = rows;
     } catch (e) {
