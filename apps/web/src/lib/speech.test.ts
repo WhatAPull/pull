@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   adjustSpeaking,
   listVoices,
+  localVoiceURI,
   onVoicesChanged,
   pauseSpeaking,
   recognitionSupported,
@@ -392,6 +393,28 @@ describe('speak', () => {
     vi.stubGlobal('navigator', { language: 'en-GB' });
     speak('x');
     expect(spoken[0]!.voice).toBeNull();
+  });
+
+  it('reads a text in its own language with a local voice for it, whatever was chosen', () => {
+    // A flashcard's Spanish side read by the English voice the reader chose for Pulls is
+    // not the word; the set says which language each side is in.
+    const { spoken } = fakeSynthesis([
+      voice({ voiceURI: 'urn:en', lang: 'en-GB' }),
+      voice({ voiceURI: 'urn:es', lang: 'es_ES' }),
+      voice({ voiceURI: 'urn:fi', lang: 'fi-FI' }),
+    ]);
+    vi.stubGlobal('navigator', { language: 'en-GB' });
+    speak('estar', { voiceURI: 'urn:en', lang: 'es', localOnly: true });
+    expect(spoken[0]!.voice?.voiceURI).toBe('urn:es');
+    expect((spoken[0] as FakeUtterance & { lang?: string }).lang).toBe('es');
+    // Filipino is not Finnish because they share two letters.
+    const ended: number[] = [];
+    speak('kumusta', { lang: 'fil', localOnly: true, onEnd: (t) => ended.push(t) });
+    expect(spoken).toHaveLength(1);
+    expect(ended).toHaveLength(1);
+    expect(localVoiceURI('es-MX')).toBe('urn:es');
+    expect(localVoiceURI('fil')).toBeNull();
+    expect(localVoiceURI()).toBe('urn:en');
   });
 
   it('leaves it to the browser when the device has no local voice at all', () => {

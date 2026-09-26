@@ -277,6 +277,10 @@ const EXPORTED: { table: string; column: string; key: string; page?: number }[] 
   // Each public course the reader added, and when (20260925230000): what the limit of twenty a
   // day counts. Their copies are in the study tables above, like any course of theirs.
   { table: 'study_public_enrolments', column: 'owner_id', key: 'id' },
+  // The reader's flashcard sets and their cards (20260926100000): their own text, typed or
+  // imported, and private.
+  { table: 'flashcard_sets', column: 'owner_id', key: 'id' },
+  { table: 'flashcards', column: 'owner_id', key: 'id' },
 ];
 
 /*

@@ -2,7 +2,9 @@ import 'fake-indexeddb/auto';
 import { describe, expect, it, vi } from 'vitest';
 import { openDB } from 'idb';
 import {
+  cacheFlashcardSet,
   cachePulls,
+  clearFlashcardSets,
   clearPending,
   clearReviewPack,
   drainPending,
@@ -13,7 +15,10 @@ import {
   queueIfOffline,
   queueMutation,
   readCachedPulls,
+  readFlashcardSet,
+  readFlashcardSets,
   readReviewPack,
+  removeFlashcardSet,
   removeFromPack,
   storeReviewPack,
   StudyLimitReached,
@@ -23,6 +28,7 @@ import {
 /* The module's own shape, for the re-imported instance the broken-store cases use. */
 import type * as OfflineModule from './offline.js';
 import { TRANSPORT_ERROR } from './rpc-error.js';
+import type { FlashcardSet } from './flashcards.js';
 import type { DueReview, FeedRow } from './types.js';
 
 const USER_A = 'user-a';
@@ -97,6 +103,16 @@ const due = (pullId: string, retrievability = 0.5): DueReview => ({
  * it — without going through the module's memoised handle, which is the thing
  * under test.
  */
+const flashcardSet = (id: string, updatedAt = '2026-09-26T10:00:00Z'): FlashcardSet => ({
+  id,
+  title: `Set ${id}`,
+  description: null,
+  termLang: null,
+  definitionLang: null,
+  updatedAt,
+  cards: [{ id: `${id}-c1`, term: 'ser', definition: 'to be' }],
+});
+
 const rawOpen = (
   version: number,
   onUpgrade?: (db: IDBDatabase) => void,
@@ -183,8 +199,10 @@ describe('schema version 1 → 2', () => {
       ).resolves.toBe(true);
     });
 
-    const v2 = await rawOpen(2);
-    expect(v2.version).toBe(2);
+    // Version 1 goes all the way to the current version in one open.
+    const v2 = await rawOpen(3);
+    expect(v2.version).toBe(3);
+    expect(v2.objectStoreNames.contains('flashcardSets')).toBe(true);
     const tx = v2.transaction(['pulls', 'reviewPack', 'pending'], 'readonly');
     const pulls = tx.objectStore('pulls');
     expect(pulls.keyPath).toBe('key');
@@ -299,6 +317,52 @@ describe('an upgrade that cannot finish', () => {
   });
 });
 
+describe('schema version 2 → 3', () => {
+  it('adds the flashcard store and keeps every store version 2 had, with what was in it', async () => {
+    await rawDelete();
+    // A version 2 database as the previous release leaves it: a cached Pull, a
+    // downloaded card and a queued write, all keyed to a reader.
+    const oldTab = await rawOpen(2, (db) => {
+      db.createObjectStore('pulls', { keyPath: 'key' }).createIndex('by-user', 'userId');
+      db.createObjectStore('reviewPack', { keyPath: 'key' }).createIndex('by-user', 'userId');
+      db.createObjectStore('pending', { keyPath: 'id', autoIncrement: true });
+    });
+    const seed = oldTab.transaction(['pulls', 'reviewPack', 'pending'], 'readwrite');
+    seed
+      .objectStore('pulls')
+      .put({ ...row('kept'), key: `${USER_A}:kept`, userId: USER_A, cachedAt: 1 });
+    seed.objectStore('reviewPack').put({
+      key: `${USER_A}:due`,
+      userId: USER_A,
+      pullId: 'due',
+      item: due('due'),
+      syncedAt: 1,
+    });
+    seed.objectStore('pending').add({ kind: 'save', pullId: 'queued', userId: USER_A, at: 1 });
+    await settled(seed);
+    oldTab.close();
+
+    vi.resetModules();
+    try {
+      const fresh = await import('./offline.js');
+      expect(await fresh.cacheFlashcardSet(USER_A, flashcardSet('s1'))).toBe(true);
+      expect((await fresh.readCachedPulls(USER_A)).map((r) => r.id)).toEqual(['kept']);
+      expect((await fresh.readReviewPack(USER_A))?.items.map((i) => i.pullId)).toEqual(['due']);
+      await expect(fresh.hasPending(USER_A)).resolves.toBe(true);
+      expect((await fresh.readFlashcardSet(USER_A, 's1'))?.title).toBe('Set s1');
+    } finally {
+      vi.resetModules();
+    }
+
+    const v3 = await rawOpen(3);
+    const store = v3.transaction('flashcardSets', 'readonly').objectStore('flashcardSets');
+    expect(store.keyPath).toBe('key');
+    expect(store.indexNames.contains('by-user')).toBe(true);
+    v3.close();
+    await rawDelete();
+  });
+});
+
 describe('offline cache', () => {
   it('round-trips cached pulls so a dropped connection still has something to read', async () => {
     await cachePulls(USER_A, [row('a'), row('b')]);
@@ -354,14 +418,14 @@ describe('an upgrade from another tab', () => {
     // `versionchange` event, means the other tab never even sees `blocked`.
     let blocked = false;
     const newerTab = await rawOpen(
-      3,
+      4,
       () => undefined,
       () => {
         blocked = true;
       },
     );
     expect(blocked).toBe(false);
-    expect(newerTab.version).toBe(3);
+    expect(newerTab.version).toBe(4);
     newerTab.close();
 
     // Put the store back for the rest of the file: this code cannot open a
@@ -389,7 +453,7 @@ describe('review pack', () => {
     const user = 'pack-drift';
     await storeReviewPack(user, [due('good')], 2_000);
 
-    const raw = await rawOpen(2);
+    const raw = await rawOpen(3);
     const tx = raw.transaction('reviewPack', 'readwrite');
     tx.objectStore('reviewPack').put({
       key: `${user}:drifted`,
@@ -475,6 +539,85 @@ describe('review pack', () => {
     await clearReviewPack('pack-clear-a');
     expect(await readReviewPack('pack-clear-a')).toBeNull();
     expect((await readReviewPack('pack-clear-b'))?.items.map((i) => i.pullId)).toEqual(['b1']);
+  });
+});
+
+describe('flashcard sets on the device', () => {
+  it('keeps a set whole, per reader, and reads it back only for that reader', async () => {
+    const set = flashcardSet('fc-1');
+    expect(await cacheFlashcardSet('fc-reader', set)).toBe(true);
+    expect(await readFlashcardSet('fc-reader', 'fc-1')).toEqual(set);
+    expect(await readFlashcardSet('fc-other', 'fc-1')).toBeNull();
+    expect(await readFlashcardSets('fc-other')).toEqual([]);
+  });
+
+  it('keeps one copy a set, the last one opened', async () => {
+    await cacheFlashcardSet('fc-latest', flashcardSet('a'));
+    await cacheFlashcardSet('fc-latest', { ...flashcardSet('a'), title: 'Renamed' });
+    expect((await readFlashcardSets('fc-latest')).map((s) => s.title)).toEqual(['Renamed']);
+  });
+
+  it('lists what is on the device most recently changed first, with each count', async () => {
+    const user = 'fc-list';
+    await cacheFlashcardSet(user, flashcardSet('old', '2026-09-01T00:00:00Z'));
+    await cacheFlashcardSet(user, {
+      ...flashcardSet('new', '2026-09-20T00:00:00Z'),
+      cards: [
+        { id: 'x', term: 'a', definition: 'b' },
+        { id: 'y', term: 'c', definition: 'd' },
+      ],
+    });
+    expect(await readFlashcardSets(user)).toEqual([
+      {
+        id: 'new',
+        title: 'Set new',
+        description: null,
+        updatedAt: '2026-09-20T00:00:00Z',
+        cardCount: 2,
+      },
+      {
+        id: 'old',
+        title: 'Set old',
+        description: null,
+        updatedAt: '2026-09-01T00:00:00Z',
+        cardCount: 1,
+      },
+    ]);
+  });
+
+  it('drops a deleted set, and only that one', async () => {
+    const user = 'fc-delete';
+    await cacheFlashcardSet(user, flashcardSet('gone'));
+    await cacheFlashcardSet(user, flashcardSet('stays'));
+    await removeFlashcardSet(user, 'gone');
+    expect((await readFlashcardSets(user)).map((s) => s.id)).toEqual(['stays']);
+    expect(await readFlashcardSet(user, 'gone')).toBeNull();
+  });
+
+  it('clears one reader’s sets and none of another’s', async () => {
+    await cacheFlashcardSet('fc-leaving', flashcardSet('mine'));
+    await cacheFlashcardSet('fc-staying', flashcardSet('theirs'));
+    await clearFlashcardSets('fc-leaving');
+    expect(await readFlashcardSets('fc-leaving')).toEqual([]);
+    expect((await readFlashcardSets('fc-staying')).map((s) => s.id)).toEqual(['theirs']);
+  });
+
+  it('does not show a copy an older build wrote in another shape', async () => {
+    const user = 'fc-drift';
+    await cacheFlashcardSet(user, flashcardSet('fine'));
+    const raw = await rawOpen(3);
+    const tx = raw.transaction('flashcardSets', 'readwrite');
+    tx.objectStore('flashcardSets').put({
+      key: `${user}:drifted`,
+      userId: user,
+      setId: 'drifted',
+      set: { id: 'drifted', title: 'Old', cards: [{ id: 'c', front: 'a', back: 'b' }] },
+      cachedAt: 1,
+    });
+    await settled(tx);
+    raw.close();
+    expect((await readFlashcardSets(user)).map((s) => s.id)).toEqual(['fine']);
+    expect(await readFlashcardSet(user, 'drifted')).toBeNull();
   });
 });
 
@@ -1335,7 +1478,7 @@ describe('a connection that yields mid-drain', () => {
     await drainPending(user, async (m) => {
       applied.push(`${m.kind}:${'pullId' in m ? m.pullId : ''}`);
       if (applied.length === 1) {
-        bumps.push(openDB('what-a-pull', 3, { upgrade() {} }));
+        bumps.push(openDB('what-a-pull', 4, { upgrade() {} }));
         await new Promise((r) => setTimeout(r, 0));
       }
     });
@@ -1385,7 +1528,7 @@ describe('a version change from another tab', () => {
     await queueMutation(user, { kind: 'save', pullId: 'p1' });
     await queueMutation(user, { kind: 'save', pullId: 'p2' });
 
-    const bump = openDB('what-a-pull', 4, { upgrade() {} });
+    const bump = openDB('what-a-pull', 5, { upgrade() {} });
 
     const drained = await Promise.race([
       drainPending(user, async (m) => {

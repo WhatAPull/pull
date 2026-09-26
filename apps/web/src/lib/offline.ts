@@ -11,6 +11,12 @@ import { isPermanentFailure, sqlState, TRANSPORT_ERROR } from './rpc-error.js';
 import { mutationId as newMutationId } from './submission.js';
 import type { SavePatch } from './stash-api.js';
 import type { DueReview, FeedRow } from './types.js';
+import {
+  isFlashcardSet,
+  summaryOf,
+  type FlashcardSet,
+  type FlashcardSetSummary,
+} from './flashcards.js';
 import type { ProgressEvent as StudyProgressEvent } from './study-course.js';
 import type { AnswerEvent as StudyAnswerEvent } from './study-practice.js';
 
@@ -298,9 +304,23 @@ interface PackEntry {
   syncedAt: number;
 }
 
+/**
+ * A flashcard set the reader opened, kept whole so it can be studied without a connection.
+ * `set` is stored as the screen had it, and read back through `isFlashcardSet`, since a
+ * copy written by an older build is the expected case rather than a corruption.
+ */
+interface CachedFlashcardSet {
+  key: string;
+  userId: string;
+  setId: string;
+  set: FlashcardSet;
+  cachedAt: number;
+}
+
 interface WapDB extends DBSchema {
   pulls: { key: string; value: CachedPull; indexes: { 'by-user': string } };
   reviewPack: { key: string; value: PackEntry; indexes: { 'by-user': string } };
+  flashcardSets: { key: string; value: CachedFlashcardSet; indexes: { 'by-user': string } };
   /**
    * Writes made offline, drained in order once the connection returns.
    *
@@ -326,6 +346,8 @@ interface WapDB extends DBSchema {
  *   2  `pulls` keyed `userId:pullId` with a `by-user` index; `reviewPack`, keyed
  *      the same way; every `recall` queued BEFORE the upgrade is given a mutation
  *      id it was queued without.
+ *   3  `flashcardSets`, keyed `userId:setId` with a `by-user` index, and nothing else:
+ *      the stores version 2 made are left exactly as they are.
  *
  * The narrower wording is the true one. Version 2 backfills the entries already
  * on disk; it does not make the field an invariant of the store, because the two
@@ -338,7 +360,7 @@ interface WapDB extends DBSchema {
  * queued are ready for that, rather than being the one class of write that can
  * never be recognised.
  */
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 /**
  * The connection, or `null` for "there is no store right now".
@@ -433,6 +455,20 @@ function open(): Promise<Handle> {
           database
             .createObjectStore('reviewPack', { keyPath: 'key' })
             .createIndex('by-user', 'userId');
+        }
+        if (oldVersion < 3) {
+          /*
+           * Created, and nothing else touched: a version 2 database arrives with its
+           * queue, its cache and its pack, and leaves with them. Before the stamping
+           * below rather than after it, because that awaits and `idb` does not await
+           * this callback (see the abort handling there) -- only what runs before the
+           * first await is sure to run inside the upgrade's transaction.
+           */
+          if (!database.objectStoreNames.contains('flashcardSets')) {
+            database
+              .createObjectStore('flashcardSets', { keyPath: 'key' })
+              .createIndex('by-user', 'userId');
+          }
         }
         if (!database.objectStoreNames.contains('pending')) {
           database.createObjectStore('pending', { keyPath: 'id', autoIncrement: true });
@@ -806,6 +842,93 @@ export async function clearPending(userId: string): Promise<void> {
         item.userId === userId && item.id !== undefined ? [tx.store.delete(item.id)] : [],
       ),
     );
+    await tx.done;
+  } catch {
+    /* best effort, as above */
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * Flashcard sets
+ * -------------------------------------------------------------------------- */
+
+/**
+ * Keep a copy of a set the reader opened, for studying it without a connection. Every open
+ * replaces the copy, so it is the set as last seen. Answers whether it is on disk, for a
+ * screen that says so.
+ */
+export async function cacheFlashcardSet(userId: string, set: FlashcardSet): Promise<boolean> {
+  try {
+    const database = await db();
+    if (!database) return false;
+    await database.put('flashcardSets', {
+      key: scopedKey(userId, set.id),
+      userId,
+      setId: set.id,
+      set,
+      cachedAt: Date.now(),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** This account's copy of one set, or null when this device has none. */
+export async function readFlashcardSet(
+  userId: string,
+  setId: string,
+): Promise<FlashcardSet | null> {
+  try {
+    const database = await db();
+    if (!database) return null;
+    const entry = await database.get('flashcardSets', scopedKey(userId, setId));
+    return entry && entry.userId === userId && isFlashcardSet(entry.set) ? entry.set : null;
+  } catch {
+    return null;
+  }
+}
+
+/** What this account has on this device, as the list shows it, most recently changed first. */
+export async function readFlashcardSets(userId: string): Promise<FlashcardSetSummary[]> {
+  try {
+    const database = await db();
+    if (!database) return [];
+    const mine = await database.getAllFromIndex('flashcardSets', 'by-user', userId);
+    return mine
+      .map((e) => e.set)
+      .filter(isFlashcardSet)
+      .map(summaryOf)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
+  } catch {
+    return [];
+  }
+}
+
+/** A deleted set leaves this device too. */
+export async function removeFlashcardSet(userId: string, setId: string): Promise<void> {
+  try {
+    const database = await db();
+    if (!database) return;
+    await database.delete('flashcardSets', scopedKey(userId, setId));
+  } catch {
+    /* best effort, as above */
+  }
+}
+
+/**
+ * Every set this account left on the device, for a sign-out and for an account deleted: a
+ * set is the reader's own text, and scoping it by user keeps it from the next reader's
+ * screen without taking it off the machine. The cached feed is cleared on sign-out for the
+ * same reason (`App.tsx`), and this is cleared beside it.
+ */
+export async function clearFlashcardSets(userId: string): Promise<void> {
+  try {
+    const database = await db();
+    if (!database) return;
+    const tx = database.transaction('flashcardSets', 'readwrite');
+    const keys = await tx.store.index('by-user').getAllKeys(userId);
+    await Promise.all(keys.map((key) => tx.store.delete(key)));
     await tx.done;
   } catch {
     /* best effort, as above */
