@@ -766,6 +766,17 @@ begin
     raise exception 'study generation needs an account, not a guest session'
       using errcode = '28000';
   end if;
+  -- A public course's copy is the project's course, not the reader's material, and the
+  -- excerpts it carries are not a source to prepare anything from. Said before anything else
+  -- about the reader, which would suggest something they could change: a copy is never
+  -- prepared again, in the beta or out of it. Read without a lock, as it never changes.
+  if p_course_id is not null
+     and exists (select 1 from public.study_courses c
+                 where c.id = p_course_id and c.owner_id = uid
+                   and c.public_course_id is not null) then
+    raise exception 'a public course is not prepared again'
+      using errcode = '55000', detail = 'public';
+  end if;
   if not public.study_generation_admitted(uid) then
     raise exception 'study generation is in a limited beta and is not open to this account yet'
       using errcode = '42501', detail = 'beta';
@@ -859,13 +870,6 @@ begin
   end if;
 
   if v_course is not null then
-    -- A public course's copy is the project's course, not the reader's material, and the
-    -- excerpts it carries are not a source to prepare anything from.
-    if exists (select 1 from public.study_courses c
-               where c.id = v_course and c.public_course_id is not null) then
-      raise exception 'a public course is not prepared again'
-        using errcode = '55000', detail = 'public';
-    end if;
     -- On its way is a job queued or running, or a course saved and awaiting its validation:
     -- preparing again then would buy a duplicate of what the sweep is about to finish.
     if exists (select 1 from public.study_generations g

@@ -1662,6 +1662,83 @@ export type Database = {
           },
         ]
       }
+      public_study_courses: {
+        Row: {
+          excerpt_title: string
+          excerpts: string
+          from_generation: string | null
+          goal: string
+          id: string
+          lesson_count: number
+          objectives: string[]
+          outline: Json
+          overview: string | null
+          published_at: string
+          question_count: number
+          recap: string | null
+          review_note: string | null
+          reviewed_by: string
+          slug: string
+          snapshot: Json
+          title: string
+          withdrawn_at: string | null
+          withdrawn_reason: string | null
+          work_id: string
+        }
+        Insert: {
+          excerpt_title: string
+          excerpts: string
+          from_generation?: string | null
+          goal: string
+          id?: string
+          lesson_count: number
+          objectives?: string[]
+          outline: Json
+          overview?: string | null
+          published_at?: string
+          question_count: number
+          recap?: string | null
+          review_note?: string | null
+          reviewed_by: string
+          slug: string
+          snapshot: Json
+          title: string
+          withdrawn_at?: string | null
+          withdrawn_reason?: string | null
+          work_id: string
+        }
+        Update: {
+          excerpt_title?: string
+          excerpts?: string
+          from_generation?: string | null
+          goal?: string
+          id?: string
+          lesson_count?: number
+          objectives?: string[]
+          outline?: Json
+          overview?: string | null
+          published_at?: string
+          question_count?: number
+          recap?: string | null
+          review_note?: string | null
+          reviewed_by?: string
+          slug?: string
+          snapshot?: Json
+          title?: string
+          withdrawn_at?: string | null
+          withdrawn_reason?: string | null
+          work_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "public_study_courses_work_id_fkey"
+            columns: ["work_id"]
+            isOneToOne: false
+            referencedRelation: "works"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       pull_relations: {
         Row: {
           created_at: string
@@ -2527,20 +2604,31 @@ export type Database = {
           goal: string
           id: string
           owner_id: string
+          public_course_id: string | null
         }
         Insert: {
           created_at?: string
           goal: string
           id?: string
           owner_id: string
+          public_course_id?: string | null
         }
         Update: {
           created_at?: string
           goal?: string
           id?: string
           owner_id?: string
+          public_course_id?: string | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "study_courses_public_course_id_fkey"
+            columns: ["public_course_id"]
+            isOneToOne: false
+            referencedRelation: "public_study_courses"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       study_generation_access: {
         Row: {
@@ -2615,11 +2703,12 @@ export type Database = {
           disagreements: Json
           goal: string
           id: string
-          job_id: string
+          job_id: string | null
           objectives: string[]
           overview: string | null
           owner_id: string
-          processing_consent_at: string
+          processing_consent_at: string | null
+          public_course_id: string | null
           recap: string | null
           text_failures: string[]
           text_status: string
@@ -2635,11 +2724,12 @@ export type Database = {
           disagreements?: Json
           goal: string
           id?: string
-          job_id: string
+          job_id?: string | null
           objectives?: string[]
           overview?: string | null
           owner_id: string
-          processing_consent_at: string
+          processing_consent_at?: string | null
+          public_course_id?: string | null
           recap?: string | null
           text_failures?: string[]
           text_status?: string
@@ -2655,11 +2745,12 @@ export type Database = {
           disagreements?: Json
           goal?: string
           id?: string
-          job_id?: string
+          job_id?: string | null
           objectives?: string[]
           overview?: string | null
           owner_id?: string
-          processing_consent_at?: string
+          processing_consent_at?: string | null
+          public_course_id?: string | null
           recap?: string | null
           text_failures?: string[]
           text_status?: string
@@ -2680,6 +2771,13 @@ export type Database = {
             columns: ["job_id"]
             isOneToOne: true
             referencedRelation: "generation_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "study_generations_public_course_id_fkey"
+            columns: ["public_course_id"]
+            isOneToOne: false
+            referencedRelation: "public_study_courses"
             referencedColumns: ["id"]
           },
         ]
@@ -3939,6 +4037,8 @@ export type Database = {
           objectives: string[] | null
           overview: string | null
           preparing: boolean | null
+          public_course_id: string | null
+          public_course_label: string | null
           question_count: number | null
           recap: string | null
           source_count: number | null
@@ -3946,7 +4046,15 @@ export type Database = {
           update_available: boolean | null
           withheld: Json | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "study_courses_public_course_id_fkey"
+            columns: ["public_course_id"]
+            isOneToOne: false
+            referencedRelation: "public_study_courses"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       study_visible_claims: {
         Row: {
@@ -4491,6 +4599,10 @@ export type Database = {
         }
         Returns: Json
       }
+      enrol_public_course: {
+        Args: { p_public_course_id: string }
+        Returns: Json
+      }
       generate_mfa_recovery_codes: { Args: never; Returns: string[] }
       generation_budget_state: { Args: never; Returns: string }
       generation_secret: { Args: { p_name: string }; Returns: string }
@@ -4510,6 +4622,25 @@ export type Database = {
       }
       get_path: { Args: { p_slug: string }; Returns: Json }
       get_paths: { Args: never; Returns: Json }
+      get_public_study_course: {
+        Args: { p_slug: string }
+        Returns: {
+          goal: string
+          id: string
+          lesson_count: number
+          objectives: string[]
+          outline: Json
+          overview: string
+          published_at: string
+          question_count: number
+          recap: string
+          rights_status: Database["public"]["Enums"]["rights_status"]
+          slug: string
+          title: string
+          work_kind: Database["public"]["Enums"]["work_kind"]
+          work_title: string
+        }[]
+      }
       get_source_delta: { Args: { p_work_id: string }; Returns: Json }
       get_summary_delta: { Args: { p_summary_id: string }; Returns: Json }
       get_topic: { Args: { p_limit?: number; p_slug: string }; Returns: Json }
@@ -4559,6 +4690,23 @@ export type Database = {
       knowledge_vector_cap: { Args: never; Returns: number }
       known_comparison_cap: { Args: never; Returns: number }
       known_retrievability_floor: { Args: never; Returns: number }
+      list_public_study_courses: {
+        Args: never
+        Returns: {
+          goal: string
+          id: string
+          lesson_count: number
+          objectives: string[]
+          overview: string
+          published_at: string
+          question_count: number
+          rights_status: Database["public"]["Enums"]["rights_status"]
+          slug: string
+          title: string
+          work_kind: Database["public"]["Enums"]["work_kind"]
+          work_title: string
+        }[]
+      }
       min_job_cents: { Args: never; Returns: number }
       my_sessions: {
         Args: never
@@ -4606,6 +4754,18 @@ export type Database = {
           p_cron_days?: number
           p_output_days?: number
           p_response_hours?: number
+        }
+        Returns: Json
+      }
+      public_study_course_label: { Args: { p_id: string }; Returns: string }
+      public_study_course_open: { Args: { p_id: string }; Returns: boolean }
+      publish_study_course: {
+        Args: {
+          p_generation_id: string
+          p_note?: string
+          p_reviewed_by: string
+          p_slug: string
+          p_work_id: string
         }
         Returns: Json
       }
@@ -5114,6 +5274,15 @@ export type Database = {
         Returns: number
       }
       validate_study_course: { Args: { p_job_id: string }; Returns: Json }
+      withdraw_public_study_course: {
+        Args: {
+          p_by: string
+          p_id: string
+          p_reason: string
+          p_remove_copies?: boolean
+        }
+        Returns: Json
+      }
       work_is_authorable: { Args: { p_work_id: string }; Returns: boolean }
     }
     Enums: {
