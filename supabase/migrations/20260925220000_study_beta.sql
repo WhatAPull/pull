@@ -19,9 +19,9 @@
 --    is the operator's word, recorded with their name.
 --
 -- 2. ONE FLAG, WHICH OPENS ONLY ON A GATE. `study_beta_settings` is a single row. It can be
---    set open only with a gate whose run passed in the last thirty days -- checked by a
---    trigger -- and `open_study_beta` also asks that the allowlisted beta so far covered
---    every kind of source and goal, or that the operator says why not. Every change is
+--    set open only with a gate whose run passed in the last thirty days, and only when the
+--    allowlisted beta so far covered every kind of source and goal or the operator says why
+--    not -- both checked by a trigger, however the row is changed. Every change is
 --    logged in `study_beta_log`, which is append-only. Only the database owner writes any
 --    of the three or calls open and close: not the service role, whose key every Edge
 --    Function holds. An open beta admits no one once its gate's run is sixty days old.
@@ -33,7 +33,8 @@
 --    it. What bounds a day, open or not (CLAUDE.md, law 2): consent, size, the global daily
 --    cap, each reader's share of study spend, the per-reader job counts -- and, new here, a
 --    ceiling on study spend for all readers together (`study_daily_cap_cents()`, half the
---    day), so opening the beta cannot leave the catalogue's generation with nothing.
+--    day), so opening the beta cannot leave the catalogue's generation with nothing. Its door
+--    counts the courses already admitted and not yet started, not only what is spent.
 --
 -- 4. INSTRUMENTATION. An answer now records whether the study Delta counted every claim it
 --    tests as known just before it was given (`claims_known_before`), so false mastery --
@@ -231,7 +232,8 @@ create index study_beta_settings_gate_idx on public.study_beta_settings (gate_id
 
 comment on table public.study_beta_settings is
   'The one row saying whether study courses are open to every reader with an account, and '
-  'on which release gate. Opens only on a gate whose run passed in the last thirty days. '
+  'on which release gate. Opens only on a gate whose run passed in the last thirty days, and '
+  'on a mix of courses that covers every kind of source and goal or with a reason why not. '
   'Written by the database owner only; readers learn the answer through '
   'study_generation_available(). See 20260925220000.';
 
@@ -269,18 +271,32 @@ returns trigger
 language plpgsql
 set search_path = ''
 as $fn$
+declare
+  missing text[];
 begin
   if tg_op <> 'UPDATE' then
     raise exception 'study_beta_settings is one row, changed in place' using errcode = '55000';
   end if;
-  -- Opening, or moving an open beta to another gate: the gate must have passed, recently.
+  -- Opening, or moving an open beta to another gate: the gate must have passed, recently, and
+  -- the beta so far must cover every kind of source and goal, or the operator must say why not
+  -- in `study.beta_override`, which open_study_beta sets and the log records. Here and not only
+  -- there: an UPDATE of the row had opened it with every kind uncovered and logged no reason,
+  -- as an opening on a covered mix is logged.
   if new.open_to_all
-     and not (old.open_to_all and new.gate_id is not distinct from old.gate_id)
-     and not exists (select 1 from public.study_release_gates g
-                     where g.id = new.gate_id and g.passed
-                       and g.ran_at > now() - interval '30 days') then
-    raise exception 'the beta opens only on a release gate whose run passed in the last thirty days'
-      using errcode = '55000', detail = 'gate';
+     and not (old.open_to_all and new.gate_id is not distinct from old.gate_id) then
+    if not exists (select 1 from public.study_release_gates g
+                   where g.id = new.gate_id and g.passed
+                     and g.ran_at > now() - interval '30 days') then
+      raise exception 'the beta opens only on a release gate whose run passed in the last thirty days'
+        using errcode = '55000', detail = 'gate';
+    end if;
+    missing := public.study_beta_unrepresented();
+    if cardinality(missing) > 0
+       and char_length(btrim(coalesce(current_setting('study.beta_override', true), ''))) < 20 then
+      raise exception 'the beta so far does not cover: %', array_to_string(missing, ', ')
+        using errcode = '55000', detail = 'unrepresentative',
+              hint = 'Give a reason of at least twenty characters in study.beta_override.';
+    end if;
   end if;
   new.changed_at := now();
   return new;
@@ -456,6 +472,7 @@ declare
   owned      int;
   total      bigint;
   used       int;
+  waiting    bigint;
   over       boolean;
   delay_for  int;
   new_job    uuid;
@@ -597,7 +614,27 @@ begin
     raise exception 'your share of today''s study generation budget is spent. It resets at 00:00 UTC.'
       using errcode = '53400';
   end if;
-  if public.study_spend_today() + public.study_min_job_cents() > public.study_daily_cap_cents() then
+  -- The study ceiling counts, besides what is charged and held, every course already admitted
+  -- that today's study spend does not see yet -- queued or running, with nothing charged to it
+  -- today and nothing held for it -- at the least a course reserves. Counting spend alone, eight
+  -- readers at an empty day were all admitted, and the five it could not fund waited out the
+  -- worker's day of budget waits and then failed. Under the reader's lock, not the budget's:
+  -- two readers at the door at once are each counted without the other, and the reservation,
+  -- under one lock for the whole budget, is what holds the ceiling exactly.
+  select count(*) into waiting
+  from public.generation_jobs j
+  where j.kind = 'study_course' and j.status in ('queued', 'running')
+    and not exists (
+      select 1 from public.cost_ledger cl
+      where cl.job_id = j.id
+        and cl.created_at >= date_trunc('day', (now() at time zone 'utc')) at time zone 'utc')
+    and not exists (
+      select 1 from public.budget_reservations br
+      where br.job_id = j.id and br.settled_at is null
+        and br.created_at >= now() - public.budget_reservation_ttl()
+        and br.created_at >= date_trunc('day', (now() at time zone 'utc')) at time zone 'utc');
+  if public.study_spend_today() + (waiting + 1) * public.study_min_job_cents()
+     > public.study_daily_cap_cents() then
     raise exception 'today''s study generation budget is spent. Study generation resumes at 00:00 UTC.'
       using errcode = '53400';
   end if;
@@ -1037,9 +1074,9 @@ revoke all on function public.close_study_beta(text)
 
 /*
  * The beta's state: open or not, on which gate and how old its run is, whether admission
- * through it has lapsed, preparations since it opened whose pipeline is not the gate's,
- * courses still queued for readers no longer admitted, how many readers are allowlisted,
- * and today's spend -- study and everything else -- against the caps.
+ * through it has lapsed, preparations since it first opened on that gate whose pipeline is
+ * not the gate's, courses still queued for readers no longer admitted, how many readers are
+ * allowlisted, and today's spend -- study and everything else -- against the caps.
  */
 create view ops.study_beta_status as
 select s.open_to_all,
@@ -1053,9 +1090,13 @@ select s.open_to_all,
        s.open_to_all and not coalesce(g.ran_at > now() - interval '60 days', false)
          as admission_lapsed,
        -- Off the gate's pipeline in either stage: assembled with another prompt, schema or
-       -- model, or with a claim extracted with another.
+       -- model, or with a claim extracted with another. Counted from the first opening on the
+       -- gate, in the log, not from the row's last change: opening again on the same gate had
+       -- set the count back to nothing.
        (select count(*) from public.study_generations sg
-        where s.open_to_all and sg.created_at >= s.changed_at
+        where s.open_to_all
+          and sg.created_at >= (select min(l.at) from public.study_beta_log l
+                                where l.gate_id = s.gate_id and l.open_to_all)
           and sg.assembly_provenance is not null
           and ((sg.assembly_provenance ->> 'promptHash', sg.assembly_provenance ->> 'schemaHash',
                 sg.assembly_provenance ->> 'model')
