@@ -441,7 +441,7 @@ begin
   -- One definition of known: the course's knowledge agrees with the per-claim function.
   if exists (select 1 from public.study_claim_knowledge(course) k
              join public.study_claims c on c.id = k.claim_id
-             where k.known is distinct from public.study_claim_known(c.owner_id, c.id, now())) then
+             where k.known is distinct from public.study_claim_known(c.owner_id, c.id)) then
     raise exception 'study_claim_knowledge and study_claim_known disagree';
   end if;
 

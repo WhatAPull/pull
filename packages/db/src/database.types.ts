@@ -4852,7 +4852,7 @@ export type Database = {
         }[]
       }
       study_claim_known: {
-        Args: { p_at: string; p_claim: string; p_owner: string }
+        Args: { p_at?: string; p_claim: string; p_owner: string }
         Returns: boolean
       }
       study_claim_problems: {

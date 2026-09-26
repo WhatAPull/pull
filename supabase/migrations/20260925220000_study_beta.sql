@@ -543,12 +543,17 @@ grant execute on function public.study_goal_kind(text) to service_role;
 -- ------------------------------------------------------------------ 5. instrumentation
 
 /*
- * Whether the study Delta counts a claim as known at a moment: its last deterministic
- * outcome was a success, that success still proves recall, its recall is at least 0.7,
- * and the claim is validated. The one definition; `study_claim_knowledge` and the stamp on
- * each answer both read it.
+ * Whether the study Delta counts a claim as known at a moment -- the rule 20260925210000
+ * wrote into `study_claim_knowledge`, moved here unchanged so the stamp on each answer reads
+ * the same one: the claim is validated, its last deterministic outcome was a success -- by
+ * `p_at`, when given, so a success after the moment asked about does not count -- that
+ * success still proves recall, and its recall then is above `known_retrievability_floor()`.
  */
-create function public.study_claim_known(p_owner uuid, p_claim uuid, p_at timestamptz)
+create function public.study_claim_known(
+  p_owner uuid,
+  p_claim uuid,
+  p_at timestamptz default null
+)
 returns boolean
 language sql
 stable
@@ -556,7 +561,9 @@ set search_path = ''
 as $fn$
   select coalesce((
     select m.last_outcome = 'success'
-           and public.retrievability(m.stability::real, m.last_success_at, p_at) >= 0.7
+           and (p_at is null or m.last_success_at <= p_at)
+           and public.retrievability(m.stability::real, m.last_success_at, coalesce(p_at, now()))
+               > public.known_retrievability_floor()
            and public.study_answer_proves_recall(m.last_success_id)
     from public.study_claim_memory m
     join public.study_claims c on c.id = m.claim_id and c.owner_id = m.owner_id
@@ -571,7 +578,7 @@ grant execute on function public.study_claim_known(uuid, uuid, timestamptz)
 /* As 20260925210000, with `known` read through study_claim_known. */
 create or replace function public.study_claim_knowledge(
   p_course_id uuid,
-  p_at timestamptz default now()
+  p_at timestamptz default null
 )
 returns table (
   claim_id       uuid,
@@ -584,17 +591,22 @@ language sql
 stable
 set search_path = ''
 as $fn$
+  with at as (select coalesce(p_at, now()) as t)
   select c.id,
          public.study_claim_known(c.owner_id, c.id, p_at),
-         case when m.last_success_at is not null
-              then public.retrievability(m.stability::real, m.last_success_at, p_at) end,
+         case when m.last_success_at is not null and (p_at is null or m.last_success_at <= p_at)
+              then public.retrievability(m.stability::real, m.last_success_at, at.t) end,
          case when m.last_outcome = 'lapse' then m.last_answered_at
               when m.last_success_at is not null
               then m.last_success_at + make_interval(secs => m.stability * 86400) end,
          coalesce(m.last_outcome = 'lapse', false)
+           and exists (select 1 from public.study_item_claims ic
+                       join public.study_items i on i.id = ic.item_id
+                       where ic.claim_id = c.id and i.status = 'validated')
   from public.study_claims c
+  cross join at
   left join public.study_claim_memory m on m.claim_id = c.id and m.owner_id = c.owner_id
-  where c.generation_id = public.study_course_generation(p_course_id)
+  where c.generation_id = (select public.study_course_generation(p_course_id))
     and c.status = 'validated'
 $fn$;
 
