@@ -119,7 +119,7 @@ const DESTINATIONS: { path: string; label: string; signedIn?: true }[] = [
   { path: '/paths', label: 'Paths' },
   { path: '/search', label: 'Search' },
   /*
-   * Every destination from here to Settings is `signedIn`, and the flag is load-bearing
+   * Every destination between here and Settings is `signedIn`, and the flag is load-bearing
    * rather than tidy.
    *
    * `publicRoute` below lists what a visitor may actually open, and none of these are in
