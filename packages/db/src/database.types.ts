@@ -657,6 +657,80 @@ export type Database = {
         }
         Relationships: []
       }
+      flashcard_sets: {
+        Row: {
+          created_at: string
+          definition_lang: string | null
+          description: string | null
+          id: string
+          owner_id: string
+          term_lang: string | null
+          title: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          definition_lang?: string | null
+          description?: string | null
+          id?: string
+          owner_id: string
+          term_lang?: string | null
+          title: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          definition_lang?: string | null
+          description?: string | null
+          id?: string
+          owner_id?: string
+          term_lang?: string | null
+          title?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      flashcards: {
+        Row: {
+          created_at: string
+          definition: string
+          id: string
+          owner_id: string
+          position: number
+          set_id: string
+          term: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          definition: string
+          id?: string
+          owner_id: string
+          position: number
+          set_id: string
+          term: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          definition?: string
+          id?: string
+          owner_id?: string
+          position?: number
+          set_id?: string
+          term?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "flashcards_set_id_owner_id_fkey"
+            columns: ["set_id", "owner_id"]
+            isOneToOne: false
+            referencedRelation: "flashcard_sets"
+            referencedColumns: ["id", "owner_id"]
+          },
+        ]
+      }
       follows: {
         Row: {
           created_at: string
@@ -4643,6 +4717,7 @@ export type Database = {
       }
       counterpulls_for_work: { Args: { p_work_id: string }; Returns: Json }
       daily_spend_cap_cents: { Args: never; Returns: number }
+      delete_flashcard_set: { Args: { p_id: string }; Returns: boolean }
       delete_my_account: { Args: never; Returns: undefined }
       delete_study_course: { Args: { p_course_id: string }; Returns: undefined }
       delta_covered_distance: { Args: never; Returns: number }
@@ -5035,6 +5110,7 @@ export type Database = {
       }
       revoke_other_sessions: { Args: never; Returns: number }
       revoke_session: { Args: { p_session_id: string }; Returns: boolean }
+      save_flashcard_set: { Args: { p_set: Json }; Returns: Json }
       save_study_source_version: {
         Args: {
           p_extraction_notes?: string
