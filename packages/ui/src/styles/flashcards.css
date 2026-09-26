@@ -1,0 +1,516 @@
+/*
+ * Flashcards: a reader's own sets, the editor, the import preview, and the four study modes.
+ *
+ * Index rows like Courses; a card reads like a passage, not like a tile on a table. There is
+ * no flip: the answer is revealed in the page's own flow, under a hairline rule, so a long
+ * definition grows the page instead of scrolling inside a box sized by the other side (see
+ * `PullCard.tsx`). Every colour, rule and radius is a token; no gradient, no shadow, and
+ * nothing moves. A state is always said in words beside any colour or outline.
+ */
+
+.flashcards__list,
+.flashcards__modes,
+.flashcards__cards,
+.flashcards__rows,
+.flashcards__options,
+.flashcards__tiles,
+.flashcards__problems {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.flashcards__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.flashcards__count,
+.flashcards__timer,
+.flashcards__status,
+.flashcards__row-number {
+  font-family: var(--font-mono);
+  font-size: var(--step--1);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.flashcards__timer {
+  font-size: var(--step-1);
+  color: var(--text);
+}
+
+.flashcards__heading {
+  font-family: var(--font-display);
+  font-size: var(--step-4);
+  line-height: var(--line-tight);
+  margin: 0;
+}
+
+.flashcards__subheading {
+  font-family: var(--font-display);
+  font-size: var(--step-2);
+  line-height: var(--line-snug);
+  margin: var(--space-5) 0 0;
+}
+
+.flashcards__lede {
+  color: var(--text-soft);
+  line-height: var(--line-normal);
+}
+
+.flashcards__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+/* A set's controls wait while something is on its way or needs a connection, and look it.
+   `aria-disabled` rather than `disabled`, so the control keeps its place in the tab order
+   and can say why; recoloured with tokens that meet the contrast floors, as `.course` does,
+   rather than faded. */
+.flashcards .btn[aria-disabled='true'] {
+  color: var(--text-faint);
+  cursor: not-allowed;
+}
+
+.flashcards .btn--primary[aria-disabled='true'] {
+  background: transparent;
+  color: var(--accent);
+}
+
+/* The two sentences that change what a reader can do on the page: set apart by a rule. */
+.flashcards__offline,
+.flashcards__notice {
+  margin: 0;
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--rule-strong);
+  color: var(--text-soft);
+}
+
+.flashcards__notice {
+  border-left-color: var(--accent);
+}
+
+/* --- The list --------------------------------------------------------------- */
+
+.flashcards__item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-4) 0;
+  border-top: 1px solid var(--rule);
+}
+
+.flashcards__title,
+.flashcards__mode-name {
+  padding-left: 0;
+  padding-right: 0;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: -0.015em;
+  font-family: var(--font-display);
+  font-size: var(--step-2);
+  color: var(--text);
+}
+
+.flashcards__description-line {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.flashcards__empty {
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--rule);
+}
+
+/* --- A set ------------------------------------------------------------------ */
+
+.flashcards__mode {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-4);
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--rule);
+}
+
+.flashcards__mode-name {
+  font-size: var(--step-1);
+  min-width: 8ch;
+}
+
+.flashcards__mode-says {
+  color: var(--text-muted);
+}
+
+.flashcards__pair {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  gap: var(--space-2) var(--space-5);
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--rule);
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}
+
+.flashcards__pair-term {
+  font-weight: 600;
+}
+
+.flashcards__pair-definition {
+  color: var(--text-soft);
+}
+
+/* One column on a phone: the definition under its term rather than squeezed beside it. */
+@media (max-width: 40rem) {
+  .flashcards__pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* --- Studying --------------------------------------------------------------- */
+
+.flashcards__choice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-4);
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.flashcards__choice > legend {
+  width: 100%;
+}
+
+.flashcards__choice--stacked {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.flashcards__radio {
+  line-height: var(--line-snug);
+}
+
+.flashcards__custom {
+  width: 12ch;
+}
+
+.flashcards__number {
+  width: 10ch;
+}
+
+/*
+ * The card itself: hairlines above and below, and the page's own ground between. The
+ * prompt is set in the display face because on this screen it is the whole of the reading.
+ */
+.flashcards__card {
+  padding: var(--space-5) 0;
+  border-top: 1px solid var(--rule-strong);
+  border-bottom: 1px solid var(--rule);
+}
+
+.flashcards__side {
+  margin: 0 0 var(--space-2);
+}
+
+.flashcards__face {
+  font-family: var(--font-display);
+  font-size: var(--step-3);
+  line-height: var(--line-tight);
+  margin: 0 0 var(--space-3);
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}
+
+/* The answer, in flow under a hairline -- never on the back of anything. */
+.flashcards__answer {
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--rule);
+}
+
+.flashcards__end {
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--rule);
+}
+
+.flashcards__score {
+  font-family: var(--font-display);
+  font-size: var(--step-5);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--line-tight);
+  margin: 0;
+}
+
+/* Learn's choices: whole-width buttons in the body face, read rather than operated. */
+.flashcards__options {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+.flashcards__option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font-family: var(--font-body);
+  font-size: var(--step-0);
+  line-height: var(--line-snug);
+  color: var(--text);
+  background: none;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.flashcards__option:hover {
+  border-color: var(--text);
+}
+
+.flashcards__option[aria-disabled='true'] {
+  cursor: default;
+}
+
+/* The answer and the reader's wrong choice are each outlined, and each also says so. */
+.flashcards__option[data-state='right'] {
+  border-color: var(--accent);
+  border-left-width: 3px;
+}
+
+.flashcards__option[data-state='wrong'] {
+  border-style: dashed;
+  border-color: var(--text-muted);
+}
+
+.flashcards__mark {
+  font-family: var(--font-mono);
+  font-size: var(--step--1);
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.flashcards__verdict {
+  margin: 0;
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--accent);
+  font-weight: 600;
+}
+
+.flashcards__verdict--wrong {
+  border-left-style: dashed;
+}
+
+.flashcards__feedback {
+  margin-top: var(--space-4);
+}
+
+/* Test: a page of numbered questions, each with its own fieldset. The number is in the
+   question's legend, where it is read with the question, rather than a list marker that
+   lines up with the first answer instead. */
+.flashcards__questions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.flashcards__qnum {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.flashcards__question {
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--rule);
+}
+
+.flashcards__question > fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.flashcards__prompt {
+  line-height: var(--line-snug);
+  margin-bottom: var(--space-2);
+  overflow-wrap: anywhere;
+}
+
+.flashcards__shown {
+  display: block;
+  margin-top: var(--space-1);
+}
+
+.flashcards__section {
+  margin-top: var(--space-5);
+}
+
+/*
+ * Match: twelve tiles in a grid that fills the column, as many across as fit. A cleared
+ * tile keeps its place empty, so nothing moves under the pointer.
+ */
+.flashcards__tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 11rem), 1fr));
+  gap: var(--space-3);
+}
+
+.flashcards__tile {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 5rem;
+  text-align: left;
+  font-family: var(--font-body);
+  font-size: var(--step-0);
+  line-height: var(--line-snug);
+  color: var(--text);
+  background: var(--surface-raised);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.flashcards__tile:hover {
+  border-color: var(--text);
+}
+
+/* Chosen: the accent, twice as heavy, and "selected" in the tile's own text. */
+.flashcards__tile[aria-pressed='true'] {
+  border-color: var(--accent);
+  outline: 1px solid var(--accent);
+}
+
+/* Not a pair: a dashed accent border -- and the sentence above the grid that says so. A
+   border rather than an outline, because the tile just pressed also carries the focus ring,
+   which is drawn where an outline would be and would hide it. */
+.flashcards__tile[data-missed='true'] {
+  border: 2px dashed var(--accent);
+}
+
+.flashcards__tile-gap {
+  min-height: 5rem;
+  border: 1px dashed var(--rule);
+  border-radius: var(--radius-sm);
+}
+
+/* Two across on a phone, so the twelve fit a screen or so rather than a long column. */
+@media (max-width: 40rem) {
+  .flashcards__tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-2);
+  }
+
+  .flashcards__tile,
+  .flashcards__tile-gap {
+    min-height: 4rem;
+  }
+}
+
+/* --- Making a set ----------------------------------------------------------- */
+
+.flashcards__langs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.flashcards__langs > legend,
+.flashcards__langs > .form-note {
+  flex-basis: 100%;
+}
+
+.flashcards__lang {
+  margin-bottom: 0;
+}
+
+.flashcards__lang .flashcards__custom {
+  margin-top: var(--space-2);
+}
+
+.flashcards__description {
+  min-height: 4rem;
+}
+
+.flashcards__row {
+  padding: var(--space-4) 0;
+  border-top: 1px solid var(--rule);
+}
+
+.flashcards__row-number {
+  margin: 0 0 var(--space-2);
+}
+
+.flashcards__row-sides {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  gap: 0 var(--space-4);
+}
+
+@media (max-width: 40rem) {
+  .flashcards__row-sides {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.flashcards__row-sides .field {
+  margin-bottom: var(--space-2);
+}
+
+.flashcards__side-input {
+  min-height: 3.5rem;
+}
+
+.flashcards__row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* "Add from text" opens under the rows, set in from them by a rule. */
+.flashcards__inset {
+  padding-left: var(--space-4);
+  border-left: 2px solid var(--rule-strong);
+}
+
+.flashcards__preview {
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--rule);
+}
+
+.flashcards__problems {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.flashcards__problems li {
+  overflow-wrap: anywhere;
+}
+
+.flashcards__problem-text {
+  color: var(--text-muted);
+}
+
+/* The browser's own blue is a second accent; a choice made here is marked in the one. */
+.flashcards input[type='radio'],
+.flashcards input[type='checkbox'] {
+  accent-color: var(--accent);
+}

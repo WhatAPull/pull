@@ -81,6 +81,23 @@ describe('titleFor', () => {
     expect(isKnownPath('/course')).toBe(false);
   });
 
+  it('names a flashcard set once loaded, and never by its id', () => {
+    expect(titleFor({ ...base, pathname: '/flashcards' })).toBe('Flashcards · What a Pull');
+    expect(titleFor({ ...base, pathname: '/flashcards/' })).toBe('Flashcards · What a Pull');
+    expect(
+      titleFor({ ...base, pathname: '/flashcards/8f3e', documentTitle: 'Spanish verbs' }),
+    ).toBe('Spanish verbs · What a Pull');
+    expect(titleFor({ ...base, pathname: '/flashcards/8f3e' })).toBe('Flashcard set · What a Pull');
+    expect(isKnownPath('/flashcards')).toBe(true);
+    expect(isKnownPath('/flashcards/8f3e')).toBe(true);
+    expect(isKnownPath('/flashcards/8f3e/learn')).toBe(false);
+    expect(isKnownPath('/flashcard')).toBe(false);
+    expect(isKnownPath('/flashcards-x')).toBe(false);
+    expect(titleFor({ ...base, pathname: '/flashcards/8f3e/learn' })).toBe(
+      'Not found · What a Pull',
+    );
+  });
+
   it('says so when the address matches nothing', () => {
     expect(titleFor({ ...base, pathname: '/nonsense' })).toBe('Not found · What a Pull');
     expect(titleFor({ ...base, pathname: '/source' })).toBe('Not found · What a Pull');

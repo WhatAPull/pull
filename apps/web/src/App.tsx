@@ -3,7 +3,7 @@ import type { Session } from '@supabase/supabase-js';
 import { Settings } from './routes/Settings.js';
 import { Auth } from './routes/Auth.js';
 import { Colophon } from './components/Colophon.js';
-import { clearCachedPulls, clearReviewPack } from './lib/offline.js';
+import { clearCachedPulls, clearFlashcardSets, clearReviewPack } from './lib/offline.js';
 import { PlayerBar } from './components/PlayerBar.js';
 import { PlayerProvider } from './components/PlayerProvider.js';
 import { Daily } from './routes/Daily.js';
@@ -51,6 +51,8 @@ import { Paths } from './routes/Paths.js';
 import { Path } from './routes/Path.js';
 import { Courses } from './routes/Courses.js';
 import { Course } from './routes/Course.js';
+import { Flashcards } from './routes/Flashcards.js';
+import { FlashcardSetPage } from './routes/FlashcardSet.js';
 
 import { Review } from './routes/Review.js';
 import { Search } from './routes/Search.js';
@@ -117,7 +119,8 @@ const DESTINATIONS: { path: string; label: string; signedIn?: true }[] = [
   { path: '/paths', label: 'Paths' },
   { path: '/search', label: 'Search' },
   /*
-   * All five are `signedIn`, and the flag is load-bearing rather than tidy.
+   * Every destination from here to Settings is `signedIn`, and the flag is load-bearing
+   * rather than tidy.
    *
    * `publicRoute` below lists what a visitor may actually open, and none of these are in
    * it — so while they were advertised without the flag, a signed-out visitor on Explore
@@ -133,6 +136,8 @@ const DESTINATIONS: { path: string; label: string; signedIn?: true }[] = [
   { path: '/studio', label: 'Studio', signedIn: true },
   // A reader's private courses, made from their own material in Studio.
   { path: '/courses', label: 'Courses', signedIn: true },
+  // A reader's own flashcard sets: private, free and offline.
+  { path: '/flashcards', label: 'Flashcards', signedIn: true },
   { path: '/metacognition', label: 'Progress', signedIn: true },
 
   { path: '/settings', label: 'Settings' },
@@ -485,6 +490,8 @@ export function App() {
         // rule while nothing cleared it. Scoping a store by user keeps one reader's rows
         // out of the next reader's screen; it does not take them off the machine.
         void clearCachedPulls(leaving);
+        // And the flashcard sets kept for studying offline, which are the reader's own text.
+        void clearFlashcardSets(leaving);
         // And the page's title, which a course sets from the reader's own goal: the next
         // person at the machine must not find it on the tab over the sign-in screen.
         setRouteTitle(null);
@@ -716,6 +723,8 @@ export function App() {
   const studioOpen = isPath(path, '/studio');
   const coursesOpen = isPath(path, '/courses');
   const courseId = routeParam(path, '/course');
+  const flashcardsOpen = isPath(path, '/flashcards');
+  const flashcardSetId = routeParam(path, '/flashcards');
   const demoOpen = isPath(path, '/demo');
   const metacognitionOpen = isPath(path, '/metacognition');
   /*
@@ -769,6 +778,8 @@ export function App() {
     studioOpen ||
     coursesOpen ||
     courseId !== null ||
+    flashcardsOpen ||
+    flashcardSetId !== null ||
     demoOpen ||
     metacognitionOpen ||
     accountOpen ||
@@ -1202,6 +1213,21 @@ export function App() {
               />
             )}
 
+            {/* A reader's own sets, so signed in and not a guest, as a course is. A guest's
+                rows are swept a day after last use, and `save_flashcard_set` refuses one. */}
+            {flashcardsOpen && !guest && session && (
+              <Flashcards key={session.user.id} userId={session.user.id} onNavigate={navigate} />
+            )}
+            {flashcardSetId !== null && !guest && session && (
+              <FlashcardSetPage
+                key={`${flashcardSetId}:${session.user.id}`}
+                userId={session.user.id}
+                setId={decodeSegment(flashcardSetId)}
+                onNavigate={navigate}
+                onTitle={reportRouteTitle}
+              />
+            )}
+
             {demoOpen && (
               <OnboardingDemo onComplete={() => navigate('/')} onSkip={() => navigate('/')} />
             )}
@@ -1250,6 +1276,8 @@ export function App() {
               studioOpen ||
               coursesOpen ||
               courseId !== null ||
+              flashcardsOpen ||
+              flashcardSetId !== null ||
               metacognitionOpen) &&
               guest && (
                 <section className="stack measure">
