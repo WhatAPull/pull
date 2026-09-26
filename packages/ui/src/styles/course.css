@@ -30,6 +30,18 @@
   margin: 0;
 }
 
+/* A public course on offer is read before it is added, not scanned like an index row: its
+   title, where it comes from, what it is for and its outline stack, and every line wraps. */
+.public-course {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.public-course > * {
+  margin: 0;
+  min-width: 0;
+}
+
 .courses__title,
 .course__lesson-title {
   padding-left: 0;
@@ -133,9 +145,10 @@
    than `disabled`, so the pressed button keeps focus -- and a control that keeps focus keeps
    the contrast floors, so this recolours with tokens that meet them rather than fading, as
    `.btn:disabled` does to controls that leave the tab order. The focus ring is untouched.
-   Scoped to the course, because Review and the interrupt use `aria-disabled` on answers
-   styled their own way. */
-.course .btn[aria-disabled='true'] {
+   Scoped to the course and the public courses on offer, because Review and the interrupt use
+   `aria-disabled` on answers styled their own way. */
+.course .btn[aria-disabled='true'],
+.public-courses .btn[aria-disabled='true'] {
   color: var(--text-faint);
   cursor: not-allowed;
 }

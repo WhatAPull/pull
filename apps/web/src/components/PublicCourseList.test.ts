@@ -1,18 +1,19 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
-import { shapePublicCourses } from '../lib/study-course.js';
+import { shapePublicCourses, type PublicCourse } from '../lib/study-course.js';
 
 // The cards are markup; the network is the list's, and is not what is under test here.
 vi.mock('../lib/study-course-api.js', () => ({
   enrolPublicCourse: vi.fn(),
+  fetchPublicCourseOutline: vi.fn(),
   fetchPublicCourses: vi.fn(),
 }));
 
-const { enrolRefusal, PublicCourseCards } = await import('./PublicCourseList.js');
+const { PublicCourseCard } = await import('./PublicCourseList.js');
 
 const noop = () => undefined;
-const courses = shapePublicCourses([
+const [course, single] = shapePublicCourses([
   {
     id: 'p1',
     slug: 'immediate-versus-delayed',
@@ -21,61 +22,81 @@ const courses = shapePublicCourses([
     overview: 'What the paper says about timing.',
     objectives: ['Explain the contrast.'],
     lesson_count: 2,
-    question_count: 1,
+    work_id: 'w1',
     work_title: 'Test-enhanced learning',
     rights_status: 'public_domain',
+    published_at: '2026-09-26T04:41:00Z',
   },
   {
     id: 'p2',
     slug: 'meditations',
     title: 'Meditations',
-    goal: 'Remember the key findings',
+    goal: '',
     overview: null,
     objectives: [],
     lesson_count: 1,
-    question_count: 0,
+    work_id: 'w2',
     work_title: 'Meditations',
     rights_status: 'licensed',
+    published_at: '2026-09-20T10:00:00Z',
   },
-]);
+]) as [PublicCourse, PublicCourse];
 
-describe('PublicCourseCards', () => {
-  it('says where each course comes from, and offers to add or open it', () => {
-    const html = renderToStaticMarkup(
-      createElement(PublicCourseCards, {
-        courses,
-        enrolled: new Map([['p2', 'c9']]),
-        working: null,
-        onAdd: noop,
-        onOpen: noop,
-      }),
+function card(overrides: Partial<Parameters<typeof PublicCourseCard>[0]> = {}): string {
+  return renderToStaticMarkup(
+    createElement(PublicCourseCard, {
+      course,
+      copy: undefined,
+      busy: false,
+      working: false,
+      note: null,
+      onAdd: noop,
+      onOpen: noop,
+      ...overrides,
+    }),
+  );
+}
+
+describe('PublicCourseCard', () => {
+  it('says where the course comes from, what it is for and what it teaches', () => {
+    const html = card();
+    expect(html).toMatch(
+      /A course on Test-enhanced learning · public domain · 2 lessons · Published [^<]*2026/,
     );
-    expect(html).toContain('From Test-enhanced learning · public domain · 2 lessons');
-    expect(html).toContain('From Meditations · licensed · 1 lesson');
-    expect(html.match(/Add to my courses/g)).toHaveLength(1);
-    expect(html).toContain('Open your copy');
+    expect(html).toContain('Goal: Explain the argument');
+    expect(html).toContain('What the paper says about timing.');
+    expect(html).toContain('<li>Explain the contrast.</li>');
+    expect(html).toContain('<summary aria-describedby="public-course-p1">Outline</summary>');
+    // Where it comes from wraps like any line: it is not the index row's one-line status.
+    expect(html).not.toContain('courses__status');
+    expect(card({ course: single })).toContain('A course on Meditations · licensed · 1 lesson');
   });
 
-  it('holds every button while one course is being added', () => {
-    const html = renderToStaticMarkup(
-      createElement(PublicCourseCards, {
-        courses,
-        enrolled: new Map(),
-        working: 'p1',
-        onAdd: noop,
-        onOpen: noop,
-      }),
+  it('names the course a button acts on by its heading', () => {
+    const html = card();
+    expect(html).toContain('<h3 id="public-course-p1" class="courses__title">');
+    expect(html).toMatch(/<button[^>]*aria-describedby="public-course-p1"[^>]*>Add to my courses/);
+    expect(card({ copy: 'c9' })).toMatch(
+      /<button[^>]*aria-describedby="public-course-p1"[^>]*>Open your copy/,
     );
-    expect(html).toContain('Adding…');
-    expect(html.match(/aria-disabled="true"/g)).toHaveLength(2);
   });
-});
 
-describe('enrolRefusal', () => {
-  it('says each refusal in words, and leaves the rest to the server', () => {
-    expect(enrolRefusal('P0002')).toMatch(/no longer offered/);
-    expect(enrolRefusal('54000')).toMatch(/00:00 UTC/);
-    expect(enrolRefusal('28000')).toMatch(/account/);
-    expect(enrolRefusal('XX000')).toBeNull();
+  it('holds its button while any course is being added, and says which one is', () => {
+    expect(card({ busy: true })).toContain('aria-disabled="true"');
+    expect(card({ busy: true, working: true })).toContain('Adding…');
+    expect(card()).toContain('aria-disabled="false"');
+  });
+
+  it('says what adding it came to, inside the card', () => {
+    const added = card({ copy: 'c9', note: { kind: 'added', text: 'Added to your courses.' } });
+    expect(added).toMatch(/<p class="meta" role="status">Added to your courses\.<\/p>/);
+    const refused = card({
+      note: { kind: 'error', text: 'Your session has ended. Sign in again, then add it.' },
+    });
+    expect(refused).toMatch(
+      /role="alert">Your session has ended\. Sign in again, then add it\.<\/p><\/li>$/,
+    );
+    // The live region is there before anything is said in it.
+    expect(card()).toContain('<p class="sr-only" role="status"></p>');
   });
 });

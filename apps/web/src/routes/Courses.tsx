@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { isOfflineFailure } from '../lib/offline.js';
 import {
   courseProgressLabel,
   courseStatus,
   courseTitle,
+  enrolledCopies,
   type CourseSummary,
 } from '../lib/study-course.js';
 import { COURSE_LIST_LIMIT, fetchCourses } from '../lib/study-course-api.js';
@@ -22,7 +23,10 @@ function statusLine(course: CourseSummary): string {
   }
 }
 
-/** The reader's private courses: each one's name, where it stands, and a way in. */
+/**
+ * The reader's private courses -- their own, and their copies of public courses -- each one's
+ * name, where it stands and a way in; then the public courses they may add.
+ */
 export function Courses({
   userId,
   onNavigate,
@@ -36,9 +40,15 @@ export function Courses({
   const [error, setError] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  // A public course was added below: read the list again without taking the page down, so the
+  // card that was pressed keeps its place and focus.
+  const [refresh, setRefresh] = useState(0);
+  const quiet = useRef(false);
 
   useEffect(() => {
     const controller = new AbortController();
+    const quietly = quiet.current;
+    quiet.current = false;
     fetchCourses(controller.signal)
       .then((list) => {
         if (controller.signal.aborted) return;
@@ -50,12 +60,15 @@ export function Courses({
       .catch((e: unknown) => {
         if (controller.signal.aborted) return;
         console.error('Courses request failed', e);
+        // A quiet refresh that fails leaves the list as it was: the copy is made either way,
+        // and its card offers the way in.
+        if (quietly) return;
         setOffline(isOfflineFailure(e));
         setError(e instanceof Error ? e.message : String(e));
         setSettled(true);
       });
     return () => controller.abort();
-  }, [userId, attempt]);
+  }, [userId, attempt, refresh]);
 
   if (!settled) {
     return (
@@ -92,7 +105,9 @@ export function Courses({
       <h1>Study your own material.</h1>
       <p>
         A course is made from sources you saved in Studio: short lessons, each tied to the passages
-        of your text it rests on, in sessions of about ten minutes with a clear place to stop.
+        of your text it rests on, in sessions of about ten minutes with a clear place to stop. You
+        can also add one of the public courses below, which we prepared from works in the public
+        domain or licensed to us.
       </p>
       {courses.length === 0 ? (
         <>
@@ -120,6 +135,13 @@ export function Courses({
                   {courseTitle(c)}
                 </button>
                 <span className="courses__status">{statusLine(c)}</span>
+                {c.publicCourseId && (
+                  <p className="meta">
+                    {c.publicCourseWorkTitle
+                      ? `Public course · a course on ${c.publicCourseWorkTitle}`
+                      : 'Public course'}
+                  </p>
+                )}
                 {c.title && <p className="meta">Goal: {c.goal}</p>}
               </li>
             ))}
@@ -132,19 +154,18 @@ export function Courses({
           )}
           {!more && (
             <p className="meta">
-              That is every course. They are private to you, and new ones are made in Studio.
+              That is every course. They are private to you: your own are made in Studio, and a
+              public course you add is your copy of it.
             </p>
           )}
         </>
       )}
       <PublicCourseList
-        enrolled={
-          new Map(
-            courses
-              .filter((c) => c.publicCourseId !== null)
-              .map((c) => [c.publicCourseId as string, c.courseId]),
-          )
-        }
+        enrolled={enrolledCopies(courses)}
+        onEnrolled={() => {
+          quiet.current = true;
+          setRefresh((n) => n + 1);
+        }}
         onNavigate={onNavigate}
       />
     </section>

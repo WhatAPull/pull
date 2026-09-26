@@ -15,6 +15,7 @@ import { usePlayer } from '../components/PlayerProvider.js';
 import { isOfflineFailure } from '../lib/offline.js';
 import { sqlDetail, sqlState } from '../lib/rpc-error.js';
 import { currentTrack } from '../lib/player.js';
+import { routerClick } from '../lib/routes.js';
 import { localVoiceURI, onVoicesChanged } from '../lib/speech.js';
 import {
   allLessons,
@@ -34,6 +35,7 @@ import {
   nextLesson,
   draftUnsaved,
   passageWindow,
+  excerptWindow,
   planAfterCorrection,
   planLessons,
   planSession,
@@ -799,9 +801,13 @@ export function Course({
       .catch((e: unknown) =>
         setTextFailed((f) => ({
           ...f,
-          [version]: isOfflineFailure(e)
-            ? 'Your text needs a connection to open. Close this and try again when you reconnect.'
-            : 'Your text could not be loaded just now. Close this and try again.',
+          [version]: course?.publicCourseId
+            ? isOfflineFailure(e)
+              ? 'The quotation needs a connection to open. Close this and try again when you reconnect.'
+              : 'The quotation could not be loaded just now. Close this and try again.'
+            : isOfflineFailure(e)
+              ? 'Your text needs a connection to open. Close this and try again when you reconnect.'
+              : 'Your text could not be loaded just now. Close this and try again.',
         })),
       );
   };
@@ -813,8 +819,16 @@ export function Course({
     const failed = textFailed[claim.versionId];
     const open = Boolean(opened[key]);
     // Only for a passage the reader opened: each is a walk over a text of up to 200,000
-    // characters, and a lesson cites up to twenty-four.
-    const passage = open && evidence && text ? passageWindow(text, evidence) : null;
+    // characters, and a lesson cites up to twenty-four. A copy of a public course has no text
+    // around a span but the quotation it is in: its text is the course's quotations, each a
+    // separate passage of the work, so it shows that quotation and not its neighbours.
+    const copy = Boolean(course?.publicCourseId);
+    const passage =
+      open && evidence && text
+        ? copy
+          ? excerptWindow(text, evidence)
+          : passageWindow(text, evidence)
+        : null;
     return (
       <div>
         <button
@@ -824,10 +838,12 @@ export function Course({
           aria-controls={`context-${key}`}
           onClick={() => showContext(claim, ordinal)}
         >
-          {open
-            ? 'Hide the surrounding text'
-            : course?.publicCourseId
-              ? 'Show it among the excerpts'
+          {copy
+            ? open
+              ? 'Hide the quotation'
+              : 'Show the whole quotation'
+            : open
+              ? 'Hide the surrounding text'
               : 'Show it in your text'}
         </button>
         {open && (
@@ -837,14 +853,16 @@ export function Course({
                 <p>{failed}</p>
               ) : (
                 <p className="meta" role="status">
-                  Loading your text…
+                  {copy ? 'Loading the quotation…' : 'Loading your text…'}
                 </p>
               )
             ) : passage ? (
               <PassageInContext passage={passage} />
             ) : (
               <p>
-                The surrounding text is not available: this version of your source may have changed.
+                {copy
+                  ? 'The quotation is not available.'
+                  : 'The surrounding text is not available: this version of your source may have changed.'}
               </p>
             )}
           </div>
@@ -1006,7 +1024,11 @@ export function Course({
         <h1 id="course-title" tabIndex={-1}>
           The course is deleted.
         </h1>
-        <p>Its sources stay in Studio, and you can make a new course from them.</p>
+        <p>
+          {course?.publicCourseId
+            ? 'You can add it again from Courses; it starts over.'
+            : 'Its sources stay in Studio, and you can make a new course from them.'}
+        </p>
       </section>
     );
   }
@@ -1258,8 +1280,9 @@ export function Course({
                 </p>
               ) : (
                 <p>
-                  Reading aloud needs a voice installed on this device, so that your material is not
-                  sent to a speech service.
+                  Reading aloud needs a voice installed on this device, so that{' '}
+                  {course.publicCourseId ? 'the course' : 'your material'} is not sent to a speech
+                  service.
                 </p>
               ))}
             <details
@@ -1533,17 +1556,30 @@ export function Course({
     <section className="stack measure course">
       <div className="course__bar">{back}</div>
       <p className="meta">
-        {course.publicCourseId ? 'A public course, in your courses' : 'Your private course'}
+        {course.publicCourseId ? 'Your copy of a public course' : 'Your private course'}
       </p>
-      {course.publicCourseLabel && (
-        <p>
-          {course.publicCourseLabel}. Its passages are short quotations from the work; the lessons
-          and questions are ours, checked by a person.
-        </p>
-      )}
       <h1 id="course-title" className="display" tabIndex={-1}>
         {title}
       </h1>
+      {course.publicCourseId && (
+        <p className="meta">
+          A course on{' '}
+          {course.publicCourseWorkId ? (
+            <a
+              href={`/source/${encodeURIComponent(course.publicCourseWorkId)}`}
+              onClick={routerClick(
+                onNavigate,
+                `/source/${encodeURIComponent(course.publicCourseWorkId)}`,
+              )}
+            >
+              {course.publicCourseWorkTitle ?? 'its work'}
+            </a>
+          ) : (
+            'a work no longer listed'
+          )}
+          {course.publicCourseLabel ? ` · ${course.publicCourseLabel}` : ''}
+        </p>
+      )}
       {course.title && course.goal && <p className="meta">Goal: {course.goal}</p>}
       {noticeLine}
 
@@ -1622,7 +1658,10 @@ export function Course({
             course.heldBack ? (
               <p>
                 Every lesson in this course was held back by its checks, so there is nothing to
-                read. Correct your sources in Studio and prepare it again.
+                read.
+                {course.publicCourseId
+                  ? ''
+                  : ' Correct your sources in Studio and prepare it again.'}
               </p>
             ) : (
               <p>
@@ -1740,8 +1779,10 @@ export function Course({
       {armed ? (
         <div className="stack" role="group" aria-labelledby="course-delete-warning">
           <p id="course-delete-warning" tabIndex={-1}>
-            Deleting this course removes its lessons, its questions and your place in it. Its
-            sources stay in Studio, and you can make a new course from them.
+            Deleting this course removes its lessons, its questions and your place in it.{' '}
+            {course.publicCourseId
+              ? 'You can add it again from Courses; it starts over.'
+              : 'Its sources stay in Studio, and you can make a new course from them.'}
           </p>
           <div className="course__actions">
             <button
@@ -1778,7 +1819,9 @@ export function Course({
         </p>
       )}
       <p className="meta">
-        This course is private to you. It was made from your own material and is never published.
+        {course.publicCourseId
+          ? 'Your copy is private to you: what you read and answer is yours alone. The course itself is published by What a Pull.'
+          : 'This course is private to you. It was made from your own material and is never published.'}
       </p>
     </section>
   );

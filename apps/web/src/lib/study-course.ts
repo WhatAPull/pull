@@ -11,6 +11,7 @@
  * `revisit` and `faded` on each lesson -- is the study Delta's (`study_course_outline`).
  * This only chooses what to read next from it.
  */
+import type { RightsStatus } from '@wap/schemas';
 import { int, isRecord, nullableInt, nullableStr, rows, str } from './shape.js';
 
 export type LessonState = 'not_seen' | 'shown' | 'read' | 'skipped';
@@ -54,9 +55,14 @@ export interface CourseSummary {
   awaitingValidation: boolean;
   /** The newest generation was saved and validation settled it, whatever its job said. */
   latestSettled: boolean;
-  /** The public course this is a reader's copy of, and where it came from; null for their own. */
+  /**
+   * The public course this is the reader's copy of; null for a course of their own. Its work,
+   * and the work's rights in words ('public domain', 'licensed') while they still hold.
+   */
   publicCourseId: string | null;
   publicCourseLabel: string | null;
+  publicCourseWorkId: string | null;
+  publicCourseWorkTitle: string | null;
   updateAvailable: boolean;
   lessonCount: number;
   lessonsReadCount: number;
@@ -169,6 +175,8 @@ export function shapeCourseSummary(row: unknown): CourseSummary | null {
     latestSettled: bool(row.latest_settled),
     publicCourseId: nullableStr(row.public_course_id),
     publicCourseLabel: nullableStr(row.public_course_label),
+    publicCourseWorkId: nullableStr(row.public_course_work_id),
+    publicCourseWorkTitle: nullableStr(row.public_course_work_title),
     updateAvailable: bool(row.update_available),
     lessonCount: int(row.lesson_count),
     lessonsReadCount: int(row.lessons_read_count),
@@ -178,24 +186,37 @@ export function shapeCourseSummary(row: unknown): CourseSummary | null {
   };
 }
 
+/** The rights a public course's work may have: the catalogue lists no other. */
+export type PublicCourseRights = Extract<RightsStatus, 'public_domain' | 'licensed'>;
+
+function publicCourseRights(v: unknown): PublicCourseRights | null {
+  return v === 'public_domain' || v === 'licensed' ? v : null;
+}
+
 /** A course the project published from a rights-cleared work, as the catalogue lists it. */
 export interface PublicCourse {
   id: string;
+  /** What `get_public_study_course` finds it by, for its outline. */
   slug: string;
   title: string;
   goal: string;
   overview: string | null;
   objectives: string[];
   lessonCount: number;
-  questionCount: number;
   workTitle: string;
-  rightsStatus: string;
+  rightsStatus: PublicCourseRights;
+  publishedAt: string;
 }
 
+/**
+ * The catalogue's rows. A row without an id cannot be added, and one whose work claims other
+ * rights is not a public course the app may offer, whatever the server sent: both are dropped.
+ */
 export function shapePublicCourses(data: unknown): PublicCourse[] {
   return rows(data).flatMap((r) => {
     const id = str(r.id);
-    if (!id) return [];
+    const rightsStatus = publicCourseRights(r.rights_status);
+    if (!id || !rightsStatus) return [];
     return [
       {
         id,
@@ -205,20 +226,136 @@ export function shapePublicCourses(data: unknown): PublicCourse[] {
         overview: nullableStr(r.overview),
         objectives: strings(r.objectives),
         lessonCount: int(r.lesson_count),
-        questionCount: int(r.question_count),
         workTitle: str(r.work_title),
-        rightsStatus: str(r.rights_status),
+        rightsStatus,
+        publishedAt: str(r.published_at),
       },
     ];
   });
 }
 
-/** Where a public course comes from, in words: "From Meditations · public domain". */
+/** A public course's rights in words. */
+export function publicCourseRightsLabel(rights: PublicCourseRights): string {
+  switch (rights) {
+    case 'public_domain':
+      return 'public domain';
+    case 'licensed':
+      return 'licensed';
+  }
+}
+
+/** Where a public course comes from, in words: "A course on Meditations · public domain". */
 export function publicCourseSource(
   course: Pick<PublicCourse, 'workTitle' | 'rightsStatus'>,
 ): string {
-  const rights = course.rightsStatus === 'public_domain' ? 'public domain' : 'licensed';
-  return `From ${course.workTitle} · ${rights}`;
+  return `A course on ${course.workTitle} · ${publicCourseRightsLabel(course.rightsStatus)}`;
+}
+
+/** When a public course was published, as a day: "Published 26 September 2026". */
+export function publishedLabel(iso: string): string | null {
+  const at = new Date(iso);
+  if (!iso || Number.isNaN(at.getTime())) return null;
+  return `Published ${at.toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    timeZone: 'UTC',
+  })}`;
+}
+
+/** "2 lessons", "1 lesson". */
+export function lessonCountLabel(n: number): string {
+  return n === 1 ? '1 lesson' : `${n} lessons`;
+}
+
+/** One lesson of a public course's outline, as the catalogue shows it before adding. */
+export interface PublicOutlineLesson {
+  unitNo: number;
+  unitTitle: string;
+  title: string;
+  minutes: number;
+}
+
+export interface PublicOutlineUnit {
+  unitNo: number;
+  unitTitle: string;
+  lessons: PublicOutlineLesson[];
+}
+
+/** A public course's outline, grouped into its units in order. */
+export function shapePublicOutline(data: unknown): PublicOutlineUnit[] {
+  const row = rows(data)[0];
+  const lessons = rows(row?.outline)
+    .map((l) => ({
+      unitNo: int(l.unitNo),
+      unitTitle: str(l.unitTitle),
+      title: str(l.title),
+      minutes: int(l.minutes),
+    }))
+    .filter((l) => l.title !== '');
+  const units: PublicOutlineUnit[] = [];
+  for (const lesson of lessons) {
+    const last = units[units.length - 1];
+    if (last && last.unitNo === lesson.unitNo) last.lessons.push(lesson);
+    else units.push({ unitNo: lesson.unitNo, unitTitle: lesson.unitTitle, lessons: [lesson] });
+  }
+  return units;
+}
+
+/** The reader's copy of each public course they have added, by the public course's id. */
+export function enrolledCopies(
+  courses: readonly Pick<CourseSummary, 'courseId' | 'publicCourseId'>[],
+): Map<string, string> {
+  const copies = new Map<string, string>();
+  for (const c of courses) if (c.publicCourseId !== null) copies.set(c.publicCourseId, c.courseId);
+  return copies;
+}
+
+/** What to say when adding a public course was refused; null for a refusal to say as sent. */
+export function enrolRefusal(code: string | undefined): string | null {
+  switch (code) {
+    case 'P0002':
+      return 'That course is no longer offered.';
+    case '54000':
+      return 'That is as many public courses as can be added in a day. More at 00:00 UTC.';
+    case '28000':
+      return 'Adding a course needs an account, not a guest session.';
+    case '42501':
+      return 'Your session has ended. Sign in again, then add it.';
+    default:
+      return null;
+  }
+}
+
+/**
+ * A span in its excerpt, for a copy of a public course: the copy's text is the course's
+ * quotations, each a separate passage of the work, so the window stops at the quotation's
+ * edges rather than running on into the next -- which the work does not follow it with.
+ */
+export function excerptWindow(
+  text: string,
+  evidence: Pick<Evidence, 'start' | 'end' | 'spanText'>,
+): PassageWindow | null {
+  const points = codePoints(text);
+  const { start, end } = evidence;
+  if (start < 0 || end <= start || end > points.length) return null;
+  const span = points.slice(start, end).join('');
+  if (span !== evidence.spanText) return null;
+  // The blank lines that separate quotations, either side of the span, in code points.
+  const before = points.slice(0, start).join('');
+  const cut = before.lastIndexOf('\n\n');
+  const from = cut < 0 ? 0 : Array.from(before.slice(0, cut + 2)).length;
+  const after = points.slice(end).join('');
+  const next = after.indexOf('\n\n');
+  const to = next < 0 ? points.length : end + Array.from(after.slice(0, next)).length;
+  return {
+    before: points.slice(from, start).join(''),
+    span,
+    after: points.slice(end, to).join(''),
+    // A quotation is a passage from the middle of a work: it is always cut from more.
+    clippedStart: true,
+    clippedEnd: true,
+  };
 }
 
 export function shapeCourseSummaries(data: unknown): CourseSummary[] {

@@ -41,6 +41,15 @@ import {
   lessonDraft,
   allLessons,
   GOAL_SUGGESTIONS,
+  enrolledCopies,
+  enrolRefusal,
+  excerptWindow,
+  lessonCountLabel,
+  publicCourseRightsLabel,
+  publicCourseSource,
+  publishedLabel,
+  shapePublicCourses,
+  shapePublicOutline,
 } from './study-course.js';
 
 const overviewRow = {
@@ -136,6 +145,156 @@ describe('shapeCourseSummary', () => {
     expect(c?.objectives).toEqual([]);
     expect(c?.generationId).toBeNull();
     expect(shapeCourseSummaries([{ goal: 'no id' }, overviewRow, 'junk'])).toHaveLength(1);
+  });
+
+  it('reads where a copy of a public course came from, and nothing for a course of one’s own', () => {
+    expect(course()).toMatchObject({
+      publicCourseId: null,
+      publicCourseLabel: null,
+      publicCourseWorkId: null,
+      publicCourseWorkTitle: null,
+    });
+    expect(
+      shapeCourseSummary({
+        ...overviewRow,
+        public_course_id: 'p1',
+        public_course_label: 'public domain',
+        public_course_work_id: 'w1',
+        public_course_work_title: 'Test-enhanced learning',
+      }),
+    ).toMatchObject({
+      publicCourseId: 'p1',
+      publicCourseLabel: 'public domain',
+      publicCourseWorkId: 'w1',
+      publicCourseWorkTitle: 'Test-enhanced learning',
+    });
+    // Rights in question: the work is still named, its rights no longer are.
+    expect(
+      shapeCourseSummary({ ...overviewRow, public_course_id: 'p1', public_course_label: null })
+        ?.publicCourseLabel,
+    ).toBeNull();
+  });
+});
+
+describe('public courses', () => {
+  const row = {
+    id: 'p1',
+    slug: 'immediate-versus-delayed',
+    title: 'Immediate versus delayed',
+    goal: 'Explain the argument',
+    overview: 'What the paper says about timing.',
+    objectives: ['Explain the contrast.'],
+    lesson_count: 2,
+    question_count: 1,
+    work_id: 'w1',
+    work_title: 'Test-enhanced learning',
+    rights_status: 'public_domain',
+    published_at: '2026-09-26T04:41:00Z',
+  };
+
+  it('shapes the catalogue, dropping a row with no id or rights it may not offer', () => {
+    const list = shapePublicCourses([
+      row,
+      { ...row, id: 'p2', rights_status: 'licensed' },
+      { ...row, id: 'p3', rights_status: 'user_owned' },
+      { ...row, id: 'p4', rights_status: 'review_required' },
+      { ...row, id: undefined },
+      'junk',
+    ]);
+    expect(list.map((c) => [c.id, c.rightsStatus])).toEqual([
+      ['p1', 'public_domain'],
+      ['p2', 'licensed'],
+    ]);
+    expect(list[0]).toMatchObject({
+      slug: 'immediate-versus-delayed',
+      goal: 'Explain the argument',
+      objectives: ['Explain the contrast.'],
+      lessonCount: 2,
+      publishedAt: '2026-09-26T04:41:00Z',
+    });
+  });
+
+  it('says where a course comes from, its rights and its size in words', () => {
+    expect(publicCourseSource({ workTitle: 'Meditations', rightsStatus: 'public_domain' })).toBe(
+      'A course on Meditations · public domain',
+    );
+    expect(publicCourseSource({ workTitle: 'A paper', rightsStatus: 'licensed' })).toBe(
+      'A course on A paper · licensed',
+    );
+    expect(publicCourseRightsLabel('licensed')).toBe('licensed');
+    expect(lessonCountLabel(1)).toBe('1 lesson');
+    expect(lessonCountLabel(2)).toBe('2 lessons');
+    expect(publishedLabel('2026-09-26T04:41:00Z')).toMatch(/^Published .*26.*2026$/);
+    expect(publishedLabel('')).toBeNull();
+    expect(publishedLabel('not a date')).toBeNull();
+  });
+
+  it('groups the outline into its units, in order', () => {
+    const units = shapePublicOutline([
+      {
+        outline: [
+          { unitNo: 1, unitTitle: 'Timing', title: 'Lesson one', minutes: 3 },
+          { unitNo: 1, unitTitle: 'Timing', title: 'Lesson two', minutes: 4 },
+          { unitNo: 2, unitTitle: 'Spacing', title: 'Lesson three', minutes: 2 },
+          { unitNo: 2, unitTitle: 'Spacing', title: '' },
+        ],
+      },
+    ]);
+    expect(units.map((u) => [u.unitTitle, u.lessons.map((l) => l.title)])).toEqual([
+      ['Timing', ['Lesson one', 'Lesson two']],
+      ['Spacing', ['Lesson three']],
+    ]);
+    expect(shapePublicOutline([])).toEqual([]);
+  });
+
+  it('finds the reader’s copy of each public course they added', () => {
+    const copies = enrolledCopies([
+      { courseId: 'c1', publicCourseId: null },
+      { courseId: 'c2', publicCourseId: 'p1' },
+      { courseId: 'c3', publicCourseId: 'p2' },
+    ]);
+    expect([...copies]).toEqual([
+      ['p1', 'c2'],
+      ['p2', 'c3'],
+    ]);
+    expect(enrolledCopies([]).size).toBe(0);
+  });
+
+  it('says each refusal to add one in words, and leaves the rest to the server', () => {
+    expect(enrolRefusal('P0002')).toMatch(/no longer offered/);
+    expect(enrolRefusal('54000')).toMatch(/00:00 UTC/);
+    expect(enrolRefusal('28000')).toMatch(/account/);
+    expect(enrolRefusal('42501')).toBe('Your session has ended. Sign in again, then add it.');
+    expect(enrolRefusal('XX000')).toBeNull();
+    expect(enrolRefusal(undefined)).toBeNull();
+  });
+
+  it('shows a span within its own quotation, never running into the next', () => {
+    const text = 'the group that restudied remembered more\n\nthe recall test group did better';
+    const start = text.indexOf('recall test');
+    const w = excerptWindow(text, {
+      start,
+      end: start + 'recall test'.length,
+      spanText: 'recall test',
+    });
+    expect(w).toMatchObject({
+      before: 'the ',
+      span: 'recall test',
+      after: ' group did better',
+      clippedStart: true,
+      clippedEnd: true,
+    });
+    const first = excerptWindow(text, { start: 4, end: 9, spanText: 'group' });
+    expect(first?.after).toBe(' that restudied remembered more');
+    expect(excerptWindow(text, { start: 4, end: 9, spanText: 'other' })).toBeNull();
+    // Offsets are code points: a quotation before this one with an astral character in it.
+    const astral = '𝒳 marks it\n\nthe span here';
+    const at = Array.from(astral).indexOf('s', 14);
+    expect(excerptWindow(astral, { start: at, end: at + 4, spanText: 'span' })).toMatchObject({
+      before: 'the ',
+      span: 'span',
+      after: ' here',
+    });
   });
 });
 

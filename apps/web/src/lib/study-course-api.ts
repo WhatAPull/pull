@@ -6,10 +6,12 @@
  * database offers a reader and nothing else. See `docs/study-courses.md`.
  */
 import { rpcError, sqlState } from './rpc-error.js';
+import { isRecord } from './shape.js';
 import {
   shapeClaims,
   shapeCourseSummaries,
   shapePublicCourses,
+  shapePublicOutline,
   type PublicCourse,
   shapeCourseSummary,
   shapeLessonContent,
@@ -60,7 +62,7 @@ export async function fetchCourses(
   return { courses, more: (count ?? courses.length) > courses.length };
 }
 
-/** The public courses anyone may add, newest first. */
+/** The public courses a signed-in reader may add, newest first. */
 export async function fetchPublicCourses(signal?: AbortSignal): Promise<PublicCourse[]> {
   const request = supabase.rpc('list_public_study_courses');
   const { data, error } = await (signal ? request.abortSignal(signal) : request);
@@ -68,19 +70,29 @@ export async function fetchPublicCourses(signal?: AbortSignal): Promise<PublicCo
   return shapePublicCourses(data);
 }
 
+/** A public course's outline, by its slug: what the reader would study before adding it. */
+export async function fetchPublicCourseOutline(slug: string, signal?: AbortSignal) {
+  const request = supabase.rpc('get_public_study_course', { p_slug: slug });
+  const { data, error } = await (signal ? request.abortSignal(signal) : request);
+  if (error) throw rpcError(error);
+  return shapePublicOutline(data);
+}
+
 /**
- * Copy a public course into the reader's courses, or find the copy they have. No model is
- * asked and nothing is spent: the course was prepared once, for everyone.
+ * Copy a public course into the reader's courses, or find the copy they have (`replayed`).
+ * No model is asked and nothing is spent: the course was prepared once, for everyone.
  */
-export async function enrolPublicCourse(publicCourseId: string): Promise<string> {
+export async function enrolPublicCourse(
+  publicCourseId: string,
+): Promise<{ courseId: string; replayed: boolean }> {
   const { data, error } = await supabase.rpc('enrol_public_course', {
     p_public_course_id: publicCourseId,
   });
   if (error) throw rpcError(error);
-  const courseId = (data as { courseId?: unknown } | null)?.courseId;
+  const courseId = isRecord(data) ? data.courseId : undefined;
   if (typeof courseId !== 'string')
     throw new Error('The course was added, but its answer was unreadable.');
-  return courseId;
+  return { courseId, replayed: isRecord(data) && data.replayed === true };
 }
 
 /** A course id's shape. Anything else is no course, not a request Postgres refuses. */
