@@ -17,9 +17,34 @@
 -- ways in, because the limits below are properties of a reader's whole collection, and a
 -- policy sees one row at a time.
 --
--- Limits, against abuse and not as a tier (law 3): 500 sets a reader, 2,000 cards a set.
--- A set of 2,000 cards is already longer than anyone studies in a sitting, and 500 of them
--- is a million cards.
+-- Limits, against abuse and not as a tier (law 3): 500 sets a reader, 2,000 cards and 2 MB of
+-- text a set, and 20,000 cards across all of a reader's sets. A set of 2,000 cards is already
+-- longer than anyone studies in a sitting. The other two are what make the first two safe to
+-- multiply: 500 sets of 2,000 cards, every side at its longest in four-byte characters, was
+-- 11.5 GB for one account and a scripted afternoon's work. Now it is at most 20,000 cards of
+-- 12 KB each, and no one save carries more than 2 MB of them.
+--
+-- BLANK MEANS ONE THING. What `flashcard_trim` takes off both ends is what JavaScript's
+-- `.trim()` does -- `study_space_class()`, the repository's one spelling of it -- and every
+-- check here, the function's and the tables', uses it. The function once trimmed space, tab
+-- and the two line breaks, and the tables' checks spaces alone: a title of one no-break space
+-- was a title to the database and blank to the editor, whose rule is the one a reader sees.
+
+-- ------------------------------------------------------------------ blank
+
+/* A text without the whitespace at either end, as `.trim()` leaves it. */
+create function public.flashcard_trim(p_text text)
+returns text
+language sql
+immutable
+parallel safe
+set search_path = ''
+as $fn$
+  select regexp_replace(
+    p_text, '^' || public.study_space_class() || '+|' || public.study_space_class() || '+$', '', 'g')
+$fn$;
+
+revoke all on function public.flashcard_trim(text) from public, anon, authenticated, service_role;
 
 -- ------------------------------------------------------------------ sets
 
@@ -28,8 +53,12 @@ create table public.flashcard_sets (
   -- is the same set rather than a second one.
   id               uuid primary key default extensions.gen_random_uuid(),
   owner_id         uuid not null references auth.users (id) on delete cascade,
-  title            text not null check (char_length(btrim(title)) between 1 and 200),
-  description      text check (char_length(description) <= 2000),
+  -- Stored trimmed, so "1 to 200 characters after trimming" is simply 1 to 200.
+  title            text not null check (char_length(title) between 1 and 200
+                                        and title = public.flashcard_trim(title)),
+  -- Null rather than blank: a description of nothing is no description.
+  description      text check (char_length(description) between 1 and 2000
+                               and description = public.flashcard_trim(description)),
   -- A language tag (`en`, `es-MX`, `zh-Hant`), and only to pick a voice: nothing else reads
   -- it. Loosely BCP 47 -- the shape a browser's `SpeechSynthesisVoice.lang` has.
   term_lang        text check (term_lang ~ '^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$'
@@ -64,21 +93,23 @@ create table public.flashcards (
   -- The card's place in its set, 0 first. Written only by `save_flashcard_set`, which
   -- writes the whole of a set's order at once, so it is 0..n-1 without gaps.
   position    int not null check (position >= 0),
-  term        text not null check (char_length(btrim(term)) between 1 and 1000),
-  definition  text not null check (char_length(btrim(definition)) between 1 and 2000),
+  term        text not null check (char_length(term) between 1 and 1000
+                                   and term = public.flashcard_trim(term)),
+  definition  text not null check (char_length(definition) between 1 and 2000
+                                   and definition = public.flashcard_trim(definition)),
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now(),
   -- For PR 13: a card's memory will reference (id, owner_id), so a reader's memory can only
-  -- ever name a reader's own card.
-  unique (id, owner_id),
+  -- ever name a reader's own card. Written owner first, which a foreign key on (id, owner_id)
+  -- accepts just the same, so the one index also serves the account export's walk of a
+  -- reader's cards by id and the count of them the total limit takes.
+  unique (owner_id, id),
   foreign key (set_id, owner_id) references public.flashcard_sets (id, owner_id)
     on delete cascade
 );
 
 -- A set's cards in order -- and the set's foreign key.
 create index flashcards_set_idx on public.flashcards (set_id, owner_id, position);
--- The account export walks a reader's cards by id.
-create index flashcards_owner_idx on public.flashcards (owner_id, id);
 
 alter table public.flashcards enable row level security;
 
@@ -96,7 +127,7 @@ comment on table public.flashcards is
 /*
  * Make the reader's set be this: its fields, and exactly these cards in this order.
  *
- *   p_set  { id?, title, description?, termLang?, definitionLang?,
+ *   p_set  { id?, baseUpdatedAt?, title, description?, termLang?, definitionLang?,
  *            cards: [{ id?, term, definition }] }   1 to 2,000 cards
  *
  * Returns { id, updatedAt, cards: [{ id, position }] }.
@@ -108,25 +139,36 @@ comment on table public.flashcards is
  * exists nowhere is inserted under it; a card with none is given one. The web mints every
  * id itself, so a retry is exact. Cards of the set the payload does not name are deleted.
  *
- * A save after the set was deleted elsewhere puts it back, with what the reader saved: the
- * reader pressed Save over the content on their screen, and that is what they asked for.
+ * TWO SCREENS DO NOT SAVE OVER EACH OTHER UNSEEN. `baseUpdatedAt` is the `updated_at` of the
+ * set the editor started from. When the set has changed since, the save is refused (40001
+ * changed) rather than made: a tab left open on the old cards would otherwise save them
+ * back, deleting every card another tab had added -- and with them, from PR 13, each card's
+ * memory. When the set is gone, deleted on another screen, it is refused as not found rather
+ * than put back. The web then says so, and sends the save again without `baseUpdatedAt` only
+ * when the reader chooses to save over the newer set; a save without it is the reader's word,
+ * and puts back a set deleted elsewhere, with what they saved.
  *
  * Refusals, each with its SQLSTATE and, where one code covers several, a DETAIL:
  *
- *   28000          not signed in
+ *   28000          not signed in, or signed in as an account that no longer exists
  *   42501 guest    a guest session: a guest's rows are swept a day after last use, and a
  *                  set is exactly the kind of work that should not vanish with a tab
- *   22023          malformed: not an object, an id that is not a uuid, a title, description,
- *                  language, term or definition out of range, cards not an array or empty,
- *                  a card id twice, or a card id that belongs to another set -- a card is
- *                  never moved between sets, since its memory would move with it
+ *   22023          malformed: not an object, an id that is not a uuid, a base that is not a
+ *                  time, a title, description, language, term or definition out of range,
+ *                  cards not an array or empty, a card id twice, or a card id that belongs to
+ *                  another set -- a card is never moved between sets, since its memory would
+ *                  move with it
+ *   40001 changed  `baseUpdatedAt` is not the set's `updated_at`: it changed since
  *   54000 sets     the reader already has 500 sets and this would be another
  *   54000 cards    more than 2,000 cards
- *   P0002          the id is another reader's set. The same code a reader's own missing set
- *                  would give if it could not simply be created -- which is all it says: an
- *                  id taken by somebody, out of 2^122. Nothing of that set is read or shown.
+ *   54000 size     more than 2 MB of text in the set: its title, description, terms and
+ *                  definitions, trimmed, in UTF-8 bytes
+ *   54000 total    more than 20,000 cards across the reader's sets, counting this one as sent
+ *   P0002          the id is another reader's set, or -- with `baseUpdatedAt` -- a set that
+ *                  does not exist. One code for both, which is all it says: an id taken by
+ *                  somebody, out of 2^122, or none. Nothing of that set is read or shown.
  *
- * One save at a time per reader, so the set limit cannot be raced past by two tabs.
+ * One save at a time per reader, so no limit can be raced past by two tabs.
  *
  * `updated_at` moves only when something changed, so reopening and saving a set untouched
  * does not reorder the reader's list.
@@ -140,16 +182,20 @@ as $fn$
 declare
   set_limit   constant int := 500;
   card_limit  constant int := 2000;
+  total_limit constant int := 20000;
+  size_limit  constant int := 2 * 1024 * 1024;
   uuid_shape  constant text := '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$';
   lang_shape  constant text := '^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$';
 
   uid          uuid := (select auth.uid());
   v_id         uuid;
+  v_base       timestamptz;
+  v_guest      boolean;
+  v_bytes      bigint;
   v_title      text;
   v_desc       text;
   v_term_lang  text;
   v_def_lang   text;
-  v_owner      uuid;
   v_existing   public.flashcard_sets%rowtype;
   v_created    boolean := false;
   v_changed    boolean := false;
@@ -169,8 +215,13 @@ begin
     raise exception 'saving a flashcard set requires a signed-in reader' using errcode = '28000';
   end if;
   -- Read from `auth.users` rather than from the claim, as the other definer doors do
-  -- (20260901190000): the table is the fact, and the claim a copy of it.
-  if exists (select 1 from auth.users u where u.id = uid and u.is_anonymous) then
+  -- (20260901190000): the table is the fact, and the claim a copy of it. Once, and a token
+  -- that outlived its account is no reader -- not a foreign key failing on the insert below.
+  select u.is_anonymous into v_guest from auth.users u where u.id = uid;
+  if not found then
+    raise exception 'saving a flashcard set requires a signed-in reader' using errcode = '28000';
+  end if;
+  if v_guest then
     raise exception 'a guest session cannot keep flashcard sets'
       using errcode = '42501', detail = 'guest';
   end if;
@@ -188,10 +239,22 @@ begin
     v_id := (p_set ->> 'id')::uuid;
   end if;
 
+  if coalesce(jsonb_typeof(p_set -> 'baseUpdatedAt'), 'null') = 'null' then
+    v_base := null;
+  elsif jsonb_typeof(p_set -> 'baseUpdatedAt') <> 'string' then
+    raise exception 'the base time is not a time' using errcode = '22023';
+  else
+    begin
+      v_base := (p_set ->> 'baseUpdatedAt')::timestamptz;
+    exception when data_exception then
+      raise exception 'the base time is not a time' using errcode = '22023';
+    end;
+  end if;
+
   if jsonb_typeof(p_set -> 'title') is distinct from 'string' then
     raise exception 'a set needs a title' using errcode = '22023';
   end if;
-  v_title := btrim(p_set ->> 'title', E' \t\r\n');
+  v_title := public.flashcard_trim(p_set ->> 'title');
   if char_length(v_title) not between 1 and 200 then
     raise exception 'a title is 1 to 200 characters' using errcode = '22023';
   end if;
@@ -201,7 +264,7 @@ begin
   elsif jsonb_typeof(p_set -> 'description') <> 'string' then
     raise exception 'a description is text' using errcode = '22023';
   else
-    v_desc := nullif(btrim(p_set ->> 'description', E' \t\r\n'), '');
+    v_desc := nullif(public.flashcard_trim(p_set ->> 'description'), '');
     if char_length(v_desc) > 2000 then
       raise exception 'a description is at most 2000 characters' using errcode = '22023';
     end if;
@@ -258,8 +321,8 @@ begin
        or jsonb_typeof(v_card -> 'definition') is distinct from 'string' then
       raise exception 'card % needs a term and a definition', v_ord using errcode = '22023';
     end if;
-    v_term := btrim(v_card ->> 'term', E' \t\r\n');
-    v_definition := btrim(v_card ->> 'definition', E' \t\r\n');
+    v_term := public.flashcard_trim(v_card ->> 'term');
+    v_definition := public.flashcard_trim(v_card ->> 'definition');
     if char_length(v_term) not between 1 and 1000 then
       raise exception 'card %''s term is 1 to 1000 characters', v_ord using errcode = '22023';
     end if;
@@ -272,12 +335,27 @@ begin
     v_defs := v_defs || v_definition;
   end loop;
 
+  -- What the set weighs, as stored: every side trimmed, in UTF-8 bytes.
+  v_bytes := octet_length(v_title) + coalesce(octet_length(v_desc), 0)
+             + (select coalesce(sum(octet_length(t)), 0) from unnest(v_terms || v_defs) as t);
+
   -- ---------------------------------------------------------------- one save at a time
   perform pg_advisory_xact_lock(pg_catalog.hashtextextended('flashcards:' || uid::text, 0));
 
-  select * into v_existing from public.flashcard_sets s where s.id = v_id for update;
+  -- No row lock: every write to a reader's sets holds the lock above, and a lock on the row
+  -- would be taken before knowing whose it is.
+  select * into v_existing from public.flashcard_sets s where s.id = v_id;
   if found and v_existing.owner_id <> uid then
     raise exception 'no such flashcard set' using errcode = 'P0002';
+  end if;
+  if v_base is not null then
+    if v_existing.id is null then
+      raise exception 'no such flashcard set' using errcode = 'P0002';
+    end if;
+    if v_existing.updated_at is distinct from v_base then
+      raise exception 'the set has changed since it was opened'
+        using errcode = '40001', detail = 'changed';
+    end if;
   end if;
 
   -- A card is never moved: an id that is in some other set -- the reader's own or anyone's
@@ -287,6 +365,17 @@ begin
     where f.id = any (v_ids) and (f.set_id <> v_id or f.owner_id <> uid)
   ) then
     raise exception 'a card belongs to another set' using errcode = '22023';
+  end if;
+
+  if v_bytes > size_limit then
+    raise exception 'a set holds at most 2 MB of text' using errcode = '54000', detail = 'size';
+  end if;
+  -- Every card of the reader's other sets, and this set's as sent -- not as it was, so a set
+  -- at the limit can still be edited, and made smaller.
+  select count(*) into n from public.flashcards f where f.owner_id = uid and f.set_id <> v_id;
+  if n + array_length(v_ids, 1) > total_limit then
+    raise exception 'a reader keeps at most % flashcards across their sets', total_limit
+      using errcode = '54000', detail = 'total';
   end if;
 
   if v_existing.id is null then
@@ -347,7 +436,8 @@ begin
 end
 $fn$;
 
-revoke all on function public.save_flashcard_set(jsonb) from public, anon, authenticated;
+revoke all on function public.save_flashcard_set(jsonb)
+  from public, anon, authenticated, service_role;
 grant execute on function public.save_flashcard_set(jsonb) to authenticated;
 
 comment on function public.save_flashcard_set(jsonb) is
@@ -358,7 +448,8 @@ comment on function public.save_flashcard_set(jsonb) is
 /*
  * Delete the reader's set and its cards. True when it went; false for a set that does not
  * exist, was already deleted, or is somebody else's -- one answer for all three, so an id
- * says nothing about whose it is.
+ * says nothing about whose it is. 28000 with no reader. Under the save's lock, so a delete
+ * and a save of the same reader's sets never interleave.
  */
 create function public.delete_flashcard_set(p_id uuid)
 returns boolean
@@ -380,7 +471,8 @@ begin
 end
 $fn$;
 
-revoke all on function public.delete_flashcard_set(uuid) from public, anon, authenticated;
+revoke all on function public.delete_flashcard_set(uuid)
+  from public, anon, authenticated, service_role;
 grant execute on function public.delete_flashcard_set(uuid) to authenticated;
 
 comment on function public.delete_flashcard_set(uuid) is

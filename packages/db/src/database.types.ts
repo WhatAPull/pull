@@ -4770,6 +4770,7 @@ export type Database = {
         Args: { p_public_course_id: string }
         Returns: Json
       }
+      flashcard_trim: { Args: { p_text: string }; Returns: string }
       generate_mfa_recovery_codes: { Args: never; Returns: string[] }
       generation_budget_state: { Args: never; Returns: string }
       generation_secret: { Args: { p_name: string }; Returns: string }
