@@ -42,6 +42,13 @@ and reviewers should reject it on that basis alone.
      is spent — so the worst case for a day is the cap and not the demand.
    - One requester gets three fast jobs a day, then a widening stagger, and fifty in
      total — counted across both doors, under one per-requester advisory lock.
+   - Who may ask is an allowlist, or every reader with an account once the study beta
+     is open. It opens only on a release gate: the evaluator's report of a reviewed run,
+     whose gates, counts, pipeline and date the schema checks and whose review is the
+     operator's recorded word — written, as the switch is, by the database owner alone
+     (`docs/study-beta.md`). Opening it widens who may spend, never the cap: study
+     courses together are held to `study_daily_cap_cents()`, half the day, so they cannot
+     leave the catalogue's generation nothing.
    - The result is `private` and never joins the catalogue, so it cannot be a way to
      publish around law 4.
 
