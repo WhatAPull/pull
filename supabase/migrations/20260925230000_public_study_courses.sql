@@ -1640,6 +1640,7 @@ declare
   owned      int;
   total      bigint;
   used       int;
+  waiting    bigint;
   over       boolean;
   delay_for  int;
   new_job    uuid;
@@ -1801,7 +1802,27 @@ begin
     raise exception 'your share of today''s study generation budget is spent. It resets at 00:00 UTC.'
       using errcode = '53400';
   end if;
-  if public.study_spend_today() + public.study_min_job_cents() > public.study_daily_cap_cents() then
+  -- The study ceiling counts, besides what is charged and held, every course already admitted
+  -- that today's study spend does not see yet -- queued or running, with nothing charged to it
+  -- today and nothing held for it -- at the least a course reserves. Counting spend alone, eight
+  -- readers at an empty day were all admitted, and the five it could not fund waited out the
+  -- worker's day of budget waits and then failed. Under the reader's lock, not the budget's:
+  -- two readers at the door at once are each counted without the other, and the reservation,
+  -- under one lock for the whole budget, is what holds the ceiling exactly.
+  select count(*) into waiting
+  from public.generation_jobs j
+  where j.kind = 'study_course' and j.status in ('queued', 'running')
+    and not exists (
+      select 1 from public.cost_ledger cl
+      where cl.job_id = j.id
+        and cl.created_at >= date_trunc('day', (now() at time zone 'utc')) at time zone 'utc')
+    and not exists (
+      select 1 from public.budget_reservations br
+      where br.job_id = j.id and br.settled_at is null
+        and br.created_at >= now() - public.budget_reservation_ttl()
+        and br.created_at >= date_trunc('day', (now() at time zone 'utc')) at time zone 'utc');
+  if public.study_spend_today() + (waiting + 1) * public.study_min_job_cents()
+     > public.study_daily_cap_cents() then
     raise exception 'today''s study generation budget is spent. Study generation resumes at 00:00 UTC.'
       using errcode = '53400';
   end if;
