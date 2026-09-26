@@ -30,7 +30,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  BUDGET_RECHECK_MS,
   budgetLine,
+  budgetOf,
+  budgetRefusal,
   fitImportSource,
   truncationNote,
   checkSubmission,
@@ -55,7 +58,7 @@ import {
 } from '../lib/studio-api.js';
 import type { ImportedItem } from '../lib/import-api.js';
 import { isOfflineFailure } from '../lib/offline.js';
-import { sqlState } from '../lib/rpc-error.js';
+import { sqlDetail, sqlState } from '../lib/rpc-error.js';
 import { mutationId } from '../lib/submission.js';
 import { StudyImport } from './StudyImport.js';
 
@@ -272,6 +275,38 @@ function StudioSummary({
     };
   }, [userId, reloadJobs]);
 
+  /*
+   * Asked again while the day is COMMITTED, and only then.
+   *
+   * `committed` is a day whose money left is promised to jobs already waiting to start.
+   * It reopens as they run, in minutes, and the screen told the reader "in a little while"
+   * -- so it has to notice, or the line above the button says there is no room long after
+   * there is. Asked every `BUDGET_RECHECK_MS` while the page is visible, and at once when
+   * it is shown or focused again. A `spent` day is not asked again: nothing changes it
+   * before midnight, and a poll against it would run all day.
+   */
+  useEffect(() => {
+    if (budget !== 'committed') return;
+    let live = true;
+    const recheck = () => {
+      if (document.visibilityState !== 'visible') return;
+      fetchBudgetState()
+        .then((state) => {
+          if (live) setBudget(state);
+        })
+        .catch((e: unknown) => console.error('Could not read the budget', e));
+    };
+    const timer = setInterval(recheck, BUDGET_RECHECK_MS);
+    document.addEventListener('visibilitychange', recheck);
+    window.addEventListener('focus', recheck);
+    return () => {
+      live = false;
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', recheck);
+      window.removeEventListener('focus', recheck);
+    };
+  }, [budget]);
+
   /** The book list, which is what `reloads` retries and the only thing it retries. */
   useEffect(() => {
     let live = true;
@@ -446,7 +481,7 @@ function StudioSummary({
         mutationId: (submission.current ??= mutationId()),
       });
       submission.current = null;
-      setBudget(queued.budget);
+      setBudget(budgetOf(queued.budget));
       setNote(
         // A replay of a job that is already over has no place in a queue to report, and
         // `queue`/`delaySeconds` describe one — so saying "Started." here would sit
@@ -461,12 +496,17 @@ function StudioSummary({
       reloadJobs();
     } catch (e: unknown) {
       console.error('Could not request a summary', e);
+      // A refusal of the DAY, if it is one: which of the door's two it was, and for a
+      // committed day the screen's own words rather than a sentence with its code on.
+      const refusal = budgetRefusal(sqlState(e), sqlDetail(e));
       setError(
         isOfflineFailure(e)
           ? 'That has not reached your account — you look offline. Your text stays here.'
-          : e instanceof Error
-            ? e.message
-            : 'That could not be started just now.',
+          : refusal?.message
+            ? refusal.message
+            : e instanceof Error
+              ? e.message
+              : 'That could not be started just now.',
       );
       /*
        * And the budget line catches up with the refusal.
@@ -480,8 +520,10 @@ function StudioSummary({
       // `53400` is `configuration_limit_exceeded`, which is what both the door check in
       // `enqueue_generation_job` and `reserve_budget` raise, and `sqlState` reads it back
       // off the name `rpcError` gave the error — so the screen updates the line without
-      // parsing the sentence.
-      if (sqlState(e) === '53400') setBudget('spent');
+      // parsing the sentence. DETAIL `committed` is the door's second refusal: the day
+      // has money left that waiting jobs will take, and the line says so, and is asked
+      // again until there is room.
+      if (refusal) setBudget(refusal.budget);
     } finally {
       sendingRef.current = false;
       setSending(false);

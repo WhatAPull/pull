@@ -355,18 +355,7 @@ begin
   end if;
 
   -- Up to the ceiling. Jobs 3..50 -- two are already in from the calls above.
-  --
-  -- Each job is finished before the next one is asked for, which is how a reader who
-  -- really reaches fifty gets there. The door counts every job admitted and not yet
-  -- started (20260926200000), and fifty queued at once is several days of the cap, so
-  -- without this the day would run out long before the ceiling did. The ceiling and the
-  -- stagger count every job the reader created today, whatever became of it, so
-  -- finishing the jobs changes neither.
   for i in 3..50 loop
-    perform set_config('role', 'postgres', true);
-    update public.generation_jobs set status = 'succeeded', finished_at = now()
-     where requester_id = reader and status = 'queued';
-    perform set_config('role', 'authenticated', true);
     delayed := public.enqueue_generation_job('{"kind":"work","title":"Filler"}'::jsonb);
     if i = 4 then
       first_delay := (delayed ->> 'delaySeconds')::int;
@@ -379,11 +368,6 @@ begin
       end if;
     end if;
   end loop;
-
-  perform set_config('role', 'postgres', true);
-  update public.generation_jobs set status = 'succeeded', finished_at = now()
-   where requester_id = reader and status = 'queued';
-  perform set_config('role', 'authenticated', true);
 
   refused := false;
   begin

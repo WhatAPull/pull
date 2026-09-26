@@ -190,14 +190,40 @@ and `generation_budget_state()` applies the same test. **Readers' admitted, unst
 are counted; the catalogue's are not.** `generation_waiting_cents()` counts every job a
 reader asked for (`requester_id is not null`) that is queued or running with nothing charged
 to it today (`cost_cents > 0`, because an attempt ledgered at nothing such as a 429 is not a
-start) and nothing held for it today. Each summary counts at `min_job_cents()`. Each study
-course counts at `study_min_job_cents()`, but a reader's waiting courses together count for
-no more than their study share can still fund, so one reader's queue cannot close the door
-for everyone. A job that has started counts at what it holds or has been charged, which
-`spend_today()` already includes. The door is an estimate: a large source reserves more
-than the floor, and a started job's remaining steps are not counted. Two readers at the
-door at the same moment can each miss the other's job, because the count runs under the
-requester's lock and not the budget's. The reservation is what holds the cap exactly.
+start) and nothing held for it today. A job that has started counts at what it holds or has
+been charged, which `spend_today()` already includes.
+
+**No reader holds more than three jobs' worth of the day.** A reader's waiting summaries
+count at `min_job_cents()` each, for at most three of them (`20260926210000`). Three is the
+fast allowance. Counted in full, eleven submits from one account that each fail for nothing
+when they run closed the door on everyone for as long as they sat in the stagger. A reader's
+waiting study courses count at `study_min_job_cents()` each, together no more than their
+study share can still fund. A reader is never refused for having jobs waiting: the quota
+stays three fast, then a widening stagger, fifty in total. Their jobs past the third are not
+counted, and wait their turn when they run.
+
+The door is an estimate. A large source reserves more than the floor, a started job's
+remaining steps are not counted, and a reader's jobs past their third are not counted
+either. Two readers at the door at the same moment can each miss the other's job, because
+the count runs under the requester's lock and not the budget's. The reservation is what
+holds the cap exactly.
+
+The door refuses a day in **two** ways, and `generation_budget_state()` names both:
+
+| State       | When                                                                        | The reader is told                                                |
+| ----------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `spent`     | `spend_today() + min_job_cents() > cap`: spend alone leaves no room         | Summaries resume at 00:00 UTC                                     |
+| `committed` | spend leaves room, and the waiting jobs take it (53400, DETAIL `committed`) | Try again in a little while; the Studio asks again while it lasts |
+| `low`       | four fifths of the day spent or committed                                   | Nearly used up                                                    |
+| `open`      | otherwise                                                                   | There is room                                                     |
+
+A committed day reopens as the jobs waiting on it run, and one that fails early hands its
+share straight back, so it promises no hour. The Studio re-reads the state every minute
+while it shows `committed`, and when the page is shown again.
+
+The study door, `study_enqueue_course`, still tests spend alone (`spend_today() +
+study_min_job_cents() > cap`) until a follow-up aligns it with this one, after the study
+stack that redefines it has merged.
 
 The catalogue's own jobs, which have no requester, are left out on purpose. The door
 answers a reader's request, and the catalogue is the operator's scheduling. A seeding

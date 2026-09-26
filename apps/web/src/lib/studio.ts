@@ -393,11 +393,65 @@ export function waitMinutes(seconds: number): string {
   return `${minutes} minutes`;
 }
 
-/** What a reader may be told about the day's budget: whether there is room, not how much. */
-export type BudgetState = 'open' | 'low' | 'spent';
+/**
+ * What a reader may be told about the day's budget: whether there is room, not how much.
+ *
+ * `committed` is the day with money left that the jobs already waiting to start will
+ * take. It is not `spent`: that room comes back as those jobs run, and one that fails
+ * early hands its share straight back, so the screen does not promise midnight for it.
+ */
+export type BudgetState = 'open' | 'low' | 'committed' | 'spent';
 
 export function isBudgetState(value: unknown): value is BudgetState {
-  return value === 'open' || value === 'low' || value === 'spent';
+  return value === 'open' || value === 'low' || value === 'committed' || value === 'spent';
+}
+
+/**
+ * Any answer read as a state, and an unknown one as `open`.
+ *
+ * Unknown rather than wrong: a database a migration ahead of this bundle can add a state,
+ * and refusing to let somebody start over a word the screen does not know is the wrong
+ * failure — the door checks the budget itself and refuses with its own sentence.
+ */
+export function budgetOf(value: unknown): BudgetState {
+  return isBudgetState(value) ? value : 'open';
+}
+
+/**
+ * How often a screen showing `committed` asks again, and only while it does.
+ *
+ * A committed day reopens as the jobs waiting on it start or fail — minutes, not hours —
+ * and a reader told "in a little while" should see it happen without reloading. A minute
+ * is slow enough to cost nothing on a screen left open, and the screen also asks when it
+ * is shown again, which is when a reader who went away comes back to look.
+ */
+export const BUDGET_RECHECK_MS = 60_000;
+
+/**
+ * What a refusal from `enqueue_generation_job` says about the day, if anything.
+ *
+ * The door refuses a day in two ways, both `53400`: spent (the money is gone until
+ * midnight UTC, and the door's own sentence says so) and committed (DETAIL `committed`:
+ * the money left is promised to jobs already waiting). The second is given its own
+ * words here, because the door's sentence carries its DETAIL along with it once
+ * `rpcError` has joined them, and a reader has no use for the code.
+ *
+ * `null` for anything else, which leaves the screen's error and the budget line alone.
+ */
+export function budgetRefusal(
+  code: string | undefined,
+  detail: string | undefined,
+): { budget: BudgetState; message: string | null } | null {
+  if (code !== '53400') return null;
+  if (detail === 'committed') {
+    return {
+      budget: 'committed',
+      message:
+        'Today’s budget is taken up by summaries already waiting to start. Try again in a ' +
+        'little while — the line above will say when there is room.',
+    };
+  }
+  return { budget: 'spent', message: null };
 }
 
 /**
@@ -415,6 +469,9 @@ export function isBudgetState(value: unknown): value is BudgetState {
 export function budgetLine(state: BudgetState): string {
   if (state === 'spent') {
     return 'Today’s generation budget is spent. Summaries start again at midnight UTC.';
+  }
+  if (state === 'committed') {
+    return 'Today’s shared generation budget is taken up by summaries already waiting to start. There will be room again as they run.';
   }
   if (state === 'low') {
     return 'Today’s shared generation budget is nearly used up.';
