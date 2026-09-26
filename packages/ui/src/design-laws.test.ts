@@ -1958,6 +1958,35 @@ describe('The Archive legibility laws', () => {
   });
 
   /**
+   * Text on the accent clears the same floor, and in every palette.
+   *
+   * A primary button's label is set on the accent, not on a surface, so the test above
+   * never read it: bone on the dark palettes' accent was 3.26:1 on every primary button
+   * in dark mode, flagged by axe on /courses and /studio with this suite green.
+   */
+  it.each([
+    ['light', () => lightBlock],
+    ['dark', () => darkBlock],
+    ['system dark', () => systemDarkBlock],
+  ])('text on the %s accent clears 4.5:1, at rest and on hover', (theme, get) => {
+    // A dark block restates only what it changes and may name a light token (`var(--ink)`),
+    // so it is read after the light one, as the cascade reads it.
+    const p = palette(`${lightBlock}\n${get()}`);
+    const on = p.get('--on-accent');
+    expect(on, `${theme} palette has no resolvable --on-accent`).toBeDefined();
+    for (const fill of ['--accent', '--accent-hover']) {
+      const ground = p.get(fill);
+      expect(ground, `${theme} palette has no resolvable ${fill}`).toBeDefined();
+      const ratio = contrast(on!, ground!);
+      expect(
+        ratio,
+        `${theme}: --on-accent on ${fill} is ${ratio.toFixed(2)}:1 — a primary button's ` +
+          `label needs 4.5:1 like any other text`,
+      ).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  /**
    * A forced theme must tell the browser which scheme it is.
    *
    * `base.css` sets `color-scheme: light dark`, which is correct for the default

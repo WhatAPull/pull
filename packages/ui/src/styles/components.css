@@ -141,13 +141,13 @@
 .btn--primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: var(--bone);
+  color: var(--on-accent);
 }
 
 .btn--primary:hover {
   background: var(--accent-hover);
   border-color: var(--accent-hover);
-  color: var(--bone);
+  color: var(--on-accent);
 }
 
 .btn:disabled {
