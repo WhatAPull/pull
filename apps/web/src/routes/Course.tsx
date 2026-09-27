@@ -208,6 +208,20 @@ export function Course({
   useEffect(() => {
     if (placedPhase === 'settled') focusAfter('course-placed-title');
   }, [placedPhase]);
+  // A course opened from anywhere -- the list, a link, Back -- is a new screen, and the control
+  // that opened it is gone: without this, keyboard and screen-reader focus was left on the
+  // page body, and nothing said where they were. So once the course has first loaded, its
+  // heading takes focus -- whatever the page settled on: the course, "No such course", or a
+  // failure to load. Once only, and not over a reader who has already moved into the page: a
+  // later load is a refresh (the page looks again while a course is prepared), and must not
+  // take focus from what they are doing.
+  const arrived = useRef(false);
+  useEffect(() => {
+    if (!settled || arrived.current) return;
+    arrived.current = true;
+    const active = document.activeElement;
+    if (active === null || active === document.body) focusAfter('course-title');
+  }, [settled]);
   useEffect(() => {
     const next = focusNext.current;
     if (next === null) return;
@@ -996,7 +1010,9 @@ export function Course({
     return (
       <section className="stack measure" role="alert">
         {back}
-        <h1>Could not load this course.</h1>
+        <h1 id="course-title" tabIndex={-1}>
+          Could not load this course.
+        </h1>
         <p>{offline ? 'You appear to be offline. Courses need an active connection.' : error}</p>
         <button
           type="button"
@@ -1029,7 +1045,9 @@ export function Course({
     return (
       <section className="stack measure">
         {back}
-        <h1>No such course.</h1>
+        <h1 id="course-title" tabIndex={-1}>
+          No such course.
+        </h1>
         <p>
           It may have been deleted, or its last source was. A copy of a public course is also
           removed if What a Pull withdraws the course over its rights.
