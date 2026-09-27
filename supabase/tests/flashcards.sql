@@ -12,7 +12,9 @@
 --     * `updated_at` moves only when something changed, and whenever anything did: a card
 --       deleted, a card added, the description
 --     * a save that names the version it started from is refused when the set has changed
---       since, and when it is gone, so a stale screen neither saves over nor resurrects
+--       since, and when it is gone, so a stale screen neither saves over nor resurrects --
+--       to the microsecond, and only when it would change something, so a retried save whose
+--       answer was lost is made as nothing rather than refused
 --     * another reader sees none of it, and cannot save into it or delete it: the same
 --       answers a set that is not there would give
 --     * no table here takes a direct write, and anon can read neither
@@ -320,6 +322,65 @@ begin
     'baseUpdatedAt', out -> 'updatedAt', 'title', 'Spanish verbs, I'));
   if (select title from public.flashcard_sets where id = set_a) <> 'Spanish verbs, I' then
     raise exception 'the time a save answered with was not accepted as the next base';
+  end if;
+  -- A save whose answer was lost, sent again: the same payload from the same base, which the
+  -- first one made stale by landing. It would change nothing, so it is made as nothing and
+  -- answers with the time the set is at -- not refused as "changed", which told the reader the
+  -- set had been changed somewhere else and offered to save theirs over it.
+  perform pg_temp.as_owner();
+  update public.flashcard_sets set updated_at = '2001-01-01' where id = set_a;
+  perform pg_temp.become_reader(reader_a);
+  payload := five || jsonb_build_object('baseUpdatedAt', '2000-01-01T00:00:00Z');
+  got := pg_temp.refusal(pg_temp.save_sql(payload));
+  if got <> 'ok' then
+    raise exception 'a retried save, changing nothing, was refused: %', got;
+  end if;
+  out := public.save_flashcard_set(payload);
+  if (out ->> 'updatedAt')::timestamptz <> '2001-01-01'
+     or (select updated_at from public.flashcard_sets where id = set_a) <> '2001-01-01' then
+    raise exception 'a retried save moved the set, or answered with another time: %', out;
+  end if;
+  -- Anything it would change is refused, each alone: a field, a card's words, the order, a
+  -- card taken out, a card added, a card under another id.
+  for payload, rows in
+    select q.p, q.what from (values
+      (five || jsonb_build_object('title', 'Spanish verbs, III'), 'a title'),
+      (five || jsonb_build_object('definitionLang', 'fr'), 'a language'),
+      (five || jsonb_build_object('description', null), 'a description taken out'),
+      (jsonb_set(five, '{cards,1,definition}', '"to be, lasting"'), 'a card''s definition'),
+      (jsonb_set(five, '{cards,0,term}', '"iré"'), 'a card''s term'),
+      (five || jsonb_build_object('cards', jsonb_build_array(five -> 'cards' -> 1, five -> 'cards' -> 0,
+         five -> 'cards' -> 2, five -> 'cards' -> 3, five -> 'cards' -> 4)), 'the order'),
+      (five || jsonb_build_object('cards', (five -> 'cards') - 4), 'a card taken out'),
+      (five || jsonb_build_object('cards', (five -> 'cards')
+         || jsonb_build_array(jsonb_build_object('term', 'ver', 'definition', 'to see'))), 'a card added'),
+      (jsonb_set(five, '{cards,4,id}', to_jsonb(extensions.gen_random_uuid())), 'a card''s id')
+    ) as q (p, what)
+  loop
+    got := pg_temp.refusal(pg_temp.save_sql(
+      payload || jsonb_build_object('baseUpdatedAt', '2000-01-01T00:00:00Z')));
+    if got <> '40001/changed' then
+      raise exception 'a stale save changing % was not refused as changed: %', rows, got;
+    end if;
+  end loop;
+  -- A base is a version to the microsecond, as the API renders it: one a microsecond off is
+  -- another version, and a save that changes something from it is refused.
+  got := pg_temp.refusal(pg_temp.save_sql(five || jsonb_build_object(
+    'baseUpdatedAt', '2001-01-01T00:00:00.000001Z', 'title', 'Spanish verbs, III')));
+  if got <> '40001/changed' then
+    raise exception 'a base a microsecond off the set''s time was taken for it: %', got;
+  end if;
+  perform pg_temp.as_owner();
+  update public.flashcard_sets set updated_at = '2001-01-01T00:00:00.000001Z' where id = set_a;
+  perform pg_temp.become_reader(reader_a);
+  got := pg_temp.refusal(pg_temp.save_sql(five || jsonb_build_object(
+    'baseUpdatedAt', '2001-01-01T00:00:00Z', 'title', 'Spanish verbs, III')));
+  if got <> '40001/changed' then
+    raise exception 'a set a microsecond past its base was taken for it: %', got;
+  end if;
+  if (select title from public.flashcard_sets where id = set_a) <> 'Spanish verbs, I'
+     or (select count(*) from public.flashcards where set_id = set_a) <> 5 then
+    raise exception 'a refused stale save changed the set';
   end if;
   -- A set deleted on another screen is not put back by one that still had it open.
   got := pg_temp.refusal(pg_temp.save_sql(jsonb_build_object(

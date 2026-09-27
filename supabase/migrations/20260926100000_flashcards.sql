@@ -140,13 +140,21 @@ comment on table public.flashcards is
  * id itself, so a retry is exact. Cards of the set the payload does not name are deleted.
  *
  * TWO SCREENS DO NOT SAVE OVER EACH OTHER UNSEEN. `baseUpdatedAt` is the `updated_at` of the
- * set the editor started from. When the set has changed since, the save is refused (40001
- * changed) rather than made: a tab left open on the old cards would otherwise save them
- * back, deleting every card another tab had added -- and with them, from PR 13, each card's
- * memory. When the set is gone, deleted on another screen, it is refused as not found rather
- * than put back. The web then says so, and sends the save again without `baseUpdatedAt` only
- * when the reader chooses to save over the newer set; a save without it is the reader's word,
- * and puts back a set deleted elsewhere, with what they saved.
+ * set the editor started from. When the set has changed since, and this save would change it
+ * again, the save is refused (40001 changed) rather than made: a tab left open on the old
+ * cards would otherwise save them back, deleting every card another tab had added -- and with
+ * them, from PR 13, each card's memory. When the set is gone, deleted on another screen, it is
+ * refused as not found rather than put back. The web then says so, and sends the save again
+ * without `baseUpdatedAt` only when the reader chooses to save over the newer set; a save
+ * without it is the reader's word, and puts back a set deleted elsewhere, with what they saved.
+ *
+ * AND A RETRY IS NOT A CONFLICT. A save that landed and whose answer was lost is sent again as
+ * it was, from the same base -- which the first one has just made stale. It was refused as
+ * "changed", and the editor told the reader the set had been changed somewhere else, which it
+ * had not, and offered to save theirs over it. So a stale base is refused only when the save
+ * would change something: the set's fields, or its cards -- their ids, words and order, as
+ * stored. A save that would change nothing is made as nothing, and answers with the time the
+ * set is at.
  *
  * Refusals, each with its SQLSTATE and, where one code covers several, a DETAIL:
  *
@@ -158,7 +166,8 @@ comment on table public.flashcards is
  *                  cards not an array or empty, a card id twice, or a card id that belongs to
  *                  another set -- a card is never moved between sets, since its memory would
  *                  move with it
- *   40001 changed  `baseUpdatedAt` is not the set's `updated_at`: it changed since
+ *   40001 changed  `baseUpdatedAt` is not the set's `updated_at` -- it changed since -- and
+ *                  this save would change it
  *   54000 sets     the reader already has 500 sets and this would be another
  *   54000 cards    more than 2,000 cards
  *   54000 size     more than 2 MB of text in the set: its title, description, terms and
@@ -208,6 +217,9 @@ declare
   v_ids        uuid[] := '{}';
   v_terms      text[] := '{}';
   v_defs       text[] := '{}';
+  v_had_ids    uuid[];
+  v_had_terms  text[];
+  v_had_defs   text[];
   v_now        timestamptz := now();
   n            int;
 begin
@@ -353,8 +365,19 @@ begin
       raise exception 'no such flashcard set' using errcode = 'P0002';
     end if;
     if v_existing.updated_at is distinct from v_base then
-      raise exception 'the set has changed since it was opened'
-        using errcode = '40001', detail = 'changed';
+      -- Changed since, but would this change it? Not when it is what this save says: a retry.
+      select coalesce(array_agg(f.id order by f.position), '{}'),
+             coalesce(array_agg(f.term order by f.position), '{}'),
+             coalesce(array_agg(f.definition order by f.position), '{}')
+        into v_had_ids, v_had_terms, v_had_defs
+      from public.flashcards f
+      where f.set_id = v_id and f.owner_id = uid;
+      if (v_existing.title, v_existing.description, v_existing.term_lang,
+          v_existing.definition_lang, v_had_ids, v_had_terms, v_had_defs)
+         is distinct from (v_title, v_desc, v_term_lang, v_def_lang, v_ids, v_terms, v_defs) then
+        raise exception 'the set has changed since it was opened'
+          using errcode = '40001', detail = 'changed';
+      end if;
     end if;
   end if;
 
