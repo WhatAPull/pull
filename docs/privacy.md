@@ -1,9 +1,26 @@
 # Privacy Policy
 
-**Effective 30 September 2026.** Every revision of this document is a commit in this
+**Effective 1 October 2026.** Every revision of this document is a commit in this
 repository, so what changed and when is public history rather than a claim.
 
-**You can add public study courses.** We publish some study courses ourselves, made from
+**You can now make flashcard sets of your own.** A set is a title, a description if you
+give one, the language each side is written in if you choose one, and its cards — each a
+term and a definition you typed, pasted, or opened from a file (`flashcard_sets`,
+`flashcards`). A file you open is read in your browser and is not uploaded; only the cards
+you save are. Your sets are readable only by you, are never published and never join the
+catalogue, and nothing in them is sent to a model: studying them — card by card, Learn,
+Test and Match — happens in your browser, and how you did is not recorded by us. So you can
+study without a connection, a copy of each set you open stays in the browser you opened it
+in; a round of cards in progress, your best Match time, and changes to a set you have not
+saved yet are kept in that browser too — the changes in the tab you made them in. Each goes
+from a browser when you delete the set there (its unsaved changes, from the tab you delete
+it in), when you sign out there, and when you delete your account there; a set you delete
+on another device goes from this one the next time you open your list of sets here. Reading
+a card aloud uses only a voice installed on your device. Your sets are in your account
+export and are deleted with your account. See [What you create](#what-you-create).
+
+The previous revision, effective 30 September, said that **you can add public study
+courses.** We publish some study courses ourselves, made from
 works in the public domain or licensed to us and checked by a person -- never from anything a
 reader saved. Adding one copies it into your account as one of your courses, with its short
 quotations from the work; from then on it is private to you and kept like your own courses,
@@ -15,7 +32,7 @@ about the rights in it, we may delete every reader's copy of it** -- and with yo
 answers to its questions, your place in it, and what your answers showed you remember of it.
 See [What you create](#what-you-create).
 
-The previous revision, effective 29 September, said that **study courses may open to every
+The revision before, effective 29 September, said that **study courses may open to every
 reader with an account, and we measure how well they teach.** Until then only readers we
 invited could make a study course. We will open courses
 to everyone only after a human-reviewed quality check passes, and what making one sends and
@@ -27,7 +44,7 @@ an idea the course counted as known was answered wrong, how many reports were ma
 which only the people running the service can read, and in which no row names a reader.
 Nothing is sent to a model. See [What you create](#what-you-create).
 
-The revision before, effective 28 September, **made your study courses remember what your
+Before that, the revision effective 28 September **made your study courses remember what your
 answers show.** For each claim a course
 teaches, we keep how well you remember it — worked out from your answers the course could
 check, the way your feed's review schedule is — and when you last answered it right or
@@ -38,7 +55,7 @@ lesson, your own judgement of an answer, and an answer you looked up never do �
 wrong answer, or your own "not had", still says you did not. Nothing is sent to a model.
 See [What you create](#what-you-create).
 
-Before that, the revision effective 27 September **recorded answers to your study courses'
+Earlier, the revision effective 27 September **recorded answers to your study courses'
 questions.** When you answer a question in one of your courses, we keep what you chose,
 typed or arranged (up to 1,000 characters), whether it was right, whether you looked at the
 passage first or were trying again after seeing the answer, and — for a short answer the
@@ -48,7 +65,7 @@ the database, not by a model, and no answer is sent to any model provider. An an
 without a connection waits on your device until it can be sent — through a sign-out, for
 when you sign in again — and is removed from the device when you delete your account.
 
-Earlier, the revision effective 26 September **offered study courses in the app** to
+The one before that, effective 26 September, **offered study courses in the app** to
 accounts in the limited beta. In Studio you choose up to five study sources you saved and
 say what the course is for; once you confirm, the title and text of those sources, and that
 goal, are sent to Google's Gemini API, and the course it prepares is stored privately in
@@ -240,6 +257,16 @@ readable only by you, is never reviewed by us, and is in your export. It is dele
 belongs to — which deleting any source of that version deletes — with the course, and with
 your account.
 
+**Flashcard sets** are lists of terms and definitions you make yourself: typed, pasted, or
+opened from a file on your device, which is read in your browser and not uploaded. A set's
+title, description, the languages you say its sides are in, and each card's term, definition
+and place in the set are stored in `flashcard_sets` and `flashcards` under your account.
+They are readable only by you, are never published, never enter the catalogue or anybody
+else's experience, and are never sent to a model. Studying a set records nothing on our side:
+which cards you said you know, your answers and your times stay in your browser. A set's
+language is used for one thing, choosing a voice on your device to read it aloud. You can
+delete a set from its page; it is in your account export and deleted with your account.
+
 **Feedback** is worth its own sentence, because it is the one thing here you write _to us_
 rather than for yourself. Sending it stores what you wrote, the subject you chose, and the
 path of the screen you were on before you opened Settings — `/explore`, say. The path is
@@ -404,6 +431,10 @@ Checking a course, reporting part of it, correcting it and answering its questio
 no model. An answer is checked by the database against the course's own answer, and what you
 type is kept only in your account.
 
+**Flashcard sets involve no model at all.** The four ways of studying one run in your
+browser, a wrong option in a question is another card from your own set, and a typed answer
+is checked in your browser against the card.
+
 Two schema columns (`explanations.gap_score`, `graded_at`) anticipate a further feature that
 would have a model grade your Say It Back answers. **Nothing writes to them today, and no
 explanation you have written has ever been sent to a provider.** If that feature ships, this
@@ -491,6 +522,17 @@ What the app does put on your device, all of it first-party and all of it necess
   answer you had seen is never taken as one you remembered. It
   is kept under your own id and the page's, sent only while you are signed in, waits through
   a sign-out for you, and is removed from the device you delete your account on.
+- **Your flashcard sets**, in IndexedDB — a copy of each set you open, so you can study it
+  without a connection — and, in `localStorage`, a round of cards in progress and your best
+  time in Match, so a reload picks up where you were; a round is let go once it ends. In
+  `sessionStorage`, which the browser keeps for one tab, changes to a set you have not saved
+  yet, so leaving the page by accident does not lose them. All are kept under your own id,
+  in the browser they were made in, and are removed from it when you sign out there and when
+  you delete your account there. Deleting a set there removes its copy, its round and its
+  best time from that browser, and its unsaved changes from the tab you delete it in; changes
+  to it you had not saved in another tab stay in that tab until you save them or let them go.
+  A copy of a set you deleted on another device is removed the next time your list of sets is
+  read here; changes you had not saved stay in the tab until you save them or let them go.
 - **The app itself**, cached by a service worker.
 
 Clearing your browser's site data removes all of it, and signs you out.
@@ -539,6 +581,11 @@ and typing the same answer sends no audio at all.
 While your account exists, your data exists — unlimited history is one of the five things
 this product refuses to charge for, so we are not going to quietly trim it.
 
+You can delete a flashcard set, with all its cards, from the set's page, without deleting
+your account; what that browser kept of it goes with it (unsaved changes to it, from the tab
+you delete it in), and a copy on another device goes the next time you open your list of
+sets there.
+
 You can delete an individual private study source and all its versions from Studio.
 This removes the extracted text for that source, and every version of a study course and
 every cached model output built from it, with their reports, history, answers and
@@ -552,7 +599,7 @@ record of when you added it stays until you delete your account.
 
 When you delete your account, deletion cascades from your user record through every table
 keyed to it: profile, preferences, stashes, saves, notes, highlights, history, impressions,
-knowledge states, recall events, vectors, convictions and explanations. That is a foreign-key
+knowledge states, recall events, vectors, convictions, explanations and flashcard sets. That is a foreign-key
 cascade in the schema, not a scheduled cleanup job.
 
 You do this yourself, from **Account → Delete this account**. It is not a request you

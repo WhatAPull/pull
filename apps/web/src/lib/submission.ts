@@ -36,15 +36,8 @@ let last = 0;
  * submission. It never needs to be unguessable.
  */
 export function mutationId(): string {
-  const c: Crypto | undefined = globalThis.crypto;
-  if (typeof c?.randomUUID === 'function') return c.randomUUID();
-  if (typeof c?.getRandomValues === 'function') {
-    const b = c.getRandomValues(new Uint8Array(16));
-    b[6] = ((b[6] as number) & 0x0f) | 0x40;
-    b[8] = ((b[8] as number) & 0x3f) | 0x80;
-    const hex = [...b].map((n) => n.toString(16).padStart(2, '0')).join('');
-    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-  }
+  const id = cryptoUuid();
+  if (id !== null) return id;
   /*
    * 32 hex characters, then sliced. The first version built the groups by hand and got
    * a 12-character first group — a string shaped roughly like a uuid, which
@@ -60,6 +53,36 @@ export function mutationId(): string {
     `${body.slice(0, 8)}-${body.slice(8, 12)}-4${body.slice(13, 16)}-` +
     `8${body.slice(17, 20)}-${body.slice(20, 32)}`
   );
+}
+
+/**
+ * An id a reader's browser mints for a row keyed in a space every reader shares -- a
+ * flashcard set, a card -- so that a retried save finds the row it made.
+ *
+ * Unlike a mutation id, this one must be unguessable. The key is global: a save of an id
+ * that is another reader's is refused, so an id that could be predicted could be taken
+ * first, and the set a reader was making could then never be saved. So it comes from the
+ * platform's secure random source or not at all, and never from `mutationId`'s last
+ * resort. `getRandomValues` is there in a non-secure context, where `randomUUID` is not;
+ * a browser with neither is none this app runs in, and it is told so rather than handed
+ * an id anyone could work out.
+ */
+export function recordId(): string {
+  const id = cryptoUuid();
+  if (id === null) throw new Error('This browser has no secure random source to make an id.');
+  return id;
+}
+
+/** A v4 uuid from the platform's secure random source, or null where there is none. */
+function cryptoUuid(): string | null {
+  const c: Crypto | undefined = globalThis.crypto;
+  if (typeof c?.randomUUID === 'function') return c.randomUUID();
+  if (typeof c?.getRandomValues !== 'function') return null;
+  const b = c.getRandomValues(new Uint8Array(16));
+  b[6] = ((b[6] as number) & 0x0f) | 0x40;
+  b[8] = ((b[8] as number) & 0x3f) | 0x80;
+  const hex = [...b].map((n) => n.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 export function nextSubmissionStamp(): number {

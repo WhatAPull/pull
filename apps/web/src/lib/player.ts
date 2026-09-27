@@ -63,6 +63,12 @@ export interface Track {
    * the next Pull on its own, and one played over a paused Pull skipped it.
    */
   localOnly?: true;
+  /**
+   * The language the text is in, when it is not the reader's -- a flashcard's side. Spoken
+   * by a voice for it (`SpeakOptions.lang`). Only ever set on a local-only track, so it is
+   * never stored either.
+   */
+  lang?: string;
 }
 
 export type PlayerStatus = 'idle' | 'playing' | 'paused';

@@ -84,6 +84,10 @@ is not cleared cannot become public even if something earlier said it could. A r
 private document is theirs to summarise; the same summary made public is a different act,
 and it is the act this section's machinery is for.
 
+**A flashcard set is the reader's own text, and stays theirs.** Its cards are what they typed
+or imported; it is readable by its owner alone, is never published, never joins the
+catalogue, and never reaches a model (`docs/flashcards.md`).
+
 Once users publish generated summaries or uploads, the hosted service becomes a host of
 third-party material and needs the §512 machinery before that launches:
 

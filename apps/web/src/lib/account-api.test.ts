@@ -226,6 +226,27 @@ describe('buildAccountExport', () => {
     expect(out.data['study_public_enrolments']).toHaveLength(150);
     expect(out.incomplete).toEqual([]);
   });
+  it('includes the reader’s flashcard sets and every card in them, past one page', async () => {
+    TABLES.set('flashcard_sets', [{ id: 'set-1', owner_id: 'u1', title: 'Spanish verbs' }]);
+    TABLES.set(
+      'flashcards',
+      Array.from({ length: 150 }, (_, i) => ({
+        id: `card-${String(i).padStart(3, '0')}`,
+        owner_id: 'u1',
+        set_id: 'set-1',
+        term: `term ${i}`,
+      })),
+    );
+
+    const out = await buildAccountExport('u1', null);
+
+    expect(out.data['flashcard_sets']).toEqual([
+      { id: 'set-1', owner_id: 'u1', title: 'Spanish verbs' },
+    ]);
+    expect(out.data['flashcards']).toHaveLength(150);
+    expect(new Set((out.data['flashcards'] as { id: string }[]).map((c) => c.id)).size).toBe(150);
+    expect(out.incomplete).toEqual([]);
+  });
   it('walks the cached model output in small pages and still takes every row', async () => {
     TABLES.set(
       'study_stage_cache',
