@@ -543,3 +543,20 @@
   padding: 0;
   min-inline-size: 0;
 }
+
+/* Held, it looks like the controls above that wait -- recoloured, not faded: `.btn:disabled`
+   fades to 0.45, under 2:1 on either paper, and a browser's disabled select to 0.7. The pointer
+   says what it waits on. */
+.flashcards__hold:disabled,
+.flashcards__hold:disabled * {
+  cursor: progress;
+}
+
+.flashcards__hold:disabled .btn:disabled {
+  opacity: 1;
+  color: var(--text-faint);
+}
+
+.flashcards__hold:disabled select:disabled {
+  opacity: 1;
+}

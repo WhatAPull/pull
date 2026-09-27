@@ -37,9 +37,9 @@ flashcard_sets ─── flashcards     a set, and its cards in order
   same function. A title of one no-break space is blank to the editor and to the database
   alike. `flashcard_trim` has a standard body, so Postgres records that it calls
   `study_space_class()` and refuses to drop that function from under the checks; redefining
-  it would change what they accept, which its comment says. Lengths are characters (code points) on both sides: the editor counts them, not
-  JavaScript's UTF-16 units, and a box stops typing only at twice its limit, so it never
-  cuts a text the database would take.
+  it would change what they accept, which its comment says. Lengths are characters (code
+  points) on both sides: the editor counts them, not JavaScript's UTF-16 units, and a box
+  stops typing only at twice its limit, so it never cuts a text the database would take.
 - **Private, and nothing else.** One policy each, `for select to authenticated using
 (owner_id = (select auth.uid()))`. anon can read neither table, and no role has a write
   grant on either: the two functions below are the only way in, because the limits are
@@ -149,7 +149,9 @@ set of 150 cards embedded as `flashcards(*)` came back with 100. So:
   first page with an id before the cursor: neither read nor counted. Two cannot tell a set
   made behind the pages from another deleted in the same moment, since both counts still
   agree; that window is the length of a read, and what it costs is this device's copy of the
-  new set, its round and its best time, not the set, which the next opening reads back.
+  new set, its round and its best time, not the set, which the next opening reads back. A
+  count after the last page that fails leaves the list shown and called incomplete: every
+  page was read, and only what may be pruned is unknown.
 - **A set** is its row, then its cards by `position` in parallel pages of 100, then its
   `updated_at` again. A set that changed while being read — its time moved, or its card count
   disagrees — is read again from the start, up to three times.
@@ -183,12 +185,18 @@ set of 150 cards embedded as `flashcards(*)` came back with 100. So:
   Up and Down find the card where it is when the press lands, a press on a card already gone
   does nothing, and what is said ("Card 974 removed.") is the card's place as it was then —
   said again when the same words come twice.
-- **Held while it saves.** Every box and button of the editor is held (a disabled fieldset)
-  until the save answers, and focus in them moves to Save, which says "Saving…". What was
+- **Held while it saves.** Every box and button of the editor is held (a disabled fieldset,
+  recoloured rather than faded) until the save answers, and focus in them moves to Save,
+  which says "Saving…" before it is focused; the top of the editor says so too. What was
   typed in between used to reach neither the set — the save carries the draft as it was when
-  Save was pressed — nor the kept draft, which the editor lets go once a save succeeds. A new
-  set's save opens the set only if the reader is still on the screen they saved from; one who
-  left for the list finds it read in there.
+  Save was pressed — nor the kept draft, which the editor lets go once a save succeeds. The
+  ways out and the conflict's choices wait too: Cancel during a save said the changes were not
+  saved, and then the save landed and took the reader out of whatever they had gone on to.
+  Import holds its title and its box the same way. A new set's save opens the set only if
+  the reader is still on the screen they pressed Save on — the screen, not the set's id, since
+  a kept draft goes on under the id its first screen minted; one who left for the list finds
+  it there, said in words. "Saved." is said once focus is on the set's title, not with the
+  move, which read the heading over it.
 - Saving needs a connection; offline, Save says why instead of failing.
 
 ## Importing
@@ -269,7 +277,10 @@ sitting (Shuffle, Retake, Play again) is a new seed. A typed answer is graded by
 the rest of the app grades typed recall with, against the card's own answer; another card's
 answer that is right for the prompt (below) is right typed as it is. Every mode has
 **Answer with: Term / Definition**; the other side is the prompt. Esc, or **Back to the
-set**, leaves a mode, and focus moves to the new heading on every screen change.
+set**, leaves a mode, and focus moves to the new heading on every screen change — except that
+Esc does not leave a Test with answers not yet submitted, or a Learn with anything answered
+and not all learnt: it was one key between a keyboard reader and a whole sitting thrown
+away. **Back to the set**, which has to be pressed, still leaves them.
 
 **Distractors** are the set's own other cards' answers on the side being answered: each
 once, and never one a reader would take for the right answer — two answers with the same

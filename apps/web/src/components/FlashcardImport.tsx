@@ -123,6 +123,7 @@ export function FlashcardImport({
           rows={8}
           dir={leadingDirection(text)}
           value={text}
+          readOnly={busy}
           onChange={(e) => setText(e.target.value)}
           aria-describedby={`${id}-text-note`}
         />
@@ -139,6 +140,7 @@ export function FlashcardImport({
           id={`${id}-file`}
           type="file"
           className="field__input"
+          disabled={busy}
           accept=".txt,.csv,.tsv,text/plain,text/csv,text/tab-separated-values"
           onChange={(event) => {
             const selected = event.target.files?.[0];

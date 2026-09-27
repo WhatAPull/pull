@@ -88,7 +88,9 @@ export async function fetchSets(signal?: AbortSignal): Promise<SetList> {
   let recount = supabase.from('flashcard_sets').select('id', { count: 'exact', head: true });
   if (signal) recount = recount.abortSignal(signal);
   const { error: again, count: counted } = await recount;
-  if (again) throw rpcError(again);
+  // Every page is in; a count that failed says only that completeness is unknown -- the list
+  // is shown, and this device prunes nothing on it.
+  if (again) return { sets: shapeSetSummaries(rows).sort(newestFirst), complete: false };
   const sets = shapeSetSummaries(rows).sort(newestFirst);
   return {
     sets,

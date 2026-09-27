@@ -15,8 +15,15 @@ type Row = Record<string, unknown>;
 /** The rows the fake serves, by table. Set per test. */
 const TABLES = new Map<string, Row[]>();
 /** Every request made, in order: its table and what it asked for. */
-const REQUESTS: { table: string; gt: string | null; counted: boolean; range: number[] | null }[] =
-  [];
+const REQUESTS: {
+  table: string;
+  gt: string | null;
+  counted: boolean;
+  head: boolean;
+  range: number[] | null;
+}[] = [];
+/** Whether request `n` (1-based) is answered with an error and no body, as a HEAD's is. */
+let failRequest: (n: number) => boolean = () => false;
 /** Run before each request is answered, so a test can change the rows mid-read. */
 let beforeAnswer: (n: number) => void = () => undefined;
 /** What the two functions answer. */
@@ -34,10 +41,12 @@ vi.mock('./supabase.js', () => {
     let limit = 100;
     let range: [number, number] | null = null;
     let counted = false;
+    let head = false;
     let embedCount = false;
     const self = {
       select: (columns: string, options?: { count?: string; head?: boolean }) => {
         counted = options?.count === 'exact';
+        head = options?.head === true;
         embedCount = columns.includes('flashcards(count)');
         return self;
       },
@@ -62,9 +71,17 @@ vi.mock('./supabase.js', () => {
         return self;
       },
       abortSignal: () => self,
-      then: (resolve: (r: { data: Row[]; error: null; count: number | null }) => unknown) => {
-        REQUESTS.push({ table, gt: gt?.[1] ?? null, counted, range });
+      then: (
+        resolve: (r: {
+          data: Row[] | null;
+          error: { message: string } | null;
+          count: number | null;
+        }) => unknown,
+      ) => {
+        REQUESTS.push({ table, gt: gt?.[1] ?? null, counted, head, range });
         beforeAnswer(REQUESTS.length);
+        if (failRequest(REQUESTS.length))
+          return resolve({ data: null, error: { message: '' }, count: null });
         const matching = (TABLES.get(table) ?? []).filter((r) => eq.every(([c, v]) => r[c] === v));
         const after = gt;
         const sorted = [...matching]
@@ -125,6 +142,7 @@ beforeEach(() => {
   REQUESTS.length = 0;
   RPC_CALLS.length = 0;
   beforeAnswer = () => undefined;
+  failRequest = () => false;
 });
 
 describe('fetchSets', () => {
@@ -134,12 +152,12 @@ describe('fetchSets', () => {
     expect(list).toHaveLength(250);
     expect(complete).toBe(true);
     // Three pages, each after the last id of the one before; the first counts, and so does
-    // a request after the last.
-    expect(REQUESTS.map((r) => [r.gt, r.counted])).toEqual([
-      [null, true],
-      [uuid(100), false],
-      [uuid(200), false],
-      [null, true],
+    // a request after the last -- for the count alone, with no rows.
+    expect(REQUESTS.map((r) => [r.gt, r.counted, r.head])).toEqual([
+      [null, true, false],
+      [uuid(100), false, false],
+      [uuid(200), false, false],
+      [null, true, true],
     ]);
     const times = list.map((s) => s.updatedAt);
     expect(times).toEqual([...times].sort().reverse());
@@ -184,6 +202,15 @@ describe('fetchSets', () => {
     };
     const { sets: list, complete } = await fetchSets();
     expect(list).toHaveLength(151);
+    expect(complete).toBe(false);
+  });
+
+  it('shows a list read in full when only the count after it fails, and calls it incomplete', async () => {
+    TABLES.set('flashcard_sets', sets(150));
+    // The count after the last page: a HEAD, whose failure has no body to say why.
+    failRequest = (n) => n === 3;
+    const { sets: list, complete } = await fetchSets();
+    expect(list).toHaveLength(150);
     expect(complete).toBe(false);
   });
 

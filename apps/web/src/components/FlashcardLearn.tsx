@@ -10,7 +10,7 @@
  * nothing is recorded, so it costs nobody anything but them.
  */
 import { Meter } from '@wap/ui';
-import { useId, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import {
   answerLearn,
   claimRight,
@@ -45,12 +45,15 @@ export function FlashcardLearn({
   cardIds,
   headingId,
   onLeave,
+  onWork,
 }: {
   set: FlashcardSet;
   /** The cards to learn: all of the set, or the ones a test missed. */
   cardIds: readonly string[];
   headingId: string;
   onLeave: () => void;
+  /** Whether leaving now would throw a sitting away: anything answered, and not all learnt. */
+  onWork?: (holds: boolean) => void;
 }) {
   const id = useId();
   const focusAfter = useFocusAfter();
@@ -72,6 +75,12 @@ export function FlashcardLearn({
   const between = !empty && !done && learnRoundOver(state);
   const answered = state.answered;
   const promptSide: AnswerSide = state.answerWith === 'term' ? 'definition' : 'term';
+
+  // Anything answered and not yet learnt is a sitting that leaving would throw away.
+  const holds =
+    !empty && !done && (state.roundNo > 1 || state.position > 0 || state.answered !== null);
+  useEffect(() => onWork?.(holds), [holds, onWork]);
+  useEffect(() => () => onWork?.(false), [onWork]);
 
   const restart = (answerWith: AnswerSide) => {
     setState(startLearn(set.cards, cardIds, answerWith, mutationId()));

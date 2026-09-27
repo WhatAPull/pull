@@ -59,6 +59,8 @@ export function Flashcards({
   const [importTitle, setImportTitle] = useState('');
   const [importError, setImportError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
+  // Said on the list: a set saved from a screen the reader had already left.
+  const [listNotice, setListNotice] = useState<string | null>(null);
   // The new set's id while its screen -- New set or Import -- is the one showing, and null on
   // the list or once this page has gone: a save answers only the screen it was made from.
   const showing = useRef<string | null>(null);
@@ -133,6 +135,7 @@ export function Flashcards({
   const open = (next: View) => {
     setView(next);
     setImportError(null);
+    setListNotice(null);
     if (next !== 'list') setNewId(mutationId());
     focusAfter(next === 'new' ? NEW_TITLE : next === 'import' ? IMPORT_TITLE : LIST_TITLE);
     window.scrollTo(0, 0);
@@ -151,14 +154,21 @@ export function Flashcards({
       : 'Making or importing a set needs a connection.';
 
   /*
-   * A save opens the set it made -- if the reader is still where they pressed Save. One who
-   * left while it was on its way, for another page or for the list, was pulled back to the set
-   * when the answer came. The set is made all the same; on the list it is read in again.
+   * A save opens the set it made -- if the reader is still on the screen they pressed Save on.
+   * One who left while it was on its way, for another page, was pulled back to the set when the
+   * answer came. The screen is the one showing when Save was pressed, not the set's id: a new
+   * set's kept draft goes on under the id its first screen minted, which no later screen has.
+   * A set made from a screen since left is read into the list, and said there.
    */
   const saved = async (payload: SavePayload) => {
+    const from = showing.current;
     const out = await saveSet(payload);
-    if (showing.current === payload.id) onNavigate(`/flashcards/${encodeURIComponent(out.id)}`);
-    else if (mounted.current) setAttempt((n) => n + 1);
+    if (from !== null && showing.current === from) {
+      onNavigate(`/flashcards/${encodeURIComponent(out.id)}`);
+    } else if (mounted.current) {
+      setListNotice(`“${payload.title}” is saved.`);
+      setAttempt((n) => n + 1);
+    }
   };
 
   if (view === 'new') {
@@ -234,6 +244,8 @@ export function Flashcards({
             className="field__input"
             dir="auto"
             value={importTitle}
+            // Held while the set is made under it, as the editor's boxes are.
+            readOnly={importing}
             // Units, of which an emoji is two: twice the limit, and the limit said in characters.
             maxLength={TITLE_MAX * 2}
             onChange={(e) => setImportTitle(e.target.value)}
@@ -332,6 +344,10 @@ export function Flashcards({
           Making, importing, editing or deleting a set needs a connection.
         </p>
       )}
+      {/* Always drawn, so what it later says is announced: see `saved`. */}
+      <p role="status" className={listNotice ? 'flashcards__notice' : 'sr-only'}>
+        {listNotice}
+      </p>
 
       {sets.length === 0 ? (
         <div className="stack flashcards__empty">

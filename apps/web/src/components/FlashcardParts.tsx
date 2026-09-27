@@ -20,23 +20,31 @@ const FOCUS_WAIT_DRAWS = 60;
  * top of the page, where a keyboard or screen-reader reader has lost their place. Each such
  * change names the element focus goes to next, and it goes there once that is drawn. The
  * same mechanism `Course.tsx` uses, for the same reason.
+ *
+ * `then` runs once focus has moved -- or once the element is given up on -- for what should
+ * be said after it: a live region written in the same draw as a focus move was written
+ * before it, and the heading focus landed on was read over it.
  */
-export function useFocusAfter(): (id: string) => void {
-  const next = useRef<{ id: string; draws: number } | null>(null);
+export function useFocusAfter(): (id: string, then?: () => void) => void {
+  const next = useRef<{ id: string; draws: number; then?: () => void } | null>(null);
   useEffect(() => {
     const target = next.current;
     if (target === null) return;
     const element = document.getElementById(target.id);
     if (!element) {
       target.draws += 1;
-      if (target.draws > FOCUS_WAIT_DRAWS) next.current = null;
+      if (target.draws > FOCUS_WAIT_DRAWS) {
+        next.current = null;
+        target.then?.();
+      }
       return;
     }
     next.current = null;
     element.focus();
+    target.then?.();
   });
-  return useCallback((id: string) => {
-    next.current = { id, draws: 0 };
+  return useCallback((id: string, then?: () => void) => {
+    next.current = { id, draws: 0, then };
   }, []);
 }
 

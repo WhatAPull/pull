@@ -97,6 +97,21 @@ export function FlashcardSetPage({
       live.current = false;
     };
   }, []);
+  // Which screen is showing, for an answer that lands after its screen may have changed.
+  const viewKind = useRef<View['kind']>(view.kind);
+  useEffect(() => {
+    viewKind.current = view.kind;
+  }, [view.kind]);
+  /*
+   * Whether the mode open now holds work that leaving would throw away: a Test with answers
+   * not yet submitted, a Learn with anything answered. Escape does not leave those -- it was
+   * the one key between a keyboard reader and the loss of a whole sitting -- and "Back to the
+   * set", which has to be pressed, still does. Each mode says so as it changes.
+   */
+  const work = useRef(false);
+  const setWork = useCallback((holds: boolean) => {
+    work.current = holds;
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -183,12 +198,13 @@ export function FlashcardSetPage({
   };
 
   // Escape leaves a study mode, as "Back to the set" does -- not the editor, where it would
-  // be too easy a way to lose what was typed, and not from inside a field.
+  // be too easy a way to lose what was typed, not from inside a field, and not from a mode
+  // holding work (`work`).
   const inMode = view.kind !== 'overview' && view.kind !== 'edit';
   useEffect(() => {
     if (!inMode) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || e.defaultPrevented || typingIn(e.target)) return;
+      if (e.key !== 'Escape' || e.defaultPrevented || typingIn(e.target) || work.current) return;
       e.preventDefault();
       toOverview();
     };
@@ -304,8 +320,16 @@ export function FlashcardSetPage({
               setSet(next);
               onTitle?.(next.title);
               void cacheFlashcardSet(userId, next);
-              setNotice('Saved.');
-              toOverview();
+              // The editor holds its ways out while it saves, so this is the editor still --
+              // and if it is not, the reader is not taken from where they went.
+              if (viewKind.current !== 'edit') return;
+              // Said once focus is on the title: written with the focus move, it was read
+              // before the heading and cut off by it.
+              setView({ kind: 'overview' });
+              focusAfter(TITLE_ID, () => {
+                if (live.current) setNotice('Saved.');
+              });
+              window.scrollTo(0, 0);
             }}
             onLeave={toOverview}
             leaveLabel={set.title}
@@ -329,6 +353,8 @@ export function FlashcardSetPage({
                 .catch((e: unknown) => {
                   if (!live.current) return;
                   setView({ kind: 'overview' });
+                  // The pressed control went with the editor; the page's title takes focus.
+                  focusAfter(TITLE_ID);
                   setActionError(
                     isOfflineFailure(e)
                       ? 'The latest version could not be read — you look offline.'
@@ -367,6 +393,7 @@ export function FlashcardSetPage({
           cardIds={view.cardIds}
           headingId={MODE_TITLE_ID}
           onLeave={leaveMode}
+          onWork={setWork}
         />
       );
     case 'test':
@@ -376,6 +403,7 @@ export function FlashcardSetPage({
           set={set}
           headingId={MODE_TITLE_ID}
           onLeave={leaveMode}
+          onWork={setWork}
           onLearnMissed={(cardIds) => openMode({ kind: 'learn', cardIds })}
         />
       );

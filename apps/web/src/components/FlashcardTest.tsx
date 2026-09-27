@@ -8,7 +8,7 @@
  * Multiple choice offers the answer and up to three of the set's other answers. Written is
  * graded exact-or-close. `lib/flashcards.ts` builds and grades it; nothing is recorded.
  */
-import { memo, useCallback, useId, useState } from 'react';
+import { memo, useCallback, useEffect, useId, useState } from 'react';
 import {
   TEST_KINDS,
   buildTest,
@@ -158,11 +158,14 @@ export function FlashcardTest({
   set,
   headingId,
   onLeave,
+  onWork,
   onLearnMissed,
 }: {
   set: FlashcardSet;
   headingId: string;
   onLeave: () => void;
+  /** Whether leaving now would throw answers away: a sitting answered and not submitted. */
+  onWork?: (holds: boolean) => void;
   onLearnMissed: (cardIds: string[]) => void;
 }) {
   const id = useId();
@@ -175,6 +178,13 @@ export function FlashcardTest({
   const [sitting, setSitting] = useState<Sitting | null>(null);
 
   const promptSide: AnswerSide = answerWith === 'term' ? 'definition' : 'term';
+
+  const holds =
+    sitting !== null &&
+    sitting.result === null &&
+    sitting.responses.some((r) => r !== null && r !== '');
+  useEffect(() => onWork?.(holds), [holds, onWork]);
+  useEffect(() => () => onWork?.(false), [onWork]);
 
   const start = () => {
     const n = Number(count);

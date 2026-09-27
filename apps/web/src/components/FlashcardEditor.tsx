@@ -30,6 +30,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { flushSync } from 'react-dom';
 import {
   CARD_LIMIT,
   DEFINITION_MAX,
@@ -417,12 +418,12 @@ export function FlashcardEditor({
       return;
     }
     // What is held while the save is on its way (below) cannot keep focus, and a browser drops
-    // it to the page: Enter in the title would leave a keyboard reader nowhere. Save, which
-    // says "Saving…", takes it instead, without scrolling a long set to its end.
-    if (held.current?.contains(document.activeElement)) {
-      document.getElementById(`${id}-save`)?.focus({ preventScroll: true });
-    }
-    setSaving(true);
+    // it to the page: Enter in the title would leave a keyboard reader nowhere. Save takes it
+    // instead, without scrolling a long set to its end -- once it says "Saving…", drawn first,
+    // or it was announced as "Save" and renamed under the reader.
+    const inHeld = held.current?.contains(document.activeElement) ?? false;
+    flushSync(() => setSaving(true));
+    if (inHeld) document.getElementById(`${id}-save`)?.focus({ preventScroll: true });
     try {
       await onSave({ ...payload, baseUpdatedAt: over ? null : base });
       forget();
@@ -445,7 +446,15 @@ export function FlashcardEditor({
     }
   };
 
+  /*
+   * The ways out wait for a save, as the boxes do. Pressed during one, Cancel said the changes
+   * were not saved -- and then the save landed, said "Saved." and took the reader out of
+   * whatever they had gone on to; "Load the latest, and let mine go" during "Save mine over
+   * it" loaded the other version and was then saved over by the reader's. A save takes a
+   * moment, and every choice after it is made on what it did.
+   */
   const leave = (where: 'top' | 'bottom') => {
+    if (saving) return;
     if (draftUnsaved(draft, saved) && leaving !== where) {
       setLeaving(where);
       return;
@@ -501,11 +510,22 @@ export function FlashcardEditor({
       }}
     >
       <div className="flashcards__bar">
-        <button type="button" className="btn btn--plain meta" onClick={() => leave('top')}>
+        <button
+          type="button"
+          className="btn btn--plain meta"
+          aria-disabled={saving}
+          onClick={() => leave('top')}
+        >
           ← {leaveLabel}
         </button>
       </div>
       {unsavedLine('top')}
+      {/* To the eye: the Save that says so may be a long set below. Focus is on it. */}
+      {saving && (
+        <p className="flashcards__notice" aria-hidden="true">
+          Saving…
+        </p>
+      )}
       <h1 id={headingId} tabIndex={-1} dir="auto">
         {heading}
       </h1>
@@ -651,7 +671,9 @@ export function FlashcardEditor({
                 <button
                   type="button"
                   className="btn"
+                  aria-disabled={saving}
                   onClick={() => {
+                    if (saving) return;
                     forget();
                     onLoadLatest?.();
                   }}
@@ -661,6 +683,7 @@ export function FlashcardEditor({
                 <button
                   type="button"
                   className="btn btn--plain"
+                  aria-disabled={saving}
                   aria-describedby={`${id}-conflict`}
                   onClick={() => void save(true)}
                 >
@@ -672,6 +695,7 @@ export function FlashcardEditor({
                 <button
                   type="button"
                   className="btn"
+                  aria-disabled={saving}
                   aria-describedby={`${id}-conflict`}
                   onClick={() => void save(true)}
                 >
@@ -680,7 +704,9 @@ export function FlashcardEditor({
                 <button
                   type="button"
                   className="btn btn--plain"
+                  aria-disabled={saving}
                   onClick={() => {
+                    if (saving) return;
                     forget();
                     onGone?.();
                   }}
@@ -703,7 +729,12 @@ export function FlashcardEditor({
         >
           {saving ? 'Saving…' : 'Save'}
         </button>
-        <button type="button" className="btn btn--plain" onClick={() => leave('bottom')}>
+        <button
+          type="button"
+          className="btn btn--plain"
+          aria-disabled={saving}
+          onClick={() => leave('bottom')}
+        >
           Cancel
         </button>
       </div>
