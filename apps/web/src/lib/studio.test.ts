@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BUDGET_RECHECK_GAP_MS,
+  BUDGET_RECHECK_MS,
   budgetLine,
+  budgetOf,
+  budgetRefusal,
   checkSubmission,
   describeJob,
   fitImportSource,
   isRunning,
   isWorthPolling,
+  shouldRecheckBudget,
   MAX_TEXT_CHARS,
   MIN_TEXT_CHARS,
   POLL_FOR_MS,
@@ -392,8 +397,82 @@ describe('budgetLine', () => {
   });
 
   it('never quotes a figure a reader could aim at', () => {
-    for (const state of ['open', 'low', 'spent'] as const) {
+    for (const state of ['open', 'low', 'committed', 'spent'] as const) {
       expect(budgetLine(state)).not.toMatch(/\d/);
     }
+  });
+
+  /*
+   * A committed day has money left that jobs already waiting will take. It reopens as
+   * they run, so promising midnight for it would be false, and calling it "spent" would
+   * send a reader away for the day over a wait of minutes.
+   */
+  it('says a committed day is waiting on others, and promises no hour', () => {
+    const line = budgetLine('committed');
+    expect(line).toContain('waiting to start');
+    expect(line).not.toMatch(/midnight|UTC|spent|tomorrow/i);
+  });
+});
+
+describe('budgetOf', () => {
+  it('reads every state the database answers', () => {
+    for (const state of ['open', 'low', 'committed', 'spent'] as const) {
+      expect(budgetOf(state)).toBe(state);
+    }
+  });
+
+  // A database a migration ahead of the bundle can add a word. The door still refuses
+  // with its own sentence, so the wrong failure is the one that locks the button.
+  it('reads an unknown answer as open rather than breaking the screen', () => {
+    for (const value of ['closed', '', null, undefined, 42, { state: 'spent' }]) {
+      expect(budgetOf(value)).toBe('open');
+    }
+  });
+});
+
+describe('budgetRefusal', () => {
+  it('reads the door’s committed refusal by its DETAIL, in its own words', () => {
+    const refusal = budgetRefusal('53400', 'committed');
+    expect(refusal?.budget).toBe('committed');
+    expect(refusal?.message).toContain('little while');
+    expect(refusal?.message).not.toMatch(/midnight|UTC|committed$/i);
+  });
+
+  it('leaves a spent refusal in the door’s own sentence, which names the hour', () => {
+    expect(budgetRefusal('53400', undefined)).toEqual({ budget: 'spent', message: null });
+    expect(budgetRefusal('53400', 'something else')).toEqual({ budget: 'spent', message: null });
+  });
+
+  it('says nothing about the budget for any other refusal', () => {
+    for (const code of [undefined, '23505', '28000', '22023']) {
+      expect(budgetRefusal(code, 'committed')).toBeNull();
+    }
+  });
+
+  it('asks again often enough to see the room come back, and not so often it costs', () => {
+    expect(BUDGET_RECHECK_MS).toBeGreaterThanOrEqual(30_000);
+    expect(BUDGET_RECHECK_MS).toBeLessThanOrEqual(5 * 60_000);
+  });
+});
+
+describe('shouldRecheckBudget', () => {
+  it('asks the first time', () => {
+    expect(shouldRecheckBudget(1_000, null, false)).toBe(true);
+  });
+
+  // Coming back to the tab fires `visibilitychange` and `focus` together: one request.
+  it('does not ask twice for one return to the tab', () => {
+    expect(shouldRecheckBudget(1_000, 1_000, false)).toBe(false);
+    expect(shouldRecheckBudget(1_000 + BUDGET_RECHECK_GAP_MS - 1, 1_000, false)).toBe(false);
+    expect(shouldRecheckBudget(1_000 + BUDGET_RECHECK_GAP_MS, 1_000, false)).toBe(true);
+  });
+
+  it('does not ask while an ask is still out, however long ago it started', () => {
+    expect(shouldRecheckBudget(1_000_000, 1_000, true)).toBe(false);
+    expect(shouldRecheckBudget(1_000_000, null, true)).toBe(false);
+  });
+
+  it('leaves the minute poll alone', () => {
+    expect(BUDGET_RECHECK_GAP_MS).toBeLessThan(BUDGET_RECHECK_MS);
   });
 });
