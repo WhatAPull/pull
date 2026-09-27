@@ -699,13 +699,15 @@ export function preparationRefusal(
     case 'P0002':
       return 'This course no longer exists.';
     case '53400':
-      // The day's and the share's refusals that say something other than "until midnight".
-      // The others' own sentences say it, and carry no DETAIL to append to them.
+      // The two budget refusals that carry a DETAIL, said here because `rpcError` would
+      // append it to the server's sentence ("… a little while. — committed"). Both lift within
+      // the day: the day as the work waiting on it starts, the share as the reader's other
+      // course is ready. The rest carry no DETAIL, and their own sentences say midnight.
       if (detail === 'committed') {
-        return 'Today’s generation budget is taken by work already waiting to start. Try again in a little while.';
+        return 'Today’s generation budget is taken up by work already waiting to start. Try again in a little while.';
       }
       if (detail === 'share') {
-        return 'A course of yours is already on its way, and today’s share of the study budget goes to it. You can prepare another after 00:00 UTC.';
+        return 'Another of your courses is being prepared, and today’s share of the study budget is set aside for it. Try again once it is ready.';
       }
       return null;
     default:

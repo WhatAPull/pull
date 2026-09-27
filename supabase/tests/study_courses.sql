@@ -55,10 +55,10 @@ grant execute on function pg_temp.as_owner() to authenticated, service_role;
 
 /*
  * A course a worker has taken off the queue, as this file stands in for the worker: its
- * message deleted, as a step's is once the step is done. A course whose message is still
- * queued, with nothing charged or held, is on its way, and the door counts it against its
- * reader's share and the day (20260927100000). Nothing is charged here, so every figure of
- * spend the file asserts is unchanged.
+ * message deleted, as a step's is once the step is done. A course whose message is still on
+ * the queue is being prepared, and the door counts what it still needs against its reader's
+ * share, and while it has not started, against the day (20260927100000, 20260927110000).
+ * Nothing is charged here, so every figure of spend the file asserts is unchanged.
  */
 create or replace function pg_temp.taken(p_job uuid)
 returns void language sql as $fn$
@@ -245,7 +245,7 @@ begin
   end if;
 
   -- Two versions of one source are one source in the bundle. The first course has been
-  -- taken by the worker: left on its way, it would hold this reader's share of the day.
+  -- taken by the worker: left being prepared, it would hold this reader's share of the day.
   perform pg_temp.as_owner();
   perform pg_temp.taken(job_1);
   perform pg_temp.become_reader(reader_a);

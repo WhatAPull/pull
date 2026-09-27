@@ -185,28 +185,42 @@ a job whose windows fail three times in total fails, however many windows succee
 between. That errs toward stopping spend on a source that keeps failing, and a failed
 job's cached windows are reused if the reader asks again.
 
-**The door.** `enqueue_study_generation` asks for `study_min_job_cents()` (31: one minimal
-extraction and one minimal assembly) at every test it makes, in this order
-(`20260927100000`):
+**The door.** A reader prepares a course through `enqueue_study_generation`, and prepares
+one again through `regenerate_study_course`; both are `study_enqueue_course`. It asks for
+`study_min_job_cents()` (31: one minimal extraction and one minimal assembly) at every test,
+in this order, the refusals that last until midnight before those that lift within the day
+(`20260927100000`, `20260927110000`):
 
-| Test                                                                       | Refusal (53400)                 |
-| -------------------------------------------------------------------------- | ------------------------------- |
-| the day, as the summary door reckons it (`generation.md`)                  | spent, or DETAIL `committed`    |
-| the reader's share: their study spend today                                | spent, until 00:00 UTC          |
-| the reader's share: that spend and their courses on their way, at 31 each  | DETAIL `share`, until 00:00 UTC |
-| the study ceiling: every reader's study spend, and their unstarted courses | spent, until 00:00 UTC          |
+| Test                                                                       | Refusal (53400)                      |
+| -------------------------------------------------------------------------- | ------------------------------------ |
+| the day's spend, then with the jobs parked on the budget (`generation.md`) | spent, until 00:00 UTC               |
+| the reader's share: their study spend today                                | spent, until 00:00 UTC               |
+| the day, with the jobs due to start (`generation.md`)                      | DETAIL `committed`, until they start |
+| the reader's share, with what their courses being prepared still need      | DETAIL `share`, until that is ready  |
+| the study ceiling: every reader's study spend, and their unstarted courses | spent, until 00:00 UTC               |
 
-A course is on its way when it is admitted and not started: queued or running, nothing it
-cost charged today, nothing held for it, and a message still on the queue. The share is 60
-cents and a course at least 31, so **one course on its way takes a reader's share**, and a
-second press is refused rather than admitted to wait on the share past midnight. It goes on
-counting while it is staggered and after an attempt ledgered at nothing, and stops once it
-has charged anything today, left the queue, or finished. Before this, the door read the
-reader's spend alone, and admitted a course for every press while one waited: those the
+A course is being prepared while it is queued or running and its message is on the queue.
+It counts against its reader's share for what it still needs of the least a course
+reserves -- that least, less what it has charged or holds today -- until it finishes. The
+share is 60 cents and a course at least 31, so **a reader prepares one course at a time**:
+a second press is refused with DETAIL `share` until the first is ready, and then admitted if
+what the first cost leaves room, or refused as the share spent if not. Before, the door read
+the reader's spend alone, and admitted a course for every press while one waited; those the
 share could not fund waited on it past midnight, and the last of them past the worker's day
-of budget waits, and failed. The ceiling's own count caps each reader's courses on their
-way at what is left of their share, which a course admitted since no longer needs, and
-still guards those admitted before.
+of budget waits, and failed.
+
+The study ceiling still caps each reader's waiting courses at what is left of their share.
+For courses admitted since `20260927110000`, the share test above already ensures this; the
+cap remains for courses admitted before it.
+
+**What the day's test costs the course door.** Since `20260927100000` the day counts every
+reader's summaries waiting to start, so readers outside the study beta can close the course
+door with summaries alone -- at most three jobs' worth each, as they already could the
+summary door, and a course asks for 31 cents where a summary asks for 17, so the course door
+closes a little before the summary door does. The residual `generation.md` names under
+"What is left" applies here too: a URL that fails at `acquire` costs nothing and counts as
+due while it is retried, so a few accounts can keep both doors `committed` for those
+minutes. The reservation still holds the cap exactly, whatever either door admits.
 
 A study job also counts against the same per-reader allowance as every other generation
 job: three fast a day, a stagger past that, fifty in total.

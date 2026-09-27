@@ -415,6 +415,12 @@ try {
     `job cost ${jobCost} disagrees with its ledger ${ledgerCost}`,
   );
 
+  // The worker archives each step's message once the step is done. This walk runs without
+  // the queue, so the first course's message is still on it, and the door would count the
+  // course as still being prepared, holding this reader's share (20260927110000).
+  psql(`select pgmq.delete('generation', q.msg_id) from pgmq.q_generation q
+         where q.message ->> 'jobId' = '${first}';`);
+
   // Second course over the same material and goal: every stage is a cache hit.
   const second = enqueue(saved.versionId, 'Explain the argument');
   sent = 0;

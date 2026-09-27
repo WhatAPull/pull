@@ -55,7 +55,7 @@ lesson, your own judgement of an answer, and an answer you looked up never do â€
 wrong answer, or your own "not had", still says you did not. Nothing is sent to a model.
 See [What you create](#what-you-create).
 
-Earlier, the revision effective 27 September **recorded answers to your study courses'
+Earlier, a revision also effective 27 September **recorded answers to your study courses'
 questions.** When you answer a question in one of your courses, we keep what you chose,
 typed or arranged (up to 1,000 characters), whether it was right, whether you looked at the
 passage first or were trying again after seeing the answer, and â€” for a short answer the
