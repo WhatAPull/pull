@@ -561,8 +561,19 @@
   opacity: 1;
 }
 
-/* A file box held -- in the editor's hold, or while Import saves -- recoloured like the buttons
-   above: the browser greys its button to under 2:1. */
+/* The file box's button, drawn from tokens idle and held alike, so holding it only recolours
+   it: the browser's own greyed it to under 2:1, and restyling it on hold moved its text. */
+.flashcards input[type='file']::file-selector-button {
+  font: inherit;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-3);
+  margin-inline-end: var(--space-3);
+  cursor: pointer;
+}
+
 .flashcards input[type='file']:disabled {
   color: var(--text-faint);
   opacity: 1;
@@ -570,6 +581,5 @@
 
 .flashcards input[type='file']:disabled::file-selector-button {
   color: var(--text-faint);
-  background: transparent;
-  border: 1px solid var(--rule-strong);
+  cursor: progress;
 }

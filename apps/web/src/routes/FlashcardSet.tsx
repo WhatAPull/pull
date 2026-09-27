@@ -43,6 +43,9 @@ type View =
   | { kind: 'match' };
 
 const TITLE_ID = 'flashcard-set-title';
+/** What Escape says when it does not leave a mode holding answers. */
+const ESCAPE_HELD =
+  'Escape does not leave while you have answers here. Back to the set leaves without them.';
 const MODE_TITLE_ID = 'flashcard-set-mode-title';
 const EDIT_TITLE_ID = 'flashcard-set-edit-title';
 
@@ -114,6 +117,9 @@ export function FlashcardSetPage({
   const work = useRef(false);
   const setWork = useCallback((holds: boolean) => {
     work.current = holds;
+    // What Escape said while there was work goes with it -- submitted, say -- rather than
+    // staying where a screen reader browsing the page would find it.
+    if (!holds) setNotice((now) => (now?.startsWith(ESCAPE_HELD) ? null : now));
   }, []);
 
   useEffect(() => {
@@ -209,13 +215,15 @@ export function FlashcardSetPage({
   useEffect(() => {
     if (!inMode) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || e.defaultPrevented || typingIn(e.target)) return;
+      // A radio is a choice, not typing: focus sits on one after most answers in a Test.
+      const choosing =
+        e.target instanceof HTMLInputElement &&
+        (e.target.type === 'radio' || e.target.type === 'checkbox');
+      if (e.key !== 'Escape' || e.defaultPrevented || (typingIn(e.target) && !choosing)) return;
       if (work.current) {
         // Said, since a key that does nothing is otherwise a key that looks broken. The same
         // words twice are told apart by a no-break space, which is not read.
-        const words =
-          'Escape does not leave while you have answers here. Back to the set leaves without them.';
-        setNotice((now) => (now === words ? `${words}\u00a0` : words));
+        setNotice((now) => (now === ESCAPE_HELD ? `${ESCAPE_HELD}\u00a0` : ESCAPE_HELD));
         return;
       }
       e.preventDefault();
@@ -337,8 +345,6 @@ export function FlashcardSetPage({
               // The editor holds its ways out while it saves, so this is the editor still --
               // and if it is not, the reader is not taken from where they went.
               if (viewKind.current !== 'edit') return;
-              // Said once focus is on the title: written with the focus move, it was read
-              // before the heading and cut off by it.
               // Shown with the overview, so nothing drops a line a frame later; said once focus
               // is on the title, since written with the focus move it was read over.
               setView({ kind: 'overview' });

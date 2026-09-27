@@ -62,8 +62,6 @@ export function Flashcards({
   // opened after is not the one saving.
   const [importingId, setImportingId] = useState<string | null>(null);
   const importing = importingId !== null && importingId === newId;
-  // Said on the list: a set saved from a screen the reader had already left.
-  const [listNotice, setListNotice] = useState<string | null>(null);
   // The new set's id while its screen -- New set or Import -- is the one showing, and null on
   // the list or once this page has gone: a save answers only the screen it was made from.
   const showing = useRef<string | null>(null);
@@ -138,8 +136,6 @@ export function Flashcards({
   const open = (next: View) => {
     setView(next);
     setImportError(null);
-    // Kept on the way to the list, where a save that lands after it is said.
-    if (next !== 'list') setListNotice(null);
     if (next !== 'list') setNewId(mutationId());
     focusAfter(next === 'new' ? NEW_TITLE : next === 'import' ? IMPORT_TITLE : LIST_TITLE);
     window.scrollTo(0, 0);
@@ -159,10 +155,10 @@ export function Flashcards({
 
   /*
    * A save opens the set it made -- if the reader is still on the screen they pressed Save on.
-   * One who left while it was on its way, for another page, was pulled back to the set when the
-   * answer came. The screen is the one showing when Save was pressed, not the set's id: a new
-   * set's kept draft goes on under the id its first screen minted, which no later screen has.
-   * A set made from a screen since left is read into the list, and said there.
+   * The screen, not the set's id: a new set's kept draft goes on under the id its first
+   * screen minted, which no later screen has. Every way off these screens is held while a
+   * save is on its way, so the other branch is a defence: were the screen gone, the reader
+   * is not pulled back to the set, and the list reads it in.
    */
   const saved = async (payload: SavePayload) => {
     const from = showing.current;
@@ -170,7 +166,6 @@ export function Flashcards({
     if (from !== null && showing.current === from) {
       onNavigate(`/flashcards/${encodeURIComponent(out.id)}`);
     } else if (mounted.current) {
-      setListNotice(`“${payload.title}” is saved.`);
       setAttempt((n) => n + 1);
     }
   };
@@ -357,10 +352,6 @@ export function Flashcards({
           Making, importing, editing or deleting a set needs a connection.
         </p>
       )}
-      {/* Always drawn, so what it later says is announced: see `saved`. */}
-      <p role="status" className={listNotice ? 'flashcards__notice' : 'sr-only'}>
-        {listNotice}
-      </p>
 
       {sets.length === 0 ? (
         <div className="stack flashcards__empty">

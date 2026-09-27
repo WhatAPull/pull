@@ -187,16 +187,19 @@ set of 150 cards embedded as `flashcards(*)` came back with 100. So:
   said again when the same words come twice.
 - **Held while it saves.** Every box and button of the editor is held (a disabled fieldset,
   recoloured rather than faded) until the save answers, and focus in them moves to Save,
-  which says "Saving…" before it is focused; the editor's bar says so too, on its own line. What was
-  typed in between used to reach neither the set — the save carries the draft as it was when
-  Save was pressed — nor the kept draft, which the editor lets go once a save succeeds. The
-  ways out and the conflict's choices wait too: Cancel during a save said the changes were not
-  saved, and then the save landed and took the reader out of whatever they had gone on to.
-  Pressing "Save mine over it" moves focus to Save as well. Import holds its title, its box,
-  its separators and its way out the same way, so a failure is said where it happened. A new set's save opens the set only if
-  the reader is still on the screen they pressed Save on — the screen, not the set's id, since
-  a kept draft goes on under the id its first screen minted; one who left for the list finds
-  it there, said in words. "Saved." is shown with the overview and said once focus is on the
+  which says "Saving…" before it is focused; the editor's bar says so too, in a line always
+  drawn and shown only then, so a long title that wraps it moves nothing. What was typed in
+  between used to reach neither the set — the save carries the draft as it was when Save was
+  pressed — nor the kept draft, which the editor lets go once a save succeeds. The ways out
+  and the conflict's choices wait too: Cancel during a save said the changes were not saved,
+  and then the save landed and took the reader out of whatever they had gone on to. Pressing
+  "Save mine over it" moves focus to Save as well. The importer holds itself rather than
+  sitting in the fieldset, whose disabled radios a browser draws too faint to tell the chosen
+  one: its boxes are read-only, its radios ignore a change, and its Add waits. Import holds
+  its title, its box, its separators and its way out the same way, so a failure is said where
+  it happened. A new set's save opens the set if the reader is still on the screen they
+  pressed Save on — the screen, not the set's id, since a kept draft goes on under the id its
+  first screen minted. "Saved." is shown with the overview and said once focus is on the
   set's title, not with the move, which read the heading over it.
 - Saving needs a connection; offline, Save says why instead of failing.
 
@@ -281,8 +284,9 @@ answer that is right for the prompt (below) is right typed as it is. Every mode 
 set**, leaves a mode, and focus moves to the new heading on every screen change — except that
 Esc does not leave a Test with answers not yet submitted, or a Learn with anything answered
 and not all learnt: it was one key between a keyboard reader and a whole sitting thrown
-away. It says so instead, to a screen reader, and **Back to the set**, which has to be
-pressed, still leaves them.
+away. It says so instead, to a screen reader — from a radio too, where focus sits after most
+answers — and the words go once there is nothing left to lose. **Back to the set**, which
+has to be pressed, still leaves them.
 
 **Distractors** are the set's own other cards' answers on the side being answered: each
 once, and never one a reader would take for the right answer — two answers with the same

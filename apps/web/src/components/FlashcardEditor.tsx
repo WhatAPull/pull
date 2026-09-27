@@ -522,13 +522,16 @@ export function FlashcardEditor({
         >
           ← {leaveLabel}
         </button>
-        {/* To the eye, on the bar's own line so nothing moves: the Save that says so may be a
-            long set below. Focus is on it, so a screen reader hears it there. */}
-        {saving && (
-          <span className="meta flashcards__count" aria-hidden="true">
-            Saving…
-          </span>
-        )}
+        {/* To the eye: the Save that says so may be a long set below. Always drawn and only
+            shown while saving, so a long title that wraps it has wrapped already and nothing
+            moves. Focus is on Save, so a screen reader hears it there. */}
+        <span
+          className="meta flashcards__count"
+          aria-hidden="true"
+          style={{ visibility: saving ? 'visible' : 'hidden' }}
+        >
+          Saving…
+        </span>
       </div>
       {unsavedLine('top')}
       <h1 id={headingId} tabIndex={-1} dir="auto">
@@ -623,30 +626,32 @@ export function FlashcardEditor({
             Add from text
           </button>
         </div>
-        {importing && (
-          <div id={`${id}-import`} className="flashcards__inset">
-            <FlashcardImport
-              headingLevel={3}
-              primary={false}
-              limit={Math.max(0, room)}
-              takeLabel={(n) => (n === 0 ? 'Add cards' : `Add ${cardCount(n)}`)}
-              onTake={(cards) => {
-                // The unused empty rows go, so the new cards follow the last real one.
-                setDraft((d) => ({
-                  ...d,
-                  cards: [
-                    ...d.cards.filter((c) => c.term.trim() || c.definition.trim()),
-                    ...cards.map((c) => ({ id: mutationId(), ...c })),
-                  ],
-                }));
-                setImporting(false);
-                announce(`${cardCount(cards.length)} added at the end.`);
-                focusAfter(`${id}-add`);
-              }}
-            />
-          </div>
-        )}
       </fieldset>
+      {/* Outside the hold, which would draw its radios too faint to read: it holds itself. */}
+      {importing && (
+        <div id={`${id}-import`} className="flashcards__inset">
+          <FlashcardImport
+            headingLevel={3}
+            held={saving}
+            primary={false}
+            limit={Math.max(0, room)}
+            takeLabel={(n) => (n === 0 ? 'Add cards' : `Add ${cardCount(n)}`)}
+            onTake={(cards) => {
+              // The unused empty rows go, so the new cards follow the last real one.
+              setDraft((d) => ({
+                ...d,
+                cards: [
+                  ...d.cards.filter((c) => c.term.trim() || c.definition.trim()),
+                  ...cards.map((c) => ({ id: mutationId(), ...c })),
+                ],
+              }));
+              setImporting(false);
+              announce(`${cardCount(cards.length)} added at the end.`);
+              focusAfter(`${id}-add`);
+            }}
+          />
+        </div>
+      )}
 
       {problems.length > 0 && (
         <div id={`${id}-problems`} tabIndex={-1} className="stack" role="alert">

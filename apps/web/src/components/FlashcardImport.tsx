@@ -39,6 +39,7 @@ export function FlashcardImport({
   disabled = false,
   disabledReason,
   busy = false,
+  held = false,
   headingLevel = 2,
   primary = true,
 }: {
@@ -49,11 +50,19 @@ export function FlashcardImport({
   disabled?: boolean;
   disabledReason?: string;
   busy?: boolean;
+  /**
+   * Held while something around it saves: nothing in it changes, and it says nothing of
+   * saving itself. Held by hand rather than by a disabled fieldset, because a browser draws a
+   * disabled radio too faint to tell the chosen one, and no style reaches it.
+   */
+  held?: boolean;
   headingLevel?: 2 | 3;
   /** False inside a form that has its own primary control: one primary button a screen. */
   primary?: boolean;
 }) {
   const id = useId();
+  // Busy is its own save; held is one around it. Either way nothing in it changes.
+  const holding = busy || held;
   const [text, setText] = useState('');
   const [between, setBetween] = useState<TermSeparator['kind']>('tab');
   const [betweenCustom, setBetweenCustom] = useState('');
@@ -123,7 +132,7 @@ export function FlashcardImport({
           rows={8}
           dir={leadingDirection(text)}
           value={text}
-          readOnly={busy}
+          readOnly={holding}
           onChange={(e) => setText(e.target.value)}
           aria-describedby={`${id}-text-note`}
         />
@@ -140,7 +149,7 @@ export function FlashcardImport({
           id={`${id}-file`}
           type="file"
           className="field__input"
-          disabled={busy}
+          disabled={holding}
           accept=".txt,.csv,.tsv,text/plain,text/csv,text/tab-separated-values"
           onChange={(event) => {
             const selected = event.target.files?.[0];
@@ -164,7 +173,7 @@ export function FlashcardImport({
         )}
       </div>
 
-      <fieldset className="flashcards__choice" disabled={busy}>
+      <fieldset className="flashcards__choice">
         <legend className="field__label">Between term and definition</legend>
         {(
           [
@@ -179,7 +188,9 @@ export function FlashcardImport({
               type="radio"
               name={`${id}-between`}
               checked={between === kind}
-              onChange={() => setBetween(kind)}
+              onChange={() => {
+                if (!holding) setBetween(kind);
+              }}
             />{' '}
             {label}
           </label>
@@ -190,11 +201,12 @@ export function FlashcardImport({
             aria-label="The separator between term and definition"
             value={betweenCustom}
             maxLength={20}
+            readOnly={holding}
             onChange={(e) => setBetweenCustom(e.target.value)}
           />
         )}
       </fieldset>
-      <fieldset className="flashcards__choice" disabled={busy}>
+      <fieldset className="flashcards__choice">
         <legend className="field__label">Between cards</legend>
         {(
           [
@@ -208,7 +220,9 @@ export function FlashcardImport({
               type="radio"
               name={`${id}-cards`}
               checked={cardsBy === kind}
-              onChange={() => setCardsBy(kind)}
+              onChange={() => {
+                if (!holding) setCardsBy(kind);
+              }}
             />{' '}
             {label}
           </label>
@@ -219,6 +233,7 @@ export function FlashcardImport({
             aria-label="The separator between cards"
             value={cardsByCustom}
             maxLength={20}
+            readOnly={holding}
             onChange={(e) => setCardsByCustom(e.target.value)}
           />
         )}
@@ -326,10 +341,10 @@ export function FlashcardImport({
         <button
           type="button"
           className={primary ? 'btn btn--primary' : 'btn'}
-          aria-disabled={disabled || busy || pending || count === 0}
+          aria-disabled={disabled || holding || pending || count === 0}
           aria-describedby={disabled && disabledReason ? `${id}-disabled` : undefined}
           onClick={() => {
-            if (disabled || busy || pending || !result || count === 0) return;
+            if (disabled || holding || pending || !result || count === 0) return;
             onTake(result.cards);
           }}
         >
