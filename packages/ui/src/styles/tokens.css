@@ -28,6 +28,12 @@
   --text-faint: var(--warm-faint);
   --accent: var(--oxblood);
   --accent-hover: var(--oxblood-soft);
+  /*
+   * Text set ON the accent -- a primary button's label -- which is not text on a surface and
+   * so is not a `--text-*` role. Bone on oxblood in the light palette; the dark palettes'
+   * accent is lighter, and bone on it measured 3.26:1, so there it is ink.
+   */
+  --on-accent: var(--bone);
 
   /* Type --------------------------------------------------------------- */
   --font-display:
@@ -143,6 +149,7 @@
     --text-faint: #8d8376;
     --accent: #c96a5f;
     --accent-hover: #dc8074;
+    --on-accent: var(--ink);
     --rule: rgb(244 241 234 / 14%);
     --rule-strong: rgb(244 241 234 / 26%);
   }
@@ -179,6 +186,7 @@
   --text-faint: #8d8376;
   --accent: #c96a5f;
   --accent-hover: #dc8074;
+  --on-accent: var(--ink);
   --rule: rgb(244 241 234 / 14%);
   --rule-strong: rgb(244 241 234 / 26%);
 }
