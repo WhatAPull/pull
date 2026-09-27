@@ -657,6 +657,80 @@ export type Database = {
         }
         Relationships: []
       }
+      flashcard_sets: {
+        Row: {
+          created_at: string
+          definition_lang: string | null
+          description: string | null
+          id: string
+          owner_id: string
+          term_lang: string | null
+          title: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          definition_lang?: string | null
+          description?: string | null
+          id?: string
+          owner_id: string
+          term_lang?: string | null
+          title: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          definition_lang?: string | null
+          description?: string | null
+          id?: string
+          owner_id?: string
+          term_lang?: string | null
+          title?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      flashcards: {
+        Row: {
+          created_at: string
+          definition: string
+          id: string
+          owner_id: string
+          position: number
+          set_id: string
+          term: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          definition: string
+          id?: string
+          owner_id: string
+          position: number
+          set_id: string
+          term: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          definition?: string
+          id?: string
+          owner_id?: string
+          position?: number
+          set_id?: string
+          term?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "flashcards_set_id_owner_id_fkey"
+            columns: ["set_id", "owner_id"]
+            isOneToOne: false
+            referencedRelation: "flashcard_sets"
+            referencedColumns: ["id", "owner_id"]
+          },
+        ]
+      }
       follows: {
         Row: {
           created_at: string
@@ -1662,6 +1736,86 @@ export type Database = {
           },
         ]
       }
+      public_study_courses: {
+        Row: {
+          excerpt_title: string
+          excerpts: string
+          from_generation: string | null
+          goal: string
+          id: string
+          lesson_count: number
+          objectives: string[]
+          outline: Json
+          overview: string | null
+          published_at: string
+          question_count: number
+          quotations: Json
+          recap: string | null
+          review_note: string | null
+          reviewed_by: string
+          slug: string
+          snapshot: Json
+          title: string
+          withdrawn_at: string | null
+          withdrawn_reason: string | null
+          work_id: string
+        }
+        Insert: {
+          excerpt_title: string
+          excerpts: string
+          from_generation?: string | null
+          goal: string
+          id?: string
+          lesson_count: number
+          objectives?: string[]
+          outline: Json
+          overview?: string | null
+          published_at?: string
+          question_count: number
+          quotations: Json
+          recap?: string | null
+          review_note?: string | null
+          reviewed_by: string
+          slug: string
+          snapshot: Json
+          title: string
+          withdrawn_at?: string | null
+          withdrawn_reason?: string | null
+          work_id: string
+        }
+        Update: {
+          excerpt_title?: string
+          excerpts?: string
+          from_generation?: string | null
+          goal?: string
+          id?: string
+          lesson_count?: number
+          objectives?: string[]
+          outline?: Json
+          overview?: string | null
+          published_at?: string
+          question_count?: number
+          quotations?: Json
+          recap?: string | null
+          review_note?: string | null
+          reviewed_by?: string
+          slug?: string
+          snapshot?: Json
+          title?: string
+          withdrawn_at?: string | null
+          withdrawn_reason?: string | null
+          work_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "public_study_courses_work_id_fkey"
+            columns: ["work_id"]
+            isOneToOne: false
+            referencedRelation: "works"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       pull_relations: {
         Row: {
           created_at: string
@@ -2151,34 +2305,40 @@ export type Database = {
       study_answer_events: {
         Row: {
           answered_at: string
+          claims_known_before: boolean | null
           client_event_id: string
           correct: boolean
           grading: string
           hinted: boolean
           id: string
           item_id: string
+          looked: boolean
           owner_id: string
           response: string | null
         }
         Insert: {
           answered_at?: string
+          claims_known_before?: boolean | null
           client_event_id: string
           correct: boolean
           grading: string
           hinted: boolean
           id?: string
           item_id: string
+          looked?: boolean
           owner_id: string
           response?: string | null
         }
         Update: {
           answered_at?: string
+          claims_known_before?: boolean | null
           client_event_id?: string
           correct?: boolean
           grading?: string
           hinted?: boolean
           id?: string
           item_id?: string
+          looked?: boolean
           owner_id?: string
           response?: string | null
         }
@@ -2196,6 +2356,76 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "study_visible_items"
             referencedColumns: ["id", "owner_id"]
+          },
+        ]
+      }
+      study_beta_log: {
+        Row: {
+          at: string
+          changed_by: string | null
+          db_user: string
+          gate_id: string | null
+          id: number
+          open_to_all: boolean
+          override_reason: string | null
+        }
+        Insert: {
+          at?: string
+          changed_by?: string | null
+          db_user?: string
+          gate_id?: string | null
+          id?: never
+          open_to_all: boolean
+          override_reason?: string | null
+        }
+        Update: {
+          at?: string
+          changed_by?: string | null
+          db_user?: string
+          gate_id?: string | null
+          id?: never
+          open_to_all?: boolean
+          override_reason?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "study_beta_log_gate_id_fkey"
+            columns: ["gate_id"]
+            isOneToOne: false
+            referencedRelation: "study_release_gates"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      study_beta_settings: {
+        Row: {
+          changed_at: string
+          changed_by: string | null
+          gate_id: string | null
+          id: boolean
+          open_to_all: boolean
+        }
+        Insert: {
+          changed_at?: string
+          changed_by?: string | null
+          gate_id?: string | null
+          id?: boolean
+          open_to_all?: boolean
+        }
+        Update: {
+          changed_at?: string
+          changed_by?: string | null
+          gate_id?: string | null
+          id?: boolean
+          open_to_all?: boolean
+        }
+        Relationships: [
+          {
+            foreignKeyName: "study_beta_settings_gate_id_fkey"
+            columns: ["gate_id"]
+            isOneToOne: false
+            referencedRelation: "study_release_gates"
+            referencedColumns: ["id"]
           },
         ]
       }
@@ -2250,6 +2480,67 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "study_visible_claims"
             referencedColumns: ["id", "owner_id"]
+          },
+        ]
+      }
+      study_claim_memory: {
+        Row: {
+          claim_id: string
+          difficulty: number
+          lapses: number
+          last_answered_at: string
+          last_outcome: string
+          last_success_at: string | null
+          last_success_id: string | null
+          owner_id: string
+          reps: number
+          stability: number
+        }
+        Insert: {
+          claim_id: string
+          difficulty?: number
+          lapses?: number
+          last_answered_at: string
+          last_outcome: string
+          last_success_at?: string | null
+          last_success_id?: string | null
+          owner_id: string
+          reps?: number
+          stability?: number
+        }
+        Update: {
+          claim_id?: string
+          difficulty?: number
+          lapses?: number
+          last_answered_at?: string
+          last_outcome?: string
+          last_success_at?: string | null
+          last_success_id?: string | null
+          owner_id?: string
+          reps?: number
+          stability?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "study_claim_memory_claim_id_owner_id_fkey"
+            columns: ["claim_id", "owner_id"]
+            isOneToOne: false
+            referencedRelation: "study_claims"
+            referencedColumns: ["id", "owner_id"]
+          },
+          {
+            foreignKeyName: "study_claim_memory_claim_id_owner_id_fkey"
+            columns: ["claim_id", "owner_id"]
+            isOneToOne: false
+            referencedRelation: "study_visible_claims"
+            referencedColumns: ["id", "owner_id"]
+          },
+          {
+            foreignKeyName: "study_claim_memory_last_success_id_fkey"
+            columns: ["last_success_id"]
+            isOneToOne: false
+            referencedRelation: "study_answer_events"
+            referencedColumns: ["id"]
           },
         ]
       }
@@ -2390,18 +2681,83 @@ export type Database = {
           goal: string
           id: string
           owner_id: string
+          public_course_id: string | null
         }
         Insert: {
           created_at?: string
           goal: string
           id?: string
           owner_id: string
+          public_course_id?: string | null
         }
         Update: {
           created_at?: string
           goal?: string
           id?: string
           owner_id?: string
+          public_course_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "study_courses_public_course_id_fkey"
+            columns: ["public_course_id"]
+            isOneToOne: false
+            referencedRelation: "public_study_courses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      study_curated_sources: {
+        Row: {
+          registered_at: string
+          registered_by: string
+          source_version_id: string
+          work_id: string
+        }
+        Insert: {
+          registered_at?: string
+          registered_by: string
+          source_version_id: string
+          work_id: string
+        }
+        Update: {
+          registered_at?: string
+          registered_by?: string
+          source_version_id?: string
+          work_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "study_curated_sources_source_version_id_fkey"
+            columns: ["source_version_id"]
+            isOneToOne: true
+            referencedRelation: "study_source_versions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "study_curated_sources_work_id_fkey"
+            columns: ["work_id"]
+            isOneToOne: false
+            referencedRelation: "works"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      study_curators: {
+        Row: {
+          added_at: string
+          added_by: string
+          user_id: string
+        }
+        Insert: {
+          added_at?: string
+          added_by: string
+          user_id: string
+        }
+        Update: {
+          added_at?: string
+          added_by?: string
+          user_id?: string
         }
         Relationships: []
       }
@@ -2478,15 +2834,17 @@ export type Database = {
           disagreements: Json
           goal: string
           id: string
-          job_id: string
+          job_id: string | null
           objectives: string[]
           overview: string | null
           owner_id: string
-          processing_consent_at: string
+          processing_consent_at: string | null
+          public_course_id: string | null
           recap: string | null
           text_failures: string[]
           text_status: string
           title: string | null
+          validation_tried_at: string | null
           withheld: Json
         }
         Insert: {
@@ -2497,15 +2855,17 @@ export type Database = {
           disagreements?: Json
           goal: string
           id?: string
-          job_id: string
+          job_id?: string | null
           objectives?: string[]
           overview?: string | null
           owner_id: string
-          processing_consent_at: string
+          processing_consent_at?: string | null
+          public_course_id?: string | null
           recap?: string | null
           text_failures?: string[]
           text_status?: string
           title?: string | null
+          validation_tried_at?: string | null
           withheld?: Json
         }
         Update: {
@@ -2516,15 +2876,17 @@ export type Database = {
           disagreements?: Json
           goal?: string
           id?: string
-          job_id?: string
+          job_id?: string | null
           objectives?: string[]
           overview?: string | null
           owner_id?: string
-          processing_consent_at?: string
+          processing_consent_at?: string | null
+          public_course_id?: string | null
           recap?: string | null
           text_failures?: string[]
           text_status?: string
           title?: string | null
+          validation_tried_at?: string | null
           withheld?: Json
         }
         Relationships: [
@@ -2540,6 +2902,13 @@ export type Database = {
             columns: ["job_id"]
             isOneToOne: true
             referencedRelation: "generation_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "study_generations_public_course_id_fkey"
+            columns: ["public_course_id"]
+            isOneToOne: false
+            referencedRelation: "public_study_courses"
             referencedColumns: ["id"]
           },
         ]
@@ -2992,6 +3361,71 @@ export type Database = {
           },
         ]
       }
+      study_public_enrolments: {
+        Row: {
+          enrolled_at: string
+          id: string
+          owner_id: string
+          public_course_id: string
+        }
+        Insert: {
+          enrolled_at?: string
+          id?: string
+          owner_id: string
+          public_course_id: string
+        }
+        Update: {
+          enrolled_at?: string
+          id?: string
+          owner_id?: string
+          public_course_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "study_public_enrolments_public_course_id_fkey"
+            columns: ["public_course_id"]
+            isOneToOne: false
+            referencedRelation: "public_study_courses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      study_release_gates: {
+        Row: {
+          fixture_digest: string
+          id: string
+          note: string | null
+          passed: boolean
+          pipeline: Json
+          ran_at: string
+          recorded_at: string
+          recorded_by: string
+          report: Json
+        }
+        Insert: {
+          fixture_digest: string
+          id?: string
+          note?: string | null
+          passed: boolean
+          pipeline: Json
+          ran_at: string
+          recorded_at?: string
+          recorded_by: string
+          report: Json
+        }
+        Update: {
+          fixture_digest?: string
+          id?: string
+          note?: string | null
+          passed?: boolean
+          pipeline?: Json
+          ran_at?: string
+          recorded_at?: string
+          recorded_by?: string
+          report?: Json
+        }
+        Relationships: []
+      }
       study_reports: {
         Row: {
           claim_id: string | null
@@ -3164,6 +3598,7 @@ export type Database = {
           id: string
           origin_label: string | null
           owner_id: string
+          quotations: Json | null
           source_id: string
           title: string
           version_no: number
@@ -3177,6 +3612,7 @@ export type Database = {
           id?: string
           origin_label?: string | null
           owner_id: string
+          quotations?: Json | null
           source_id: string
           title: string
           version_no: number
@@ -3190,6 +3626,7 @@ export type Database = {
           id?: string
           origin_label?: string | null
           owner_id?: string
+          quotations?: Json | null
           source_id?: string
           title?: string
           version_no?: number
@@ -3745,6 +4182,7 @@ export type Database = {
     Views: {
       study_course_overview: {
         Row: {
+          awaiting_validation: boolean | null
           claim_count: number | null
           claims_demonstrated_count: number | null
           course_id: string | null
@@ -3755,12 +4193,18 @@ export type Database = {
           held_back: boolean | null
           latest_generation_id: string | null
           latest_job_status: Database["public"]["Enums"]["job_status"] | null
+          latest_settled: boolean | null
           lesson_count: number | null
           lessons_read_count: number | null
           newer_generation_held_back: boolean | null
           objectives: string[] | null
           overview: string | null
           preparing: boolean | null
+          public_course_id: string | null
+          public_course_label: string | null
+          public_course_on_offer: boolean | null
+          public_course_work_id: string | null
+          public_course_work_title: string | null
           question_count: number | null
           recap: string | null
           source_count: number | null
@@ -3768,7 +4212,15 @@ export type Database = {
           update_available: boolean | null
           withheld: Json | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "study_courses_public_course_id_fkey"
+            columns: ["public_course_id"]
+            isOneToOne: false
+            referencedRelation: "public_study_courses"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       study_visible_claims: {
         Row: {
@@ -4249,6 +4701,7 @@ export type Database = {
         Args: { p_hash: string; p_job_id: string; p_lease?: string }
         Returns: string
       }
+      close_study_beta: { Args: { p_by: string }; Returns: Json }
       commit_import: {
         Args: {
           p_file_hash: string
@@ -4264,6 +4717,7 @@ export type Database = {
       }
       counterpulls_for_work: { Args: { p_work_id: string }; Returns: Json }
       daily_spend_cap_cents: { Args: never; Returns: number }
+      delete_flashcard_set: { Args: { p_id: string }; Returns: boolean }
       delete_my_account: { Args: never; Returns: undefined }
       delete_study_course: { Args: { p_course_id: string }; Returns: undefined }
       delta_covered_distance: { Args: never; Returns: number }
@@ -4312,6 +4766,11 @@ export type Database = {
         }
         Returns: Json
       }
+      enrol_public_course: {
+        Args: { p_public_course_id: string }
+        Returns: Json
+      }
+      flashcard_trim: { Args: { p_text: string }; Returns: string }
       generate_mfa_recovery_codes: { Args: never; Returns: string[] }
       generation_budget_state: { Args: never; Returns: string }
       generation_secret: { Args: { p_name: string }; Returns: string }
@@ -4331,6 +4790,26 @@ export type Database = {
       }
       get_path: { Args: { p_slug: string }; Returns: Json }
       get_paths: { Args: never; Returns: Json }
+      get_public_study_course: {
+        Args: { p_slug: string }
+        Returns: {
+          goal: string
+          id: string
+          lesson_count: number
+          objectives: string[]
+          outline: Json
+          overview: string
+          published_at: string
+          question_count: number
+          recap: string
+          rights_status: Database["public"]["Enums"]["rights_status"]
+          slug: string
+          title: string
+          work_id: string
+          work_kind: Database["public"]["Enums"]["work_kind"]
+          work_title: string
+        }[]
+      }
       get_source_delta: { Args: { p_work_id: string }; Returns: Json }
       get_summary_delta: { Args: { p_summary_id: string }; Returns: Json }
       get_topic: { Args: { p_limit?: number; p_slug: string }; Returns: Json }
@@ -4380,6 +4859,24 @@ export type Database = {
       knowledge_vector_cap: { Args: never; Returns: number }
       known_comparison_cap: { Args: never; Returns: number }
       known_retrievability_floor: { Args: never; Returns: number }
+      list_public_study_courses: {
+        Args: never
+        Returns: {
+          goal: string
+          id: string
+          lesson_count: number
+          objectives: string[]
+          overview: string
+          published_at: string
+          question_count: number
+          rights_status: Database["public"]["Enums"]["rights_status"]
+          slug: string
+          title: string
+          work_id: string
+          work_kind: Database["public"]["Enums"]["work_kind"]
+          work_title: string
+        }[]
+      }
       min_job_cents: { Args: never; Returns: number }
       my_sessions: {
         Args: never
@@ -4396,6 +4893,10 @@ export type Database = {
       }
       nearest_pulls: {
         Args: { p_k?: number; p_pull_id: string }
+        Returns: Json
+      }
+      open_study_beta: {
+        Args: { p_by: string; p_gate_id: string; p_override_reason?: string }
         Returns: Json
       }
       pause_path: { Args: { p_path_id: string }; Returns: Json }
@@ -4423,6 +4924,25 @@ export type Database = {
           p_cron_days?: number
           p_output_days?: number
           p_response_hours?: number
+        }
+        Returns: Json
+      }
+      public_study_course_origin: {
+        Args: { p_id: string }
+        Returns: {
+          on_offer: boolean
+          rights_label: string
+          work_id: string
+          work_title: string
+        }[]
+      }
+      publish_study_course: {
+        Args: {
+          p_generation_id: string
+          p_note?: string
+          p_reviewed_by: string
+          p_slug: string
+          p_work_id: string
         }
         Returns: Json
       }
@@ -4492,6 +5012,7 @@ export type Database = {
         Args: { p_dwell_ms?: number; p_position?: number; p_pull_id: string }
         Returns: undefined
       }
+      record_study_answers: { Args: { p_answers: Json }; Returns: Json }
       record_study_progress: { Args: { p_events: Json }; Returns: Json }
       record_study_stage: {
         Args: {
@@ -4533,6 +5054,10 @@ export type Database = {
           p_pull_id: string
         }
         Returns: Json
+      }
+      remove_public_course_copies: {
+        Args: { p_id: string; p_limit?: number }
+        Returns: number
       }
       renew_source_claim: {
         Args: { p_job_id: string; p_lease?: string }
@@ -4586,6 +5111,7 @@ export type Database = {
       }
       revoke_other_sessions: { Args: never; Returns: number }
       revoke_session: { Args: { p_session_id: string }; Returns: boolean }
+      save_flashcard_set: { Args: { p_set: Json }; Returns: Json }
       save_study_source_version: {
         Args: {
           p_extraction_notes?: string
@@ -4654,6 +5180,7 @@ export type Database = {
         Args: { p_event_id: string }
         Returns: boolean
       }
+      study_beta_unrepresented: { Args: { p_mix?: Json }; Returns: string[] }
       study_blank: { Args: { p_text: string }; Returns: boolean }
       study_boundary_class: { Args: never; Returns: string }
       study_check_revision_quota: {
@@ -4663,6 +5190,21 @@ export type Database = {
       study_check_revision_size: {
         Args: { p_limits: Json; p_revision: Json }
         Returns: undefined
+      }
+      study_claim_knowledge: {
+        Args: { p_at?: string; p_course_id: string }
+        Returns: {
+          claim_id: string
+          due_at: string
+          known: boolean
+          lapsed: boolean
+          lapsed_at: string
+          retrievability: number
+        }[]
+      }
+      study_claim_known: {
+        Args: { p_at?: string; p_claim: string; p_owner: string }
+        Returns: boolean
       }
       study_claim_problems: {
         Args: { p_claim_id: string; p_links: Json }
@@ -4685,8 +5227,10 @@ export type Database = {
       study_course_outline: {
         Args: { p_course_id: string }
         Returns: {
+          faded: boolean
           first_shown_at: string
           generation_id: string
+          known: boolean
           lesson_id: string
           lesson_key: string
           lesson_position: number
@@ -4694,6 +5238,7 @@ export type Database = {
           objective: string
           question_count: number
           read_at: string
+          revisit: boolean
           state: string
           title: string
           unit_no: number
@@ -4706,6 +5251,8 @@ export type Database = {
           authored_by: string
           demonstrated_at: string
           difficulty: number
+          due: boolean
+          due_at: string
           first_shown_at: string
           generation_id: string
           item_id: string
@@ -4721,6 +5268,7 @@ export type Database = {
         Args: { p_generation_id: string }
         Returns: string[]
       }
+      study_daily_cap_cents: { Args: never; Returns: number }
       study_enqueue_course: {
         Args: {
           p_course_id: string
@@ -4733,12 +5281,33 @@ export type Database = {
       }
       study_fold: { Args: { p_text: string }; Returns: string }
       study_fold_strict: { Args: { p_text: string }; Returns: string }
+      study_format_family: { Args: { p_format: string }; Returns: string }
+      study_gate_passes: { Args: { p_report: Json }; Returns: boolean }
+      study_generation_admitted: { Args: { p_user: string }; Returns: boolean }
       study_generation_available: { Args: never; Returns: boolean }
+      study_generation_awaiting_validation: {
+        Args: { p_generation_id: string }
+        Returns: boolean
+      }
       study_generation_rank: {
         Args: { p_generation_id: string }
         Returns: number
       }
       study_gives_away: { Args: { p_answer: string }; Returns: boolean }
+      study_goal_kind: { Args: { p_goal: string }; Returns: string }
+      study_grade_response: {
+        Args: {
+          p_accepted: string[]
+          p_answer: string
+          p_distractors: Json
+          p_kind: string
+          p_pairs: Json
+          p_response: Json
+          p_self: string
+          p_sequence: string[]
+        }
+        Returns: Json
+      }
       study_heuristic_spaced: { Args: { p_text: string }; Returns: string }
       study_heuristic_text: { Args: { p_text: string }; Returns: string }
       study_hidden_class: { Args: never; Returns: string }
@@ -4822,6 +5391,7 @@ export type Database = {
         Returns: undefined
       }
       study_refused_class: { Args: never; Returns: string }
+      study_remember: { Args: { p_event_id: string }; Returns: undefined }
       study_requester_daily_cap_cents: { Args: never; Returns: number }
       study_requester_spend_today: {
         Args: { p_requester: string }
@@ -4853,6 +5423,7 @@ export type Database = {
         Returns: Json
       }
       study_space_class: { Args: never; Returns: string }
+      study_spend_today: { Args: never; Returns: number }
       study_strip_punctuation: { Args: { p_base: string }; Returns: string }
       study_text_problems: {
         Args: { p_links: Json; p_texts: string[] }
@@ -4864,6 +5435,12 @@ export type Database = {
       }
       study_unspaced_class: { Args: never; Returns: string }
       study_word_class: { Args: never; Returns: string }
+      study_word_runs: {
+        Args: { p_text: string; p_words: number }
+        Returns: {
+          run: string
+        }[]
+      }
       summary_is_readable: {
         Args: { s: Database["public"]["Tables"]["summaries"]["Row"] }
         Returns: boolean
@@ -4885,6 +5462,10 @@ export type Database = {
         Returns: number
       }
       validate_study_course: { Args: { p_job_id: string }; Returns: Json }
+      withdraw_public_study_course: {
+        Args: { p_by: string; p_id: string; p_reason: string }
+        Returns: Json
+      }
       work_is_authorable: { Args: { p_work_id: string }; Returns: boolean }
     }
     Enums: {

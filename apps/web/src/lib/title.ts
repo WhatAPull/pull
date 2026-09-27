@@ -39,6 +39,8 @@ const PATH_TITLES: Record<string, string> = {
   '/graph': 'Synapse Graph',
   '/import': 'Import History',
   '/studio': 'Studio',
+  '/courses': 'Courses',
+  '/flashcards': 'Flashcards',
   '/demo': 'Demo',
   '/metacognition': 'Metacognitive ROI',
 
@@ -86,7 +88,7 @@ export function isKnownPath(pathname: string): boolean {
   return PARAMETERISED.some((prefix) => routeParam(pathname, prefix) !== null);
 }
 
-const PARAMETERISED = ['/source', '/pull', '/topic', '/path'] as const;
+const PARAMETERISED = ['/source', '/pull', '/topic', '/path', '/course', '/flashcards'] as const;
 
 /**
  * The fixed route this address names, read the way `App` reads it -- `isPath`, which
@@ -121,6 +123,16 @@ export function titleFor({ pathname, tab, documentTitle, query }: TitleInput): s
 
   if (opens('/path')) {
     return `${documentTitle?.trim() || 'Learning Path'}${suffix}`;
+  }
+
+  // A private course names itself once loaded; its id is never a title.
+  if (opens('/course')) {
+    return `${documentTitle?.trim() || 'Course'}${suffix}`;
+  }
+
+  // A set names itself once loaded, with the reader's own title; its id is never a title.
+  if (opens('/flashcards')) {
+    return `${documentTitle?.trim() || 'Flashcard set'}${suffix}`;
   }
 
   if (isPath(pathname, '/search')) {

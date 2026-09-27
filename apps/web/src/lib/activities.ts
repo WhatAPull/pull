@@ -204,6 +204,28 @@ export function seededShuffle<T>(items: readonly T[], seed: string | number): T[
 }
 
 /**
+ * `seededShuffle`'s order, one item at a time and from its far end: the same seed draws
+ * `seededShuffle(items, seed)` reversed. Each step of Fisher–Yates settles the last place
+ * still open, so the order can be read as it is made, and a caller that wants the first few
+ * items passing some test -- three distractors from a set of two thousand -- pays for the
+ * few it draws rather than for shuffling the whole list once a question.
+ *
+ * Only the places a swap has disturbed are remembered; every other place holds its own item.
+ */
+export function* seededDraws<T>(items: readonly T[], seed: string | number): Generator<T, void> {
+  const next = generator(seed);
+  const moved = new Map<number, number>();
+  const at = (place: number) => moved.get(place) ?? place;
+  for (let i = items.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(next() * (i + 1));
+    const drawn = at(j);
+    moved.set(j, at(i));
+    yield items[drawn] as T;
+  }
+  if (items.length > 0) yield items[at(0)] as T;
+}
+
+/**
  * The options to show for a multiple-choice question, in a stable order.
  *
  * The answer is always among them. A distractor identical to the answer is

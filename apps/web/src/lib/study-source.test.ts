@@ -11,6 +11,7 @@ import {
   checkStudyImageDimensions,
   checkStudyText,
   fileStudyFormat,
+  studySaveRefusal,
   unreadablePdfPages,
 } from './study-source.js';
 
@@ -117,5 +118,16 @@ describe('private study source intake', () => {
       2,
     ]);
     expect(assemblePdfPages(['first', 'second'])).toBe('Page 1\nfirst\n\nPage 2\nsecond');
+  });
+});
+
+describe('studySaveRefusal', () => {
+  it('says a save into a public course’s excerpts in words, and leaves the rest to the server', () => {
+    expect(studySaveRefusal('55000', 'public')).toBe(
+      'That source is a public course’s excerpts, which are the course’s own. Save your text as a new source.',
+    );
+    expect(studySaveRefusal('55000', undefined)).toBeNull();
+    expect(studySaveRefusal('54000', 'public')).toBeNull();
+    expect(studySaveRefusal(undefined, undefined)).toBeNull();
   });
 });

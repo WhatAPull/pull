@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { StudyCourseBuilder } from '../components/StudyCourseBuilder.js';
 import { fetchImportedItems, fetchImportedWorks } from '../lib/import-api.js';
 import { isOfflineFailure } from '../lib/offline.js';
+import { sqlDetail, sqlState } from '../lib/rpc-error.js';
 import { mutationId } from '../lib/submission.js';
 import {
   fetchStudyUrlPreview,
@@ -27,13 +29,20 @@ import {
   MAX_STUDY_OCR_PAGES,
   MAX_STUDY_TEXT_CHARS,
   MAX_STUDY_TITLE_CHARS,
+  studySaveRefusal,
   type StudySourceFormat,
 } from '../lib/study-source.js';
 
 type IntakeMode = 'paste' | 'file' | 'highlights' | 'url' | 'goal';
 type Book = { workId: string; title: string; kind: string | null };
 
-export function StudyImport({ userId }: { userId: string }) {
+export function StudyImport({
+  userId,
+  onNavigate,
+}: {
+  userId: string;
+  onNavigate?: (to: string) => void;
+}) {
   const [mode, setMode] = useState<IntakeMode>('paste');
   const [urlInput, setUrlInput] = useState('');
   const [goal, setGoal] = useState('');
@@ -382,7 +391,11 @@ export function StudyImport({ userId }: { userId: string }) {
       working ||
       saving.current ||
       deleting.current ||
-      !window.confirm('Delete this private source and all its versions? This cannot be undone.')
+      !window.confirm(
+        'Delete this private source and all its versions? Every course made from it loses ' +
+          'what was built on it, and your place in it; a course with no other source is ' +
+          'deleted. This cannot be undone.',
+      )
     )
       return;
     deleting.current = true;
@@ -454,9 +467,8 @@ export function StudyImport({ userId }: { userId: string }) {
       setError(
         isOfflineFailure(cause)
           ? 'That may not have reached your account. Your text stays here; try Save again.'
-          : cause instanceof Error
-            ? cause.message
-            : 'The source could not be saved just now.',
+          : (studySaveRefusal(sqlState(cause), sqlDetail(cause)) ??
+              (cause instanceof Error ? cause.message : 'The source could not be saved just now.')),
       );
     } finally {
       saving.current = false;
@@ -823,6 +835,9 @@ export function StudyImport({ userId }: { userId: string }) {
         </ul>
       )}
       <p className="meta">Your imported material and its versions are visible only to you.</p>
+
+      <hr className="rule" />
+      <StudyCourseBuilder key={userId} sources={saved} onNavigate={onNavigate} />
     </section>
   );
 }
