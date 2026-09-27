@@ -560,3 +560,16 @@
 .flashcards__hold:disabled select:disabled {
   opacity: 1;
 }
+
+/* A file box held -- in the editor's hold, or while Import saves -- recoloured like the buttons
+   above: the browser greys its button to under 2:1. */
+.flashcards input[type='file']:disabled {
+  color: var(--text-faint);
+  opacity: 1;
+}
+
+.flashcards input[type='file']:disabled::file-selector-button {
+  color: var(--text-faint);
+  background: transparent;
+  border: 1px solid var(--rule-strong);
+}

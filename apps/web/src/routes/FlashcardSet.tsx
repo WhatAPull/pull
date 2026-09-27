@@ -77,7 +77,10 @@ export function FlashcardSetPage({
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [view, setView] = useState<View>({ kind: 'overview' });
+  // What the page says: `notice` to a screen reader, through `said` below, and `shown` to
+  // the eye -- the same words, at different moments (see the save).
   const [notice, setNotice] = useState<string | null>(null);
+  const [shown, setShown] = useState<string | null>(null);
   const [armed, setArmed] = useState(false);
   const [working, setWorking] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -185,6 +188,7 @@ export function FlashcardSetPage({
 
   const toOverview = useCallback(() => {
     setView({ kind: 'overview' });
+    setNotice(null);
     focusAfter(TITLE_ID);
     window.scrollTo(0, 0);
   }, [focusAfter]);
@@ -192,6 +196,7 @@ export function FlashcardSetPage({
   const openMode = (next: View) => {
     setView(next);
     setNotice(null);
+    setShown(null);
     setArmed(false);
     focusAfter(next.kind === 'edit' ? EDIT_TITLE_ID : MODE_TITLE_ID);
     window.scrollTo(0, 0);
@@ -204,7 +209,15 @@ export function FlashcardSetPage({
   useEffect(() => {
     if (!inMode) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || e.defaultPrevented || typingIn(e.target) || work.current) return;
+      if (e.key !== 'Escape' || e.defaultPrevented || typingIn(e.target)) return;
+      if (work.current) {
+        // Said, since a key that does nothing is otherwise a key that looks broken. The same
+        // words twice are told apart by a no-break space, which is not read.
+        const words =
+          'Escape does not leave while you have answers here. Back to the set leaves without them.';
+        setNotice((now) => (now === words ? `${words}\u00a0` : words));
+        return;
+      }
       e.preventDefault();
       toOverview();
     };
@@ -280,7 +293,8 @@ export function FlashcardSetPage({
   /*
    * "Saved." is said as the editor gives way to the overview, and a live region drawn with its
    * text already in it is not reliably announced -- the overview's own was. So the region is
-   * the same element in both, last in each, where React keeps it across the switch; the
+   * the same element in every view -- the editor, the overview and the modes, where it says
+   * why Escape stayed -- last in each, where React keeps it across the switch; the
    * overview's visible line says it to the eye only.
    */
   const said = (
@@ -325,7 +339,10 @@ export function FlashcardSetPage({
               if (viewKind.current !== 'edit') return;
               // Said once focus is on the title: written with the focus move, it was read
               // before the heading and cut off by it.
+              // Shown with the overview, so nothing drops a line a frame later; said once focus
+              // is on the title, since written with the focus move it was read over.
               setView({ kind: 'overview' });
+              setShown('Saved.');
               focusAfter(TITLE_ID, () => {
                 if (live.current) setNotice('Saved.');
               });
@@ -377,45 +394,57 @@ export function FlashcardSetPage({
     // from under the round -- starts the mode afresh on it rather than drawing a blank.
     case 'cards':
       return (
-        <FlashcardRound
-          key={set.updatedAt}
-          set={set}
-          userId={userId}
-          headingId={MODE_TITLE_ID}
-          onLeave={leaveMode}
-        />
+        <>
+          <FlashcardRound
+            key={set.updatedAt}
+            set={set}
+            userId={userId}
+            headingId={MODE_TITLE_ID}
+            onLeave={leaveMode}
+          />
+          {said}
+        </>
       );
     case 'learn':
       return (
-        <FlashcardLearn
-          key={`${set.updatedAt}:${view.cardIds.join(',')}`}
-          set={set}
-          cardIds={view.cardIds}
-          headingId={MODE_TITLE_ID}
-          onLeave={leaveMode}
-          onWork={setWork}
-        />
+        <>
+          <FlashcardLearn
+            key={`${set.updatedAt}:${view.cardIds.join(',')}`}
+            set={set}
+            cardIds={view.cardIds}
+            headingId={MODE_TITLE_ID}
+            onLeave={leaveMode}
+            onWork={setWork}
+          />
+          {said}
+        </>
       );
     case 'test':
       return (
-        <FlashcardTest
-          key={set.updatedAt}
-          set={set}
-          headingId={MODE_TITLE_ID}
-          onLeave={leaveMode}
-          onWork={setWork}
-          onLearnMissed={(cardIds) => openMode({ kind: 'learn', cardIds })}
-        />
+        <>
+          <FlashcardTest
+            key={set.updatedAt}
+            set={set}
+            headingId={MODE_TITLE_ID}
+            onLeave={leaveMode}
+            onWork={setWork}
+            onLearnMissed={(cardIds) => openMode({ kind: 'learn', cardIds })}
+          />
+          {said}
+        </>
       );
     case 'match':
       return (
-        <FlashcardMatch
-          key={set.updatedAt}
-          set={set}
-          userId={userId}
-          headingId={MODE_TITLE_ID}
-          onLeave={leaveMode}
-        />
+        <>
+          <FlashcardMatch
+            key={set.updatedAt}
+            set={set}
+            userId={userId}
+            headingId={MODE_TITLE_ID}
+            onLeave={leaveMode}
+          />
+          {said}
+        </>
       );
     case 'overview':
       break;
@@ -470,9 +499,9 @@ export function FlashcardSetPage({
           </p>
         )}
         {/* Said by the region after this section, which outlives the editor (`said`). */}
-        {notice && (
+        {shown && (
           <p className="flashcards__notice" aria-hidden="true">
-            {notice}
+            {shown}
           </p>
         )}
         {fromDevice && (

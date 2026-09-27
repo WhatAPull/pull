@@ -58,7 +58,10 @@ export function Flashcards({
   const [newId, setNewId] = useState(mutationId);
   const [importTitle, setImportTitle] = useState('');
   const [importError, setImportError] = useState<string | null>(null);
-  const [importing, setImporting] = useState(false);
+  // The screen whose import is on its way, by its id: the state is the page's, and a screen
+  // opened after is not the one saving.
+  const [importingId, setImportingId] = useState<string | null>(null);
+  const importing = importingId !== null && importingId === newId;
   // Said on the list: a set saved from a screen the reader had already left.
   const [listNotice, setListNotice] = useState<string | null>(null);
   // The new set's id while its screen -- New set or Import -- is the one showing, and null on
@@ -135,7 +138,8 @@ export function Flashcards({
   const open = (next: View) => {
     setView(next);
     setImportError(null);
-    setListNotice(null);
+    // Kept on the way to the list, where a save that lands after it is said.
+    if (next !== 'list') setListNotice(null);
     if (next !== 'list') setNewId(mutationId());
     focusAfter(next === 'new' ? NEW_TITLE : next === 'import' ? IMPORT_TITLE : LIST_TITLE);
     window.scrollTo(0, 0);
@@ -198,7 +202,8 @@ export function Flashcards({
         focusAfter('flashcards-import-name');
         return;
       }
-      setImporting(true);
+      const screen = newId;
+      setImportingId(screen);
       setImportError(null);
       try {
         await saved({
@@ -217,13 +222,21 @@ export function Flashcards({
                 (e instanceof Error ? e.message : 'The set could not be saved.')),
         );
       } finally {
-        setImporting(false);
+        setImportingId((now) => (now === screen ? null : now));
       }
     };
     return (
       <section className="stack measure flashcards" aria-labelledby={IMPORT_TITLE}>
         <div className="flashcards__bar">
-          <button type="button" className="btn btn--plain meta" onClick={() => open('list')}>
+          <button
+            type="button"
+            className="btn btn--plain meta"
+            // Held while the set is made, as the editor's ways out are: a failure is said here.
+            aria-disabled={importing}
+            onClick={() => {
+              if (!importing) open('list');
+            }}
+          >
             ← Flashcards
           </button>
         </div>

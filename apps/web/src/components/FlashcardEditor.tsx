@@ -421,9 +421,13 @@ export function FlashcardEditor({
     // it to the page: Enter in the title would leave a keyboard reader nowhere. Save takes it
     // instead, without scrolling a long set to its end -- once it says "Saving…", drawn first,
     // or it was announced as "Save" and renamed under the reader.
-    const inHeld = held.current?.contains(document.activeElement) ?? false;
+    // "Save mine over it" and "Put it back" wait too, and focus on one is on a control that
+    // no longer does anything: Save, saying so, takes it from them as well.
+    const moveFocus = over || (held.current?.contains(document.activeElement) ?? false);
+    // A way out pressed once said "press again to leave" -- which, held, does nothing now.
+    setLeaving(null);
     flushSync(() => setSaving(true));
-    if (inHeld) document.getElementById(`${id}-save`)?.focus({ preventScroll: true });
+    if (moveFocus) document.getElementById(`${id}-save`)?.focus({ preventScroll: true });
     try {
       await onSave({ ...payload, baseUpdatedAt: over ? null : base });
       forget();
@@ -518,14 +522,15 @@ export function FlashcardEditor({
         >
           ← {leaveLabel}
         </button>
+        {/* To the eye, on the bar's own line so nothing moves: the Save that says so may be a
+            long set below. Focus is on it, so a screen reader hears it there. */}
+        {saving && (
+          <span className="meta flashcards__count" aria-hidden="true">
+            Saving…
+          </span>
+        )}
       </div>
       {unsavedLine('top')}
-      {/* To the eye: the Save that says so may be a long set below. Focus is on it. */}
-      {saving && (
-        <p className="flashcards__notice" aria-hidden="true">
-          Saving…
-        </p>
-      )}
       <h1 id={headingId} tabIndex={-1} dir="auto">
         {heading}
       </h1>

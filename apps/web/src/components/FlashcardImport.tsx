@@ -164,7 +164,7 @@ export function FlashcardImport({
         )}
       </div>
 
-      <fieldset className="flashcards__choice">
+      <fieldset className="flashcards__choice" disabled={busy}>
         <legend className="field__label">Between term and definition</legend>
         {(
           [
@@ -194,7 +194,7 @@ export function FlashcardImport({
           />
         )}
       </fieldset>
-      <fieldset className="flashcards__choice">
+      <fieldset className="flashcards__choice" disabled={busy}>
         <legend className="field__label">Between cards</legend>
         {(
           [
