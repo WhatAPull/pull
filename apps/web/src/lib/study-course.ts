@@ -698,6 +698,18 @@ export function preparationRefusal(
       return 'Preparing a course needs an account, not a guest session.';
     case 'P0002':
       return 'This course no longer exists.';
+    case '53400':
+      // The two budget refusals that carry a DETAIL, said here because `rpcError` would
+      // append it to the server's sentence ("… a little while. — committed"). Both lift within
+      // the day: the day as the work waiting on it starts, the share as the reader's other
+      // course is ready. The rest carry no DETAIL, and their own sentences say midnight.
+      if (detail === 'committed') {
+        return 'Today’s generation budget is taken up by work already waiting to start. Try again in a little while.';
+      }
+      if (detail === 'share') {
+        return 'Another of your courses is being prepared, and today’s share of the study budget is set aside for it. Try again once it is ready.';
+      }
+      return null;
     default:
       return null;
   }

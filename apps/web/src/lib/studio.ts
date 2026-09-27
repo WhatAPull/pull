@@ -469,7 +469,7 @@ export function budgetRefusal(
     return {
       budget: 'committed',
       message:
-        'Today’s budget is taken up by summaries already waiting to start. Try again in a ' +
+        'Today’s budget is taken up by work already waiting to start. Try again in a ' +
         'little while — the line above will say when there is room.',
     };
   }
@@ -493,7 +493,7 @@ export function budgetLine(state: BudgetState): string {
     return 'Today’s generation budget is spent. Summaries start again at midnight UTC.';
   }
   if (state === 'committed') {
-    return 'Today’s shared generation budget is taken up by summaries already waiting to start. There will be room again as they run.';
+    return 'Today’s shared generation budget is taken up by work already waiting to start. There will be room again as it runs.';
   }
   if (state === 'low') {
     return 'Today’s shared generation budget is nearly used up.';

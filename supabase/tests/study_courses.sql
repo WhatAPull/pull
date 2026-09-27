@@ -53,6 +53,18 @@ grant execute on function pg_temp.become_reader(uuid) to authenticated, service_
 grant execute on function pg_temp.become_worker() to authenticated, service_role;
 grant execute on function pg_temp.as_owner() to authenticated, service_role;
 
+/*
+ * A course a worker has taken off the queue, as this file stands in for the worker: its
+ * message deleted, as a step's is once the step is done. A course whose message is still on
+ * the queue is being prepared, and the door counts what it still needs against its reader's
+ * share, and while it has not started, against the day (20260927100000, 20260927110000).
+ * Nothing is charged here, so every figure of spend the file asserts is unchanged.
+ */
+create or replace function pg_temp.taken(p_job uuid)
+returns void language sql as $fn$
+  delete from pgmq.q_generation where message ->> 'jobId' = p_job::text;
+$fn$;
+
 /* A claim as the worker persists one: evidence resolved against the note. */
 create or replace function pg_temp.claim(
   p_key text, p_version uuid, p_statement text, p_span text, p_note text
@@ -232,7 +244,11 @@ begin
     raise exception 'a replayed enqueue did not answer with the same course: %', out;
   end if;
 
-  -- Two versions of one source are one source in the bundle.
+  -- Two versions of one source are one source in the bundle. The first course has been
+  -- taken by the worker: left being prepared, it would hold this reader's share of the day.
+  perform pg_temp.as_owner();
+  perform pg_temp.taken(job_1);
+  perform pg_temp.become_reader(reader_a);
   saved := public.save_study_source_version('Draft', 'paste', 'A first draft of a note.',
                                             extensions.gen_random_uuid());
   v3 := (saved ->> 'versionId')::uuid;
@@ -612,8 +628,11 @@ begin
   end;
   -- Everything here is one transaction, where `now()` never moves: the first generation
   -- is dated an hour back so "newest" means what it does across real requests.
+  -- And the reader's other course has been taken by the worker, so it no longer holds their
+  -- share.
   perform pg_temp.as_owner();
   update public.study_generations set created_at = now() - interval '1 hour' where id = gen_1;
+  perform pg_temp.taken(job_c);
   perform pg_temp.become_reader(reader_a);
   out := public.regenerate_study_course(course_a, regen_mut, true);
   job_2 := (out ->> 'jobId')::uuid;

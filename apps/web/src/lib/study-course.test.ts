@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { rpcError, sqlDetail, sqlState } from './rpc-error.js';
 import {
   applyProgress,
   asSentence,
@@ -588,6 +589,35 @@ describe('preparationRefusal', () => {
     expect(preparationRefusal('42501', 'unavailable')).toMatch(/no longer in your account/);
     expect(preparationRefusal('22023', 'too_large')).toMatch(/200,000-character limit/);
     expect(preparationRefusal('22023', undefined)).toBeNull();
+  });
+
+  /*
+   * The door's two budget refusals that carry a DETAIL (20260927100000, 20260927110000).
+   * Shown as the server sent them, `rpcError` joins the DETAIL onto the sentence, so each is
+   * said here instead, through the same `sqlState` and `sqlDetail` the screens use. Both
+   * lift within the day, so neither names midnight.
+   */
+  it('says the day is committed, or the share set aside, in its own words', () => {
+    const refused = (message: string, details: string) => {
+      const e = rpcError({ message, details, hint: null, code: '53400' });
+      expect(e.message).toMatch(new RegExp(`— ${details}$`));
+      return preparationRefusal(sqlState(e), sqlDetail(e));
+    };
+    const committed = refused(
+      'today’s generation budget is committed to work already waiting to start. Try again in a little while.',
+      'committed',
+    );
+    expect(committed).toBe(
+      'Today’s generation budget is taken up by work already waiting to start. Try again in a little while.',
+    );
+    const share = refused(
+      'your share of today’s study generation budget is set aside for another course of yours being prepared. Try again once it is ready.',
+      'share',
+    );
+    expect(share).toMatch(/^Another of your courses is being prepared/);
+    for (const said of [committed, share]) expect(said).not.toMatch(/00:00|midnight|— /);
+    // Preparing a course again is refused for another course, not this one: the same words.
+    expect(preparationRefusal('53400', 'share', true)).toBe(share);
   });
 
   it('says nothing of a refusal it does not know, so the server’s own message is shown', () => {
