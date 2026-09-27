@@ -590,6 +590,21 @@ describe('preparationRefusal', () => {
     expect(preparationRefusal('22023', undefined)).toBeNull();
   });
 
+  /*
+   * The door's two budget refusals that carry a DETAIL (20260927100000). Shown as the server
+   * sent them, `rpcError` joins the DETAIL onto the sentence -- "... in a little while. —
+   * committed" -- so each is said here instead, and neither promises the hour the other
+   * refusals do not need to be told.
+   */
+  it('says the day is committed, or the share promised, in its own words', () => {
+    expect(preparationRefusal('53400', 'committed')).toMatch(
+      /waiting to start\. Try again in a little while\.$/,
+    );
+    expect(preparationRefusal('53400', 'committed')).not.toMatch(/00:00|midnight|committed/);
+    expect(preparationRefusal('53400', 'share')).toMatch(/already on its way/);
+    expect(preparationRefusal('53400', 'share', true)).toBe(preparationRefusal('53400', 'share'));
+  });
+
   it('says nothing of a refusal it does not know, so the server’s own message is shown', () => {
     expect(preparationRefusal('55000', undefined)).toBeNull();
     expect(preparationRefusal('42501', 'something new')).toBeNull();

@@ -54,6 +54,18 @@ grant execute on function pg_temp.become_reader(uuid) to authenticated, service_
 grant execute on function pg_temp.become_worker() to authenticated, service_role;
 grant execute on function pg_temp.as_owner() to authenticated, service_role;
 
+/*
+ * A course a worker has taken off the queue, as this file stands in for the worker: its
+ * message deleted, as a step's is once the step is done. A course whose message is still
+ * queued, with nothing charged or held, is on its way, and the door counts it against its
+ * reader's share and the day (20260927100000). Nothing is charged here, so every figure of
+ * spend the file asserts is unchanged.
+ */
+create or replace function pg_temp.taken(p_job uuid)
+returns void language sql as $fn$
+  delete from pgmq.q_generation where message ->> 'jobId' = p_job::text;
+$fn$;
+
 /* A claim as the worker persists one: evidence resolved against the note. */
 create or replace function pg_temp.claim(
   p_key text, p_version uuid, p_statement text, p_span text, p_note text
@@ -786,7 +798,10 @@ begin
   exception when object_not_in_prerequisite_state then null;
   end;
 
-  -- A course whose own text carries an instruction is held back as a unit.
+  -- A course whose own text carries an instruction is held back as a unit. The first course
+  -- has been taken by the worker: left on its way, it would hold this reader's share of the
+  -- day.
+  perform pg_temp.taken(the_job);
   perform pg_temp.become_reader(reader_a);
   job_2 := (public.enqueue_study_generation(array[v_a], 'Prepare for a discussion',
                                             extensions.gen_random_uuid(), true) ->> 'jobId')::uuid;
@@ -813,6 +828,9 @@ begin
 
   -- A course left a draft -- its validation step never ran -- is validated by the sweep
   -- once its job has finished and ten minutes have passed.
+  perform pg_temp.as_owner();
+  perform pg_temp.taken(job_2);
+  perform pg_temp.become_reader(reader_a);
   job_3 := (public.enqueue_study_generation(array[v_a], 'Revise for a test',
                                             extensions.gen_random_uuid(), true) ->> 'jobId')::uuid;
   perform pg_temp.become_worker();

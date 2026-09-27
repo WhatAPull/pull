@@ -183,11 +183,33 @@ delivery of the same step may still be spending under.
 `job_steps` row, so `MAX_ATTEMPTS` (three) counts failures across the whole extraction:
 a job whose windows fail three times in total fails, however many windows succeeded in
 between. That errs toward stopping spend on a source that keeps failing, and a failed
-job's cached windows are reused if the reader asks again. `enqueue_study_generation`
-refuses at the door when the day cannot fund `study_min_job_cents()` (31: one minimal
-extraction and one minimal assembly), and counts a study job against the same per-reader
-allowance as every other generation job: three fast a day, a stagger past that, fifty in
-total.
+job's cached windows are reused if the reader asks again.
+
+**The door.** `enqueue_study_generation` asks for `study_min_job_cents()` (31: one minimal
+extraction and one minimal assembly) at every test it makes, in this order
+(`20260927100000`):
+
+| Test                                                                       | Refusal (53400)                 |
+| -------------------------------------------------------------------------- | ------------------------------- |
+| the day, as the summary door reckons it (`generation.md`)                  | spent, or DETAIL `committed`    |
+| the reader's share: their study spend today                                | spent, until 00:00 UTC          |
+| the reader's share: that spend and their courses on their way, at 31 each  | DETAIL `share`, until 00:00 UTC |
+| the study ceiling: every reader's study spend, and their unstarted courses | spent, until 00:00 UTC          |
+
+A course is on its way when it is admitted and not started: queued or running, nothing it
+cost charged today, nothing held for it, and a message still on the queue. The share is 60
+cents and a course at least 31, so **one course on its way takes a reader's share**, and a
+second press is refused rather than admitted to wait on the share past midnight. It goes on
+counting while it is staggered and after an attempt ledgered at nothing, and stops once it
+has charged anything today, left the queue, or finished. Before this, the door read the
+reader's spend alone, and admitted a course for every press while one waited: those the
+share could not fund waited on it past midnight, and the last of them past the worker's day
+of budget waits, and failed. The ceiling's own count caps each reader's courses on their
+way at what is left of their share, which a course admitted since no longer needs, and
+still guards those admitted before.
+
+A study job also counts against the same per-reader allowance as every other generation
+job: three fast a day, a stagger past that, fifty in total.
 
 **Caching.** A stage's output is cached per reader under a SHA-256 of the stage, the
 exported prompt and schema, the provider and models, and the exact input -- the version

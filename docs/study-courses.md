@@ -428,4 +428,7 @@ HTTP status: PostgREST answers P0002 and 55000 with a 500.
 - **55000:** a regeneration refused, with DETAIL `preparing` or `unchanged`. (An update to
   recorded progress is 55000 too, but only the service role could attempt one.)
 - **53400, 23514:** preparation's budget and daily job ceiling, as in
-  [`study-generation.md`](./study-generation.md).
+  [`study-generation.md`](./study-generation.md). A 53400 with DETAIL `committed` is a day
+  promised to work waiting to start, which reopens as it starts or fails; with DETAIL
+  `share`, the reader's share promised to a course of theirs on its way. The others reopen
+  at 00:00 UTC.

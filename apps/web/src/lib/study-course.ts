@@ -698,6 +698,16 @@ export function preparationRefusal(
       return 'Preparing a course needs an account, not a guest session.';
     case 'P0002':
       return 'This course no longer exists.';
+    case '53400':
+      // The day's and the share's refusals that say something other than "until midnight".
+      // The others' own sentences say it, and carry no DETAIL to append to them.
+      if (detail === 'committed') {
+        return 'Today’s generation budget is taken by work already waiting to start. Try again in a little while.';
+      }
+      if (detail === 'share') {
+        return 'A course of yours is already on its way, and today’s share of the study budget goes to it. You can prepare another after 00:00 UTC.';
+      }
+      return null;
     default:
       return null;
   }

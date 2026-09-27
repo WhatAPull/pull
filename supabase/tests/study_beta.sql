@@ -32,6 +32,18 @@ grant execute on function pg_temp.become_reader(uuid) to authenticated, service_
 grant execute on function pg_temp.become_worker() to authenticated, service_role;
 grant execute on function pg_temp.as_owner() to authenticated, service_role;
 
+/*
+ * A course a worker has taken off the queue, as this file stands in for the worker: its
+ * message deleted, as a step's is once the step is done. A course whose message is still
+ * queued, with nothing charged or held, is on its way, and the door counts it against its
+ * reader's share and the day (20260927100000). Nothing is charged here, so every figure of
+ * spend the file asserts is unchanged.
+ */
+create or replace function pg_temp.taken(p_job uuid)
+returns void language sql as $fn$
+  delete from pgmq.q_generation where message ->> 'jobId' = p_job::text;
+$fn$;
+
 create or replace function pg_temp.claim(
   p_key text, p_version uuid, p_statement text, p_span text, p_note text
 )
@@ -202,6 +214,54 @@ begin
 end $fn$;
 
 /*
+ * Knock at the study door once as `p_reader`, with their note, and undo it: NULL if it
+ * admitted the course, otherwise which of its budget refusals it was, told by SQLSTATE,
+ * DETAIL and sentence together. A refusal in other words is raised. Called as the owner.
+ */
+create or replace function pg_temp.study_refusal(p_reader uuid)
+returns text language plpgsql as $fn$
+declare
+  message text;
+  detail  text;
+  answer  text;
+begin
+  begin
+    perform pg_temp.become_reader(p_reader);
+    begin
+      perform public.enqueue_study_generation(
+        array[(select v.id from public.study_source_versions v where v.owner_id = p_reader
+               limit 1)],
+        'Remember the key findings', extensions.gen_random_uuid(), true);
+    exception when configuration_limit_exceeded then
+      get stacked diagnostics message = message_text, detail = pg_exception_detail;
+      answer := case
+        when message = 'the daily generation budget is spent. Study generation resumes at '
+                       '00:00 UTC.' and coalesce(detail, '') = '' then 'spent'
+        when message = 'today''s generation budget is committed to work already waiting to '
+                       'start. Try again in a little while.' and detail = 'committed'
+          then 'committed'
+        when message = 'your share of today''s study generation budget is spent. It resets '
+                       'at 00:00 UTC.' and coalesce(detail, '') = '' then 'share spent'
+        when message = 'your share of today''s study generation budget is promised to '
+                       'courses of yours already on their way. It resets at 00:00 UTC.'
+             and detail = 'share' then 'share promised'
+        when message like 'today''s study generation budget is spent%'
+             and coalesce(detail, '') = '' then 'ceiling'
+      end;
+      if answer is null then
+        raise exception 'the study door refused in words it does not use: % (detail %)',
+          message, detail;
+      end if;
+    end;
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+  perform pg_temp.as_owner();
+  return answer;
+end $fn$;
+
+/*
  * Knock at the study door once as each reader in turn until it refuses, and say how many
  * courses it admitted. One course each, from readers with nothing spent or waiting, so every
  * course is inside its reader's share and counts in full; each answer is held to the sum the
@@ -313,6 +373,8 @@ declare
   held      numeric;
   gate_b    uuid;
   moved     bigint;
+  room      numeric;
+  paid      uuid;
 begin
   insert into auth.users
     (id, instance_id, aud, role, email, encrypted_password,
@@ -683,6 +745,10 @@ begin
   if out ->> 'jobId' is null then
     raise exception 'the open beta did not queue a course: %', out;
   end if;
+  -- The worker has taken that course. Left on its way, it would hold this reader's share and
+  -- count against the day (20260927100000), and the probes below are about the ceiling.
+  perform pg_temp.as_owner();
+  perform pg_temp.taken((out ->> 'jobId')::uuid);
   -- The study ceiling counts study spend and nothing else: the catalogue's generation having
   -- spent 150 of the day's 200 cents, a course is still admitted. Probed, and undone.
   begin
@@ -874,10 +940,15 @@ begin
      where kind = 'study_course' and status in ('queued', 'running');
     reader_x := pg_temp.new_reader(note);
     reader_y := pg_temp.new_reader(note);
+    -- Each taken off the queue before the next: on its way, one course holds this reader's
+    -- whole share, and the door refuses a second (20260927100000). The ceiling's count, which
+    -- this probes, reads the courses and not their messages.
     for i in 1..3 loop
       if not pg_temp.knock(reader_x) then
         raise exception 'one reader''s course % of three was refused at an empty door', i;
       end if;
+      perform pg_temp.taken(j.id) from public.generation_jobs j
+       where j.requester_id = reader_x and j.kind = 'study_course';
     end loop;
     select array_agg(j.id order by j.id) into jobs
     from public.generation_jobs j
@@ -922,6 +993,142 @@ begin
   exception when raise_exception then
     if sqlerrm is distinct from 'probe done' then raise; end if;
   end;
+  -- The day, as the summary door reckons it (20260927100000): readers' work admitted and not
+  -- started counts once it is due, and a course is refused `committed` when that work takes
+  -- the room spend leaves, and `spent` when spend and the work parked on the budget leave
+  -- none. Another reader's summary, waiting to start, is the work here, beside a charge on
+  -- the catalogue that leaves exactly room for it and one course: admitted at that edge,
+  -- `committed` a cent past it, `spent` once the summary is parked instead, and admitted
+  -- again while the summary is only staggered, which cannot spend before it runs. Probed,
+  -- and undone.
+  begin
+    perform pg_temp.as_owner();
+    update public.generation_jobs set status = 'cancelled', finished_at = now()
+     where requester_id is not null and status in ('queued', 'running');
+    reader_x := pg_temp.new_reader(note);
+    reader_y := pg_temp.new_reader(note);
+    if public.study_spend_today() + public.study_min_job_cents()
+       > public.study_daily_cap_cents() then
+      raise exception 'the study ceiling has no room for a course, so this probe means nothing';
+    end if;
+    room := public.daily_spend_cap_cents() - public.spend_today()
+            - public.min_job_cents() - public.study_min_job_cents();
+    if room < 1 then
+      raise exception 'the day has no room for a summary and a course, so this means nothing';
+    end if;
+    insert into public.generation_jobs (target, status, finished_at)
+    values ('{"text":"x"}'::jsonb, 'succeeded', now()) returning id into paid;
+    insert into public.cost_ledger (job_id, provider, operation, unit, quantity, cost_cents)
+    values (paid, 'test', 'synthesize', 'call', 1, room);
+    insert into public.generation_jobs (requester_id, kind, target, status)
+    values (reader_y, 'private_summary', '{"text":"x"}'::jsonb, 'queued')
+    returning id into other_job;
+    perform pgmq.send('generation',
+                      jsonb_build_object('jobId', other_job, 'step', 'resolve_identity'), 0);
+    state := pg_temp.study_refusal(reader_x);
+    if state is not null then
+      raise exception 'with room for a waiting summary and one course, a course was refused as %',
+        state;
+    end if;
+    update public.cost_ledger set cost_cents = room + 1 where job_id = paid;
+    state := pg_temp.study_refusal(reader_x);
+    if state is distinct from 'committed' then
+      raise exception 'a course the waiting summary leaves no room for was refused as %, not '
+                      'as committed', coalesce(state, 'nothing: it was admitted');
+    end if;
+    perform pg_temp.taken(other_job);
+    perform pgmq.send('generation',
+                      jsonb_build_object('jobId', other_job, 'step', 'synthesize',
+                                         'waits', 0, 'budgetWaits', 3), 900);
+    state := pg_temp.study_refusal(reader_x);
+    if state is distinct from 'spent' then
+      raise exception 'a course a parked summary leaves no room for was refused as %, not as '
+                      'spent', coalesce(state, 'nothing: it was admitted');
+    end if;
+    perform pg_temp.taken(other_job);
+    perform pgmq.send('generation',
+                      jsonb_build_object('jobId', other_job, 'step', 'resolve_identity'), 300);
+    state := pg_temp.study_refusal(reader_x);
+    if state is not null then
+      raise exception 'a summary still in its stagger closed the day to a course, as %', state;
+    end if;
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
+  -- The reader's share counts their own courses on their way (20260927100000): admitted, not
+  -- started, and still queued. One such course takes the whole share at the least a course
+  -- reserves, so a second is refused as promised, not spent -- and so too while the first is
+  -- only staggered, or has an attempt ledgered at nothing, a provider's 429. It no longer
+  -- counts once it has charged a cent today, or has left the queue, or has failed; and
+  -- another reader's course never counts against this one's share. A share spent by a
+  -- course already finished is refused as spent. Probed, and undone.
+  begin
+    perform pg_temp.as_owner();
+    update public.generation_jobs set status = 'cancelled', finished_at = now()
+     where requester_id is not null and status in ('queued', 'running');
+    if 2 * public.study_min_job_cents() <= public.study_requester_daily_cap_cents() then
+      raise exception 'a share of % funds two courses of %: the case below needs one',
+        public.study_requester_daily_cap_cents(), public.study_min_job_cents();
+    end if;
+    reader_x := pg_temp.new_reader(note);
+    reader_y := pg_temp.new_reader(note);
+    if not pg_temp.knock(reader_x) then
+      raise exception 'a reader''s first course of the day was refused';
+    end if;
+    select j.id into job from public.generation_jobs j
+    where j.requester_id = reader_x and j.kind = 'study_course';
+    state := pg_temp.study_refusal(reader_x);
+    if state is distinct from 'share promised' then
+      raise exception 'with a course on its way, a second was refused as %, not as promised',
+        coalesce(state, 'nothing: it was admitted');
+    end if;
+    state := pg_temp.study_refusal(reader_y);
+    if state is not null then
+      raise exception 'another reader''s course on its way refused this one''s as %', state;
+    end if;
+    perform pg_temp.taken(job);
+    perform pgmq.send('generation', jsonb_build_object('jobId', job, 'step', 'study_prepare'),
+                      300);
+    if pg_temp.study_refusal(reader_x) is distinct from 'share promised' then
+      raise exception 'a course in its stagger stopped holding its reader''s share';
+    end if;
+    insert into public.cost_ledger (job_id, provider, operation, unit, quantity, cost_cents)
+    values (job, 'test', 'study_extract', 'call', 1, 0);
+    if pg_temp.study_refusal(reader_x) is distinct from 'share promised' then
+      raise exception 'a course whose one attempt cost nothing stopped holding the share';
+    end if;
+    insert into public.cost_ledger (job_id, provider, operation, unit, quantity, cost_cents)
+    values (job, 'test', 'study_extract', 'call', 1, 1);
+    state := pg_temp.study_refusal(reader_x);
+    if state is not null then
+      raise exception 'a course started today still held its reader''s share: refused as %',
+        state;
+    end if;
+    delete from public.cost_ledger where job_id = job;
+    perform pg_temp.taken(job);
+    state := pg_temp.study_refusal(reader_x);
+    if state is not null then
+      raise exception 'a course off the queue still held its reader''s share: refused as %',
+        state;
+    end if;
+    perform pgmq.send('generation', jsonb_build_object('jobId', job, 'step', 'study_prepare'),
+                      0);
+    update public.generation_jobs set status = 'failed', finished_at = now() where id = job;
+    state := pg_temp.study_refusal(reader_x);
+    if state is not null then
+      raise exception 'a failed course still held its reader''s share: refused as %', state;
+    end if;
+    insert into public.cost_ledger (job_id, provider, operation, unit, quantity, cost_cents)
+    values (job, 'test', 'study_assemble', 'call', 1,
+            public.study_requester_daily_cap_cents() - public.study_min_job_cents() + 1);
+    if pg_temp.study_refusal(reader_x) is distinct from 'share spent' then
+      raise exception 'a share spent by a finished course was not refused as spent';
+    end if;
+    raise exception using errcode = 'P0001', message = 'probe done';
+  exception when raise_exception then
+    if sqlerrm is distinct from 'probe done' then raise; end if;
+  end;
   -- A preparation since opening is off the gate's pipeline when either stage is: assembled
   -- with another model, or its claims extracted with another. One on the gate's is not.
   -- Probed, and undone.
@@ -943,6 +1150,8 @@ begin
     if (select preparations_off_gate from ops.study_beta_status) is distinct from 1 then
       raise exception 'a preparation assembled off the gate''s pipeline was not counted once';
     end if;
+    perform pg_temp.as_owner();
+    perform pg_temp.taken(other_job);
     perform pg_temp.become_reader(outsider);
     other_job := (public.enqueue_study_generation(array[(saved ->> 'versionId')::uuid],
                                                   'Prepare for an assessment',

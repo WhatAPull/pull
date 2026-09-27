@@ -251,9 +251,11 @@ that can fund them, so a day they close is spent. The Studio re-reads the state 
 minute while it shows `committed`, and when the page is shown again, at most once every ten
 seconds.
 
-The study door, `study_enqueue_course`, still tests spend alone (`spend_today() +
-study_min_job_cents() > cap`) until a follow-up aligns it with this one, after the study
-stack that redefines it has merged.
+The study door, `study_enqueue_course`, makes the same two tests at the least a course
+reserves (`study_min_job_cents()`), since `20260927100000`: spent, and committed with the
+same DETAIL. Its refusals say "study generation" where this door's say "summaries". It
+also counts a reader's own courses on their way against their share of study spend; see
+`study-generation.md`.
 
 The catalogue's own jobs, which have no requester, are left out on purpose. The door
 answers a reader's request, and the catalogue is the operator's scheduling. A seeding
