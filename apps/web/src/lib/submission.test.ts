@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { draftSubmissions, mutationId, nextSubmissionStamp } from './submission.js';
+import { draftSubmissions, mutationId, nextSubmissionStamp, recordId } from './submission.js';
 
 describe('submission stamps', () => {
   it('never repeats, even when the clock does not move', () => {
@@ -40,20 +40,20 @@ describe('submission stamps', () => {
  * it is called, and `Feed.tsx` calls it AFTER the slot is marked handled — so the
  * reader's stance and explanation would go with no banner, no queue entry and no retry.
  */
+const withCrypto = <T>(value: unknown, run: () => T): T => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+  Object.defineProperty(globalThis, 'crypto', { value, configurable: true });
+  try {
+    return run();
+  } finally {
+    if (original) Object.defineProperty(globalThis, 'crypto', original);
+    else delete (globalThis as unknown as Record<string, unknown>).crypto;
+  }
+};
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 describe('mutationId', () => {
-  const withCrypto = <T>(value: unknown, run: () => T): T => {
-    const original = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
-    Object.defineProperty(globalThis, 'crypto', { value, configurable: true });
-    try {
-      return run();
-    } finally {
-      if (original) Object.defineProperty(globalThis, 'crypto', original);
-      else delete (globalThis as unknown as Record<string, unknown>).crypto;
-    }
-  };
-
-  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-
   it('uses randomUUID when there is one', () => {
     expect(mutationId()).toMatch(UUID);
   });
@@ -81,6 +81,45 @@ describe('mutationId', () => {
   it('never throws, which is the whole point', () => {
     for (const value of [undefined, {}, { randomUUID: null }]) {
       expect(() => withCrypto(value, () => mutationId())).not.toThrow();
+    }
+  });
+});
+
+/**
+ * The id of a row keyed in a space every reader shares -- a flashcard set, a card. A save of
+ * another reader's id is refused, so one that could be predicted could be taken first.
+ */
+describe('recordId', () => {
+  it('uses randomUUID when there is one', () => {
+    expect(recordId()).toMatch(UUID);
+  });
+
+  it('uses getRandomValues in a non-secure context, where randomUUID is missing', () => {
+    let calls = 0;
+    const id = withCrypto(
+      {
+        getRandomValues: (a: Uint8Array) => {
+          calls += 1;
+          return a.map((_, i) => (i * 53 + 7) % 256);
+        },
+      },
+      () => recordId(),
+    );
+    expect(calls).toBe(1);
+    expect(id).toMatch(UUID);
+    expect(id[14]).toBe('4');
+    expect('89ab').toContain(id[19]);
+  });
+
+  it('refuses rather than fall back to an id anyone could work out', () => {
+    const random = vi.spyOn(Math, 'random');
+    try {
+      for (const value of [undefined, {}, { randomUUID: null }]) {
+        expect(() => withCrypto(value, () => recordId())).toThrow(/secure random source/);
+      }
+      expect(random).not.toHaveBeenCalled();
+    } finally {
+      random.mockRestore();
     }
   });
 });

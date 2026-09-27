@@ -55,6 +55,19 @@ describe('rpcError', () => {
     expect(e.message).toContain('Check the RLS policy');
   });
 
+  it('keeps the DETAIL reachable, since one SQLSTATE can carry several refusals', () => {
+    const e = rpcError({
+      message: 'this course is already being prepared',
+      details: 'preparing',
+      code: '55000',
+    });
+    expect(sqlState(e)).toBe('55000');
+    expect(sqlDetail(e)).toBe('preparing');
+    expect(sqlDetail(rpcError(postgrest))).toBeUndefined();
+    expect(sqlDetail({ code: '55000', details: 'unchanged' })).toBe('unchanged');
+    expect(sqlDetail(new Error('x'))).toBeUndefined();
+  });
+
   it('passes a real Error through untouched, so stacks survive', () => {
     const original = new Error('network down');
     expect(rpcError(original)).toBe(original);

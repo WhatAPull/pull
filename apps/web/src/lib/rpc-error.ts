@@ -64,25 +64,11 @@ export function rpcError(error: unknown): Error {
   // Keep the SQLSTATE reachable. Callers already branch on 23505, and "not
   // authorised" versus "constraint violated" are very different things to be told.
   wrapped.name = e.code ? `PostgrestError ${e.code}` : 'PostgrestError';
-  // And the DETAIL, on its own. It is already in the message, joined to the sentence, but
-  // a function that raises one SQLSTATE for two different refusals says which in its
-  // DETAIL, and a caller should read that without parsing a sentence.
+  // And the DETAIL, which some functions use to say which of one code's refusals it was.
   if (typeof e.details === 'string' && e.details.length > 0) {
-    Object.defineProperty(wrapped, 'detail', { value: e.details, enumerable: false });
+    (wrapped as Error & { details?: string }).details = e.details;
   }
   return wrapped;
-}
-
-/**
- * The DETAIL Postgres attached to a refusal, or nothing. Read off an error `rpcError`
- * made, or off a raw PostgREST error object.
- */
-export function sqlDetail(error: unknown): string | undefined {
-  const detail =
-    error instanceof Error
-      ? (error as Error & { detail?: unknown }).detail
-      : ((error ?? {}) as RpcErrorShape).details;
-  return typeof detail === 'string' && detail.length > 0 ? detail : undefined;
 }
 
 /**
@@ -146,6 +132,19 @@ export function sqlState(error: unknown): string | undefined {
   if (error instanceof Error) return /^PostgrestError (.+)$/.exec(error.name)?.[1];
   const e = (error ?? {}) as RpcErrorShape;
   return typeof e.code === 'string' && e.code.length > 0 ? e.code : undefined;
+}
+
+/**
+ * The DETAIL Postgres attached to a refusal, or nothing. Some functions refuse with one
+ * SQLSTATE for several reasons and say which in the DETAIL -- `regenerate_study_course`
+ * answers 55000 with `preparing` or `unchanged` -- so a caller branches on the pair.
+ */
+export function sqlDetail(error: unknown): string | undefined {
+  const details =
+    error instanceof Error
+      ? (error as Error & { details?: unknown }).details
+      : ((error ?? {}) as RpcErrorShape).details;
+  return typeof details === 'string' && details.length > 0 ? details : undefined;
 }
 
 /**

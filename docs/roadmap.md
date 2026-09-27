@@ -244,6 +244,10 @@ sentence it was written as: the dial _across all media types_, which needs `sect
 rendered per medium (a paper's Method/Findings/Limitations against a film's
 Themes/Craft/Context) rather than the four columns on `pulls` it reads today.
 
+**Flashcards** have landed ahead of the round they belong to: a reader's own sets, made,
+imported from Quizlet or Anki and studied four ways, free, private and offline
+([`flashcards.md`](./flashcards.md)). Spaced review across sets is next.
+
 ## Round 4 — community
 
 Profiles, follows, public stashes, publish, **fork** (with attribution and revision

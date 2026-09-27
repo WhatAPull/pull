@@ -48,6 +48,21 @@ export function checkStudyText(input: { title: string; text: string }): {
   return { title, text };
 }
 
+/**
+ * What to say when saving a version was refused; null for a refusal whose own message says
+ * it. 55000 `public`: the source is a copy of a public course's excerpts, which are the
+ * course's, not the reader's text to save a version into.
+ */
+export function studySaveRefusal(
+  code: string | undefined,
+  detail: string | undefined,
+): string | null {
+  if (code === '55000' && detail === 'public') {
+    return 'That source is a public course’s excerpts, which are the course’s own. Save your text as a new source.';
+  }
+  return null;
+}
+
 export function checkPdfPageCount(count: number): void {
   if (!Number.isInteger(count) || count < 1) throw new Error('This PDF has no readable pages.');
   if (count > MAX_STUDY_PDF_PAGES) {

@@ -48,6 +48,18 @@ describe('routeParam', () => {
     expect(routeParam(`/pull/${PULL}#anything`, '/pull')).toBe(PULL);
   });
 
+  it('tells the flashcard list from one set, which share a prefix', () => {
+    // `/flashcards` is the list and `/flashcards/:id` a set: the bare prefix is no id, so
+    // the list never opens as a set called "" and a set never opens as the list.
+    expect(routeParam('/flashcards', '/flashcards')).toBeNull();
+    expect(routeParam('/flashcards/', '/flashcards')).toBeNull();
+    expect(routeParam('/flashcards/8f3e', '/flashcards')).toBe('8f3e');
+    expect(routeParam('/flashcards/8f3e/', '/flashcards')).toBe('8f3e');
+    expect(routeParam('/flashcards/8f3e/learn', '/flashcards')).toBeNull();
+    expect(isPath('/flashcards/8f3e', '/flashcards')).toBe(false);
+    expect(isPath('/flashcards/', '/flashcards')).toBe(true);
+  });
+
   it('does not confuse one route for a prefix of another', () => {
     expect(routeParam(`/pull/${PULL}`, '/source')).toBeNull();
     expect(routeParam(`/source/${UUID}`, '/pull')).toBeNull();
