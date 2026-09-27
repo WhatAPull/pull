@@ -118,6 +118,15 @@ snapshot is older than the lock it waited for, and misses the course it waited f
 publishing refuses them (55000 `isolation`). READ COMMITTED is Postgres's default, so only
 a transaction that asked for another is refused.
 
+No test file can exercise the text locks, since a race needs two sessions and `psql -f` runs
+one; they are verified by a two-session race outside the suite. Register one 3,000-character
+text to two works, prepare a course of each quoting a different 160 characters of it, and
+publish both from two connections, the first keeping its transaction open until the second
+has called: with the locks the second waits and is refused, and without them both are
+published, 320 characters between them. Take the keys in each course's source order instead of
+sorted, and two courses of the two works quoting the same two texts in opposite orders
+deadlock, once a third session holding both texts' locks lets them go together.
+
 ## The catalogue
 
 `list_public_study_courses()` and `get_public_study_course(slug)` return what a reader needs to

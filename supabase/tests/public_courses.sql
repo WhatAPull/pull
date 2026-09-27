@@ -708,8 +708,9 @@ begin
   -- A tenth, to the character, and whatever work the text is registered to: of the essay's
   -- 3,000 characters, two courses may quote 300 between them -- a tenth exactly -- the second
   -- from where the first ends; a 301st is over, from the work or from another the same text is
-  -- registered to, since a text is known by its hash and not by its work; and the other work
-  -- may quote what the first work's courses quote already, which takes nothing more.
+  -- registered to, since a text is known by its hash and not by its work, and with the first
+  -- course withdrawn, since its readers keep their copies; and the other work may quote what
+  -- the first work's courses quote already, which takes nothing more.
   for quoting in
     select * from (values
       (1, tenth_work, 0, 150, 'ok'),
@@ -734,6 +735,60 @@ begin
       raise exception 'course % of the essay, quoting [%, %): wanted %, got %',
         quoting.n, quoting.start_at, quoting.start_at + quoting.len, quoting.want, s;
     end if;
+    if quoting.n = 2 then
+      perform public.withdraw_public_study_course(
+        (select id from public.public_study_courses where slug = 'test-tenth-1'),
+        'Public courses test', 'Withdrawn, and still counted.');
+    end if;
+  end loop;
+
+  -- A course of two texts counts what the courses before it quote of each of them, not of one:
+  -- after a course quoting 250 characters of the 3,000-character text, one quoting 51 more of
+  -- it and 1 of the 1,000-character text is over the first text's tenth; after a course quoting
+  -- 50 of the 1,000-character text, one quoting 51 more of it and 1 of the other is over that
+  -- text's. Each text is in turn the one quoted before, so counting the earlier courses of only
+  -- one of a course's texts is caught whichever of their hashes comes first.
+  for quoting in
+    select * from (values
+      ('sequel', 250, 0, 1, 1000, 51),
+      ('part', 50, 500, 51, 2000, 1))
+      as t(before, before_len, part_at, part_len, sequel_at, sequel_len)
+  loop
+    v2 := pg_temp.save(curator, case quoting.before when 'part' then part else sequel end);
+    perform pg_temp.as_owner();
+    insert into public.study_curated_sources (source_version_id, work_id, registered_by)
+    values (v2, pair_work, 'Public courses test');
+    gen2 := pg_temp.prepare(curator, array[v2], jsonb_build_object(
+      'claims', jsonb_build_array(
+        pg_temp.claim('s1c1', v2, 'The part makes a point.',
+                      case quoting.before when 'part' then part else sequel end,
+                      0, quoting.before_len)),
+      'lessons', jsonb_build_array(pg_temp.lesson('l1', 1, array['s1c1'])),
+      'items', '[]'::jsonb));
+    perform pg_temp.become_worker();
+    perform pg_temp.expect('ok',
+      format('select public.publish_study_course(%L, %L, %L, %L)', gen2, pair_work,
+             'test-pair-before-' || quoting.before, 'R'),
+      format('a course quoting %s characters of the %s alone', quoting.before_len, quoting.before));
+    v2 := pg_temp.save(curator, part);
+    v3 := pg_temp.save(curator, sequel);
+    perform pg_temp.as_owner();
+    insert into public.study_curated_sources (source_version_id, work_id, registered_by)
+    values (v2, pair_work, 'Public courses test'), (v3, pair_work, 'Public courses test');
+    gen2 := pg_temp.prepare(curator, array[v2, v3], jsonb_build_object(
+      'claims', jsonb_build_array(
+        pg_temp.claim('s1c1', v2, 'The first part makes a point.', part,
+                      quoting.part_at, quoting.part_len),
+        pg_temp.claim('s2c1', v3, 'The second part makes another.', sequel,
+                      quoting.sequel_at, quoting.sequel_len)),
+      'lessons', jsonb_build_array(pg_temp.lesson('l1', 1, array['s1c1', 's2c1'])),
+      'items', '[]'::jsonb));
+    perform pg_temp.become_worker();
+    perform pg_temp.expect('22023 quotes',
+      format('select public.publish_study_course(%L, %L, %L, %L)', gen2, pair_work,
+             'test-pair-after-' || quoting.before, 'R'),
+      format('a course of both texts, over the %s''s tenth only with the course before it',
+             quoting.before));
   end loop;
 
   -- A course of two texts is held to a tenth of each, not of the one it quotes most: 101
@@ -1315,7 +1370,8 @@ $test$;
 rollback;
 
 -- Publishing is refused outside READ COMMITTED, before anything is read: under an older
--- snapshot, what it counts would miss a publication its locks waited for.
+-- snapshot, REPEATABLE READ's or SERIALIZABLE's, what it counts would miss a publication its
+-- locks waited for. The same block runs under each.
 begin isolation level repeatable read;
 set local role service_role;
 do $test$
@@ -1331,9 +1387,35 @@ begin
     get stacked diagnostics st = returned_sqlstate, dt = pg_exception_detail;
   end;
   if st || coalesce(' ' || dt, '') is distinct from '55000 isolation' then
-    raise exception 'publishing under repeatable read: wanted 55000 isolation, got % %', st, dt;
+    raise exception 'publishing under %: wanted 55000 isolation, got % %',
+      current_setting('transaction_isolation'), st, dt;
   end if;
-  raise notice 'public study courses, isolation: ok';
+  raise notice 'public study courses, isolation: ok under %',
+    current_setting('transaction_isolation');
+end
+$test$;
+rollback;
+
+begin isolation level serializable;
+set local role service_role;
+do $test$
+declare
+  st text;
+  dt text;
+begin
+  begin
+    perform public.publish_study_course(extensions.gen_random_uuid(),
+                                        extensions.gen_random_uuid(), 'test-isolation', 'R');
+    st := 'ok';
+  exception when others then
+    get stacked diagnostics st = returned_sqlstate, dt = pg_exception_detail;
+  end;
+  if st || coalesce(' ' || dt, '') is distinct from '55000 isolation' then
+    raise exception 'publishing under %: wanted 55000 isolation, got % %',
+      current_setting('transaction_isolation'), st, dt;
+  end if;
+  raise notice 'public study courses, isolation: ok under %',
+    current_setting('transaction_isolation');
 end
 $test$;
 rollback;
