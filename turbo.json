@@ -8,7 +8,12 @@
     "typecheck": { "dependsOn": ["^build"] },
     "test": {
       "dependsOn": ["^build"],
-      "inputs": ["$TURBO_DEFAULT$", "../../docs/privacy.md", "../../docs/terms.md"]
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "../../docs/privacy.md",
+        "../../docs/terms.md",
+        "../../supabase/migrations/*.sql"
+      ]
     }
   }
 }

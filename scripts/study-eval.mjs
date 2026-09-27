@@ -46,6 +46,38 @@ function validateVerdict(value, name) {
   }
 }
 
+/*
+ * A run's time as the export writes it -- UTC, with a Z -- and a real one: not a word such as
+ * 'now', and not a day the calendar lacks, which Date.parse would roll into the next month.
+ * The database refuses a gate whose `ranAt` is anything else.
+ */
+const RAN_AT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/;
+
+function utcTime(value) {
+  if (typeof value !== 'string' || !RAN_AT.test(value)) return null;
+  const at = Date.parse(value);
+  return !Number.isNaN(at) && new Date(at).toISOString().slice(0, 19) === value.slice(0, 19)
+    ? value
+    : null;
+}
+
+/**
+ * One stage of a pipeline: the prompt's and the schema's hashes, and the model -- as the
+ * database holds a gate to them (`study_gate_passes`): lowercase hex, and a model of one to a
+ * hundred characters, counted as Postgres counts them. Looser here, a run called ready would
+ * be recorded as a gate that did not pass.
+ */
+function namedStage(stage) {
+  return (
+    stage != null &&
+    /^[0-9a-f]{64}$/.test(stage.promptHash ?? '') &&
+    /^[0-9a-f]{64}$/.test(stage.schemaHash ?? '') &&
+    typeof stage.model === 'string' &&
+    [...stage.model].length >= 1 &&
+    [...stage.model].length <= 100
+  );
+}
+
 function rate(part, whole) {
   return whole === 0 ? null : part / whole;
 }
@@ -110,6 +142,12 @@ export function evaluateStudyRun(run) {
       costBySource.get(attempt.sourceId) + ledger.get(attempt.id).costCents,
     );
   }
+
+  // One pipeline for the whole run -- what extracted its claims and what assembled its
+  // courses -- and when it ran: what a release gate is a gate for.
+  const pipelines = run?.pipelines == null ? [] : requireArray(run.pipelines, 'pipelines');
+  const pipeline = pipelines.length === 1 ? pipelines[0] : null;
+  const ranAt = utcTime(run?.ranAt);
 
   let visibleItems = 0;
   let quarantinedItems = 0;
@@ -203,18 +241,27 @@ export function evaluateStudyRun(run) {
       providerAttempts.size > 0 &&
       providerAttempts.size === attempts.size &&
       [...providerAttempts].every((id) => attempts.has(id)),
+    singlePipeline:
+      pipeline !== null && namedStage(pipeline.extract) && namedStage(pipeline.assemble),
+    // A run with no time the database would take cannot be recorded as a gate at all.
+    timed: ranAt !== null,
   };
   gates.ready = Object.values(gates).every(Boolean);
 
   return {
+    pipeline,
+    ranAt,
     counts: {
       sources: sources.size,
       visibleItems,
       quarantinedItems,
       doubleReviewedVisible,
+      groundedVisible,
+      answerableVisible,
       usableVisibleItems,
       materialErrors,
       ambiguousVisible,
+      adversarialItems,
       adversarialLeaks,
       doubleReviewedAdversarial,
       visibleSources: visibleSourceIds.size,

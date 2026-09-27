@@ -40,6 +40,7 @@ import {
   draftUnsaved,
   lessonDraft,
   allLessons,
+  GOAL_SUGGESTIONS,
 } from './study-course.js';
 
 const overviewRow = {
@@ -759,5 +760,45 @@ describe('the study Delta in a session', () => {
     ];
     expect(nextLesson(done)).toBeNull();
     expect(planSession(done)).toEqual([]);
+  });
+});
+
+/*
+ * `study_goal_kind` sorts the beta's courses by what they are for, reading the builder's
+ * suggestions by their text; a suggestion it did not name would be counted as a goal in the
+ * reader's own words. Read from its latest definition -- a later migration replaces it, as
+ * law 6 has it -- and only that function's body.
+ */
+const migrations = import.meta.glob('../../../../supabase/migrations/*.sql', {
+  query: '?raw',
+  import: 'default',
+  eager: true,
+}) as Record<string, string>;
+
+// Its definition, not a grant or a revoke that names it.
+const DEFINES_GOAL_KIND = /create\s+(or\s+replace\s+)?function\s+public\.study_goal_kind\s*\(/i;
+
+function goalKinds(): Map<string, string> {
+  const latest = Object.keys(migrations)
+    .sort()
+    .filter((path) => DEFINES_GOAL_KIND.test(migrations[path]!))
+    .at(-1);
+  const sql = latest ? migrations[latest]! : '';
+  const start = sql.search(DEFINES_GOAL_KIND);
+  const end = sql.indexOf('$fn$;', start);
+  const body = start < 0 || end < 0 ? '' : sql.slice(start, end);
+  const pairs = [...body.matchAll(/when\s+'([^']+)'\s+then\s+'([a-z]+)'/gi)];
+  return new Map(pairs.map((m) => [m[1]!, m[2]!]));
+}
+
+describe('the builder’s goals and the beta’s goal kinds', () => {
+  it('sorts every suggestion the builder offers into a kind of its own', () => {
+    const kinds = goalKinds();
+    const sorted = GOAL_SUGGESTIONS.map((goal) => kinds.get(goal.toLowerCase()));
+    for (const kind of sorted) {
+      expect(kind).toBeDefined();
+      expect(kind).not.toBe('own');
+    }
+    expect(new Set(sorted).size).toBe(GOAL_SUGGESTIONS.length);
   });
 });

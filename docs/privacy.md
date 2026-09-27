@@ -1,9 +1,21 @@
 # Privacy Policy
 
-**Effective 28 September 2026.** Every revision of this document is a commit in this
+**Effective 29 September 2026.** Every revision of this document is a commit in this
 repository, so what changed and when is public history rather than a claim.
 
-**Your study courses now remember what your answers show.** For each claim a course
+**Study courses may open to every reader with an account, and we measure how well they
+teach.** Until now only readers we invited could make a study course. We will open courses
+to everyone only after a human-reviewed quality check passes, and what making one sends and
+keeps is unchanged. So that we can tell whether courses teach and not only whether they are
+used, each answer to a course's question now also records whether the course counted the
+ideas it tests as already known when you answered. From your study rows we compute totals
+-- how many courses were made, how many answers recalled an idea a week later, how often
+an idea the course counted as known was answered wrong, how many reports were made --
+which only the people running the service can read, and in which no row names a reader.
+Nothing is sent to a model. See [What you create](#what-you-create).
+
+The previous revision, effective 28 September, **made your study courses remember what your
+answers show.** For each claim a course
 teaches, we keep how well you remember it — worked out from your answers the course could
 check, the way your feed's review schedule is — and when you last answered it right or
 wrong (`study_claim_memory`). The course uses it to leave out lessons you have recently shown
@@ -13,7 +25,7 @@ lesson, your own judgement of an answer, and an answer you looked up never do �
 wrong answer, or your own "not had", still says you did not. Nothing is sent to a model.
 See [What you create](#what-you-create).
 
-The previous revision, effective 27 September, **recorded answers to your study courses'
+The revision before, effective 27 September, **recorded answers to your study courses'
 questions.** When you answer a question in one of your courses, we keep what you chose,
 typed or arranged (up to 1,000 characters), whether it was right, whether you looked at the
 passage first or were trying again after seeing the answer, and — for a short answer the
@@ -23,7 +35,7 @@ the database, not by a model, and no answer is sent to any model provider. An an
 without a connection waits on your device until it can be sent — through a sign-out, for
 when you sign in again — and is removed from the device when you delete your account.
 
-The revision before, effective 26 September, **offered study courses in the app** to
+Before that, the revision effective 26 September **offered study courses in the app** to
 accounts in the limited beta. In Studio you choose up to five study sources you saved and
 say what the course is for; once you confirm, the title and text of those sources, and that
 goal, are sent to Google's Gemini API, and the course it prepares is stored privately in
@@ -34,7 +46,7 @@ counted as remembering anything. Listening to a lesson uses only a voice install
 device, so your material is not sent to a speech service; without one, the app does not
 offer to read it aloud.
 
-Before that, the revision effective 25 September described study course generation before
+Earlier, the revision effective 25 September described study course generation before
 the app offered it: what is sent to Google's Gemini API and when, that each course keeps
 the history of each claim, lesson and question's status (checked, held back, reported,
 corrected), that a report you file and a version you correct are kept with it privately,
@@ -46,7 +58,7 @@ real name (the name your sign-in account supplies is kept), and it said the Anth
 fallback was "not enabled" while listing it as a processor (it is a setting the hosted
 service does not use, and is listed so that turning it on changes nothing you were told).
 
-Earlier, the revision effective 23 September described private study import. When you
+Earlier still, the revision effective 23 September described private study import. When you
 save material in Studio's Prepare study material mode, we store the extracted text you
 approved and each corrected version in your private account. We do not upload the
 original file, and saving alone does not send the text to a model provider. You can delete
@@ -223,21 +235,21 @@ own history to yourself, not about retaining it against your wishes.
 
 This is the category most services describe vaguely, so here it is precisely:
 
-| Data                                                            | Table                                                        | What it is                                                                          |
-| --------------------------------------------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
-| Which ideas you were shown, where in the feed, and what you did | `feed_impressions`                                           | Stops the feed repeating itself                                                     |
-| What you opened and for how long                                | `history_events` (incl. `dwell_ms`)                          | Your history, and the reading-time signal                                           |
-| Recall state per idea                                           | `knowledge_states`                                           | Stability and last-seen, from which Half-Life is computed                           |
-| A numeric summary of what you know                              | `user_knowledge_vectors`                                     | The centroid the Delta compares candidates against                                  |
-| Questions shown, answered or dismissed                          | `interrupt_events`, `session_seeds`                          | Bounds interleaved questions and backs off when you dismiss them                    |
-| Each recall attempt, as it happened                             | `recall_events`                                              | The grade, your stated confidence and what you typed, so a retry never counts twice |
-| Highlights you chose to keep                                    | `imports`, `import_items`, and pulls under a private summary | Your own copy of your own reading, so the product can schedule and search it        |
-| Questions you wrote for yourself                                | `user_questions`                                             | Asked in Review before ours, because yours is the one you wanted                    |
-| Learning path progress and completed steps                      | `path_progress`, `path_step_done`                            | Remembers your place, reflections and tested-out steps on curated learning paths    |
-| Sources you asked to see less of                                | `muted_works`                                                | Keeps them out of your feed and your Daily Pull until you unmute them               |
-| Lessons and questions of a study course you were shown          | `study_progress_events`                                      | Remembers your place in the course; never counted as recall                         |
-| Answers to your study courses' questions                        | `study_answer_events`                                        | What you practised, and what you have shown you remember; what you typed is kept    |
-| How well you remember each claim of your study courses          | `study_claim_memory`                                         | Leaves out lessons you know, brings back ones you got wrong, schedules review       |
+| Data                                                            | Table                                                        | What it is                                                                                                                                 |
+| --------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Which ideas you were shown, where in the feed, and what you did | `feed_impressions`                                           | Stops the feed repeating itself                                                                                                            |
+| What you opened and for how long                                | `history_events` (incl. `dwell_ms`)                          | Your history, and the reading-time signal                                                                                                  |
+| Recall state per idea                                           | `knowledge_states`                                           | Stability and last-seen, from which Half-Life is computed                                                                                  |
+| A numeric summary of what you know                              | `user_knowledge_vectors`                                     | The centroid the Delta compares candidates against                                                                                         |
+| Questions shown, answered or dismissed                          | `interrupt_events`, `session_seeds`                          | Bounds interleaved questions and backs off when you dismiss them                                                                           |
+| Each recall attempt, as it happened                             | `recall_events`                                              | The grade, your stated confidence and what you typed, so a retry never counts twice                                                        |
+| Highlights you chose to keep                                    | `imports`, `import_items`, and pulls under a private summary | Your own copy of your own reading, so the product can schedule and search it                                                               |
+| Questions you wrote for yourself                                | `user_questions`                                             | Asked in Review before ours, because yours is the one you wanted                                                                           |
+| Learning path progress and completed steps                      | `path_progress`, `path_step_done`                            | Remembers your place, reflections and tested-out steps on curated learning paths                                                           |
+| Sources you asked to see less of                                | `muted_works`                                                | Keeps them out of your feed and your Daily Pull until you unmute them                                                                      |
+| Lessons and questions of a study course you were shown          | `study_progress_events`                                      | Remembers your place in the course; never counted as recall                                                                                |
+| Answers to your study courses' questions                        | `study_answer_events`                                        | What you practised, what you have shown you remember, and whether the course counted it as known when you answered; what you typed is kept |
+| How well you remember each claim of your study courses          | `study_claim_memory`                                         | Leaves out lessons you know, brings back ones you got wrong, schedules review                                                              |
 
 **Highlights you import are yours, and stay yours.** When you keep a Kindle or Readwise
 export, the text of each highlight is stored verbatim — that is the point of keeping it —

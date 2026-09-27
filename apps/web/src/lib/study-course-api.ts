@@ -202,7 +202,7 @@ export async function recordProgress(events: readonly ProgressEvent[]): Promise<
   return shapeProgressResult(data);
 }
 
-/** Whether this reader may prepare a course: the beta allowlist, answered by the server. */
+/** Whether this reader may prepare a course -- the allowlist, or the open beta -- answered by the server. */
 export async function courseBuildingAvailable(signal?: AbortSignal): Promise<boolean> {
   const request = supabase.rpc('study_generation_available');
   const { data, error } = await (signal ? request.abortSignal(signal) : request);
