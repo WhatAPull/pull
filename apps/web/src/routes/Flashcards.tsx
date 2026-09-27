@@ -7,7 +7,7 @@
  * Offline, the list is the sets opened on this device, which can still be studied; making
  * and importing need a connection and say so.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { FlashcardEditor } from '../components/FlashcardEditor.js';
 import { FlashcardImport } from '../components/FlashcardImport.js';
 import { cardCount, shortDate, useFocusAfter, useOnline } from '../components/FlashcardParts.js';
@@ -59,6 +59,20 @@ export function Flashcards({
   const [importTitle, setImportTitle] = useState('');
   const [importError, setImportError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
+  // The new set's id while its screen -- New set or Import -- is the one showing, and null on
+  // the list or once this page has gone: a save answers only the screen it was made from.
+  const showing = useRef<string | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => {
+    showing.current = view === 'list' ? null : newId;
+  }, [view, newId]);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      showing.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -136,9 +150,15 @@ export function Flashcards({
       ? `You have ${TOTAL_CARD_LIMIT.toLocaleString('en')} cards across your sets, which is as many as an account keeps. Delete cards or sets you are done with to make room.`
       : 'Making or importing a set needs a connection.';
 
+  /*
+   * A save opens the set it made -- if the reader is still where they pressed Save. One who
+   * left while it was on its way, for another page or for the list, was pulled back to the set
+   * when the answer came. The set is made all the same; on the list it is read in again.
+   */
   const saved = async (payload: SavePayload) => {
     const out = await saveSet(payload);
-    onNavigate(`/flashcards/${encodeURIComponent(out.id)}`);
+    if (showing.current === payload.id) onNavigate(`/flashcards/${encodeURIComponent(out.id)}`);
+    else if (mounted.current) setAttempt((n) => n + 1);
   };
 
   if (view === 'new') {

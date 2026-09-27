@@ -261,75 +261,90 @@ export function FlashcardSetPage({
     clearFlashcardStorage(userId, (_, keyed) => keyed === id);
   };
 
+  /*
+   * "Saved." is said as the editor gives way to the overview, and a live region drawn with its
+   * text already in it is not reliably announced -- the overview's own was. So the region is
+   * the same element in both, last in each, where React keeps it across the switch; the
+   * overview's visible line says it to the eye only.
+   */
+  const said = (
+    <p role="status" className="sr-only">
+      {notice}
+    </p>
+  );
+
   switch (view.kind) {
     case 'edit':
       return (
-        <FlashcardEditor
-          key={editing}
-          userId={userId}
-          initial={draftOf(set)}
-          saved={set}
-          heading={`Edit ${set.title}`}
-          headingId={EDIT_TITLE_ID}
-          online={online && !fromDevice}
-          onSave={async (payload: SavePayload) => {
-            const out = await saveSet(payload);
-            // Read back rather than assumed, so what is studied and kept on this device is
-            // what the account holds -- and if the read fails, the save still happened, so
-            // the page shows what was saved rather than calling it unsaved.
-            const fresh = await fetchSet(set.id).catch(() => null);
-            if (!live.current) return;
-            const next: FlashcardSet = fresh ?? {
-              id: payload.id,
-              title: payload.title,
-              description: payload.description,
-              termLang: payload.termLang,
-              definitionLang: payload.definitionLang,
-              updatedAt: out.updatedAt,
-              cards: payload.cards,
-            };
-            setSet(next);
-            onTitle?.(next.title);
-            void cacheFlashcardSet(userId, next);
-            setNotice('Saved.');
-            toOverview();
-          }}
-          onLeave={toOverview}
-          leaveLabel={set.title}
-          onLoadLatest={() => {
-            void fetchSet(set.id)
-              .then((fresh) => {
-                if (!live.current) return;
-                if (!fresh) {
-                  forgetHere(set.id);
-                  setMissing(true);
-                  setSet(null);
-                  onTitle?.(null);
-                  return;
-                }
-                setSet(fresh);
-                onTitle?.(fresh.title);
-                void cacheFlashcardSet(userId, fresh);
-                setEditing((n) => n + 1);
-                focusAfter(EDIT_TITLE_ID);
-              })
-              .catch((e: unknown) => {
-                if (!live.current) return;
-                setView({ kind: 'overview' });
-                setActionError(
-                  isOfflineFailure(e)
-                    ? 'The latest version could not be read — you look offline.'
-                    : e instanceof Error
-                      ? e.message
-                      : String(e),
-                );
-              });
-          }}
-          onGone={() => {
-            forgetHere(set.id);
-            onNavigate('/flashcards');
-          }}
-        />
+        <>
+          <FlashcardEditor
+            key={editing}
+            userId={userId}
+            initial={draftOf(set)}
+            saved={set}
+            heading={`Edit ${set.title}`}
+            headingId={EDIT_TITLE_ID}
+            online={online && !fromDevice}
+            onSave={async (payload: SavePayload) => {
+              const out = await saveSet(payload);
+              // Read back rather than assumed, so what is studied and kept on this device is
+              // what the account holds -- and if the read fails, the save still happened, so
+              // the page shows what was saved rather than calling it unsaved.
+              const fresh = await fetchSet(set.id).catch(() => null);
+              if (!live.current) return;
+              const next: FlashcardSet = fresh ?? {
+                id: payload.id,
+                title: payload.title,
+                description: payload.description,
+                termLang: payload.termLang,
+                definitionLang: payload.definitionLang,
+                updatedAt: out.updatedAt,
+                cards: payload.cards,
+              };
+              setSet(next);
+              onTitle?.(next.title);
+              void cacheFlashcardSet(userId, next);
+              setNotice('Saved.');
+              toOverview();
+            }}
+            onLeave={toOverview}
+            leaveLabel={set.title}
+            onLoadLatest={() => {
+              void fetchSet(set.id)
+                .then((fresh) => {
+                  if (!live.current) return;
+                  if (!fresh) {
+                    forgetHere(set.id);
+                    setMissing(true);
+                    setSet(null);
+                    onTitle?.(null);
+                    return;
+                  }
+                  setSet(fresh);
+                  onTitle?.(fresh.title);
+                  void cacheFlashcardSet(userId, fresh);
+                  setEditing((n) => n + 1);
+                  focusAfter(EDIT_TITLE_ID);
+                })
+                .catch((e: unknown) => {
+                  if (!live.current) return;
+                  setView({ kind: 'overview' });
+                  setActionError(
+                    isOfflineFailure(e)
+                      ? 'The latest version could not be read — you look offline.'
+                      : e instanceof Error
+                        ? e.message
+                        : String(e),
+                  );
+                });
+            }}
+            onGone={() => {
+              forgetHere(set.id);
+              onNavigate('/flashcards');
+            }}
+          />
+          {said}
+        </>
       );
     // Each mode is keyed on the version of the set it was opened on. A copy read offline is
     // read again when the connection returns, and a version changed elsewhere -- a card gone
@@ -411,158 +426,164 @@ export function FlashcardSetPage({
   };
 
   return (
-    <section className="stack measure flashcards" aria-labelledby={TITLE_ID}>
-      <div className="flashcards__bar">{back}</div>
-      <p className="meta">
-        Flashcard set · {cardCount(set.cards.length)}
-        {shortDate(set.updatedAt) && ` · Changed ${shortDate(set.updatedAt)}`}
-      </p>
-      <h1 id={TITLE_ID} tabIndex={-1} dir="auto">
-        {set.title}
-      </h1>
-      {set.description && (
-        <p className="flashcards__lede" dir="auto">
-          {set.description}
+    <>
+      <section className="stack measure flashcards" aria-labelledby={TITLE_ID}>
+        <div className="flashcards__bar">{back}</div>
+        <p className="meta">
+          Flashcard set · {cardCount(set.cards.length)}
+          {shortDate(set.updatedAt) && ` · Changed ${shortDate(set.updatedAt)}`}
         </p>
-      )}
-      {/* Always drawn: a live region added together with its text is not reliably announced. */}
-      <p role="status" className={notice ? 'flashcards__notice' : 'sr-only'}>
-        {notice}
-      </p>
-      {fromDevice && (
-        <p className="flashcards__offline">
-          You are offline, so this is the copy kept on this device. You can study it and download
-          it; editing and deleting it need a connection.
-        </p>
-      )}
+        <h1 id={TITLE_ID} tabIndex={-1} dir="auto">
+          {set.title}
+        </h1>
+        {set.description && (
+          <p className="flashcards__lede" dir="auto">
+            {set.description}
+          </p>
+        )}
+        {/* Said by the region after this section, which outlives the editor (`said`). */}
+        {notice && (
+          <p className="flashcards__notice" aria-hidden="true">
+            {notice}
+          </p>
+        )}
+        {fromDevice && (
+          <p className="flashcards__offline">
+            You are offline, so this is the copy kept on this device. You can study it and download
+            it; editing and deleting it need a connection.
+          </p>
+        )}
 
-      <h2 className="flashcards__subheading">Study</h2>
-      <ul className="flashcards__modes">
-        {MODES.map((m) => {
-          const unavailable = m.kind === 'match' && !matchable;
-          return (
-            <li key={m.kind} className="flashcards__mode">
-              <button
-                type="button"
-                className="btn btn--plain flashcards__mode-name"
-                aria-disabled={unavailable}
-                aria-describedby={`flashcard-mode-${m.kind}`}
-                onClick={() => {
-                  if (unavailable) return;
-                  openMode(
-                    m.kind === 'learn'
-                      ? { kind: 'learn', cardIds: set.cards.map((c) => c.id) }
-                      : { kind: m.kind },
-                  );
-                }}
-              >
-                {m.name}
-              </button>
-              <span id={`flashcard-mode-${m.kind}`} className="flashcards__mode-says">
-                {unavailable
-                  ? 'Needs two cards whose terms and definitions all read differently.'
-                  : m.says}
+        <h2 className="flashcards__subheading">Study</h2>
+        <ul className="flashcards__modes">
+          {MODES.map((m) => {
+            const unavailable = m.kind === 'match' && !matchable;
+            return (
+              <li key={m.kind} className="flashcards__mode">
+                <button
+                  type="button"
+                  className="btn btn--plain flashcards__mode-name"
+                  aria-disabled={unavailable}
+                  aria-describedby={`flashcard-mode-${m.kind}`}
+                  onClick={() => {
+                    if (unavailable) return;
+                    openMode(
+                      m.kind === 'learn'
+                        ? { kind: 'learn', cardIds: set.cards.map((c) => c.id) }
+                        : { kind: m.kind },
+                    );
+                  }}
+                >
+                  {m.name}
+                </button>
+                <span id={`flashcard-mode-${m.kind}`} className="flashcards__mode-says">
+                  {unavailable
+                    ? 'Needs two cards whose terms and definitions all read differently.'
+                    : m.says}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+
+        <h2 className="flashcards__subheading">Cards</h2>
+        <ol className="flashcards__cards">
+          {set.cards.map((c) => (
+            <li key={c.id} className="flashcards__pair">
+              <span className="flashcards__pair-term" dir="auto">
+                {c.term}
+              </span>
+              <span className="flashcards__pair-definition" dir="auto">
+                {c.definition}
               </span>
             </li>
-          );
-        })}
-      </ul>
+          ))}
+        </ol>
 
-      <h2 className="flashcards__subheading">Cards</h2>
-      <ol className="flashcards__cards">
-        {set.cards.map((c) => (
-          <li key={c.id} className="flashcards__pair">
-            <span className="flashcards__pair-term" dir="auto">
-              {c.term}
-            </span>
-            <span className="flashcards__pair-definition" dir="auto">
-              {c.definition}
-            </span>
-          </li>
-        ))}
-      </ol>
-
-      <div className="flashcards__actions">
-        <button
-          type="button"
-          className="btn"
-          aria-disabled={!canChange}
-          aria-describedby={!canChange ? 'flashcard-set-offline-note' : undefined}
-          onClick={() => {
-            if (canChange) openMode({ kind: 'edit' });
-          }}
-        >
-          Edit
-        </button>
-        <button
-          type="button"
-          className="btn"
-          onClick={() =>
-            downloadText(exportFileName(set.title), 'text/plain;charset=utf-8', toTsv(set.cards))
-          }
-        >
-          Download as text
-        </button>
-      </div>
-      <p className="form-note">
-        The download has a card a line, with a tab between the term and its definition — what
-        Quizlet’s and Anki’s imports read, and Import a set here too.
-      </p>
-      {!canChange && (
-        <p id="flashcard-set-offline-note" className="form-note">
-          Editing and deleting need a connection.
+        <div className="flashcards__actions">
+          <button
+            type="button"
+            className="btn"
+            aria-disabled={!canChange}
+            aria-describedby={!canChange ? 'flashcard-set-offline-note' : undefined}
+            onClick={() => {
+              if (canChange) openMode({ kind: 'edit' });
+            }}
+          >
+            Edit
+          </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={() =>
+              downloadText(exportFileName(set.title), 'text/plain;charset=utf-8', toTsv(set.cards))
+            }
+          >
+            Download as text
+          </button>
+        </div>
+        <p className="form-note">
+          The download has a card a line, with a tab between the term and its definition — what
+          Quizlet’s and Anki’s imports read, and Import a set here too.
         </p>
-      )}
-
-      {actionError && (
-        <p className="remember__error" role="alert">
-          {actionError}
-        </p>
-      )}
-      {armed ? (
-        <div className="stack" role="group" aria-labelledby="flashcard-set-delete-warning">
-          <p id="flashcard-set-delete-warning" tabIndex={-1}>
-            Deleting this set removes it and its {cardCount(set.cards.length)} from your account and
-            from this device. It cannot be undone; download it first if you might want it back.
+        {!canChange && (
+          <p id="flashcard-set-offline-note" className="form-note">
+            Editing and deleting need a connection.
           </p>
-          <div className="flashcards__actions">
+        )}
+
+        {actionError && (
+          <p className="remember__error" role="alert">
+            {actionError}
+          </p>
+        )}
+        {armed ? (
+          <div className="stack" role="group" aria-labelledby="flashcard-set-delete-warning">
+            <p id="flashcard-set-delete-warning" tabIndex={-1}>
+              Deleting this set removes it and its {cardCount(set.cards.length)} from your account
+              and from this device. It cannot be undone; download it first if you might want it
+              back.
+            </p>
+            <div className="flashcards__actions">
+              <button
+                type="button"
+                className="btn"
+                aria-disabled={working}
+                onClick={() => void remove()}
+              >
+                {working ? 'Deleting…' : 'Delete the set'}
+              </button>
+              <button
+                type="button"
+                className="btn btn--plain"
+                onClick={() => {
+                  setArmed(false);
+                  focusAfter('flashcard-set-delete');
+                }}
+              >
+                Keep it
+              </button>
+            </div>
+          </div>
+        ) : (
+          <p>
             <button
-              type="button"
-              className="btn"
-              aria-disabled={working}
-              onClick={() => void remove()}
-            >
-              {working ? 'Deleting…' : 'Delete the set'}
-            </button>
-            <button
+              id="flashcard-set-delete"
               type="button"
               className="btn btn--plain"
-              onClick={() => {
-                setArmed(false);
-                focusAfter('flashcard-set-delete');
-              }}
+              aria-disabled={working || !canChange}
+              aria-describedby={!canChange ? 'flashcard-set-offline-note' : undefined}
+              onClick={() => void remove()}
             >
-              Keep it
+              Delete this set
             </button>
-          </div>
-        </div>
-      ) : (
-        <p>
-          <button
-            id="flashcard-set-delete"
-            type="button"
-            className="btn btn--plain"
-            aria-disabled={working || !canChange}
-            aria-describedby={!canChange ? 'flashcard-set-offline-note' : undefined}
-            onClick={() => void remove()}
-          >
-            Delete this set
-          </button>
+          </p>
+        )}
+        <p className="meta">
+          This set is private to you. It is never published, and nothing in it is sent to a model.
         </p>
-      )}
-      <p className="meta">
-        This set is private to you. It is never published, and nothing in it is sent to a model.
-      </p>
-    </section>
+      </section>
+      {said}
+    </>
   );
 }

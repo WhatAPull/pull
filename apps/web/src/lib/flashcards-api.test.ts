@@ -36,7 +36,7 @@ vi.mock('./supabase.js', () => {
     let counted = false;
     let embedCount = false;
     const self = {
-      select: (columns: string, options?: { count?: string }) => {
+      select: (columns: string, options?: { count?: string; head?: boolean }) => {
         counted = options?.count === 'exact';
         embedCount = columns.includes('flashcards(count)');
         return self;
@@ -133,11 +133,13 @@ describe('fetchSets', () => {
     const { sets: list, complete } = await fetchSets();
     expect(list).toHaveLength(250);
     expect(complete).toBe(true);
-    // Three pages, each after the last id of the one before; only the first counts.
+    // Three pages, each after the last id of the one before; the first counts, and so does
+    // a request after the last.
     expect(REQUESTS.map((r) => [r.gt, r.counted])).toEqual([
       [null, true],
       [uuid(100), false],
       [uuid(200), false],
+      [null, true],
     ]);
     const times = list.map((s) => s.updatedAt);
     expect(times).toEqual([...times].sort().reverse());
@@ -149,7 +151,7 @@ describe('fetchSets', () => {
     const { sets: list, complete } = await fetchSets();
     expect(list).toHaveLength(200);
     expect(complete).toBe(true);
-    expect(REQUESTS).toHaveLength(3);
+    expect(REQUESTS).toHaveLength(4);
   });
 
   it('keeps a set saved while the later pages are read -- it moves in time, not in id', async () => {
@@ -182,6 +184,19 @@ describe('fetchSets', () => {
     };
     const { sets: list, complete } = await fetchSets();
     expect(list).toHaveLength(151);
+    expect(complete).toBe(false);
+  });
+
+  it('says it is not complete when a set is made behind the pages already read', async () => {
+    TABLES.set('flashcard_sets', sets(150));
+    beforeAnswer = (n) => {
+      // After the first page: an id that sorts before its cursor, so it is never read, and the
+      // first count was taken without it. Only the count after the last page sees it.
+      if (n === 2) TABLES.get('flashcard_sets')?.push({ ...sets(1)[0], id: uuid(0) });
+    };
+    const { sets: list, complete } = await fetchSets();
+    expect(list).toHaveLength(150);
+    expect(list.map((s) => s.id)).not.toContain(uuid(0));
     expect(complete).toBe(false);
   });
 });

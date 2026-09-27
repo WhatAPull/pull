@@ -283,6 +283,7 @@ export function FlashcardEditor({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<'changed' | 'gone' | null>(null);
   const [saving, setSaving] = useState(false);
+  const held = useRef<HTMLFieldSetElement>(null);
   // A way out pressed once over unsaved changes -- the one above the form or the one below
   // it -- and said beside it: the next press leaves.
   const [leaving, setLeaving] = useState<null | 'top' | 'bottom'>(null);
@@ -415,6 +416,12 @@ export function FlashcardEditor({
       focusAfter(`${id}-problems`);
       return;
     }
+    // What is held while the save is on its way (below) cannot keep focus, and a browser drops
+    // it to the page: Enter in the title would leave a keyboard reader nowhere. Save, which
+    // says "Saving…", takes it instead, without scrolling a long set to its end.
+    if (held.current?.contains(document.activeElement)) {
+      document.getElementById(`${id}-save`)?.focus({ preventScroll: true });
+    }
     setSaving(true);
     try {
       await onSave({ ...payload, baseUpdatedAt: over ? null : base });
@@ -507,104 +514,114 @@ export function FlashcardEditor({
           Your unsaved changes were kept. Save them, or Cancel to let them go.
         </p>
       )}
-      <form
-        id={formId}
-        className="stack"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void save();
-        }}
-      >
-        <div className="field">
-          <label className="field__label" htmlFor={`${id}-title`}>
-            Title
-          </label>
-          <input
-            id={`${id}-title`}
-            className="field__input"
-            dir="auto"
-            value={draft.title}
-            maxLength={units(TITLE_MAX)}
-            onChange={(e) => change({ title: e.target.value })}
-          />
-        </div>
-        <div className="field">
-          <label className="field__label" htmlFor={`${id}-description`}>
-            Description, if you want one
-          </label>
-          <textarea
-            id={`${id}-description`}
-            className="field__textarea flashcards__description"
-            rows={2}
-            dir="auto"
-            value={draft.description}
-            maxLength={units(DESCRIPTION_MAX)}
-            onChange={(e) => change({ description: e.target.value })}
-          />
-        </div>
-        <fieldset className="flashcards__langs">
-          <legend className="field__label">Languages, for reading cards aloud</legend>
-          <p className="form-note">
-            Set these when a side is not in your own language, so Listen uses a voice for it. A
-            voice installed on this device reads your cards; nothing is sent anywhere.
-          </p>
-          <LanguageChoice
-            label="Terms are in"
-            value={draft.termLang}
-            onChange={(termLang) => change({ termLang })}
-          />
-          <LanguageChoice
-            label="Definitions are in"
-            value={draft.definitionLang}
-            onChange={(definitionLang) => change({ definitionLang })}
-          />
-        </fieldset>
-
-        <h2 className="flashcards__subheading">Cards</h2>
-        <p className="sr-only" role="status">
-          {moved}
-        </p>
-        {rows}
-      </form>
-
-      {/* Outside the form: Enter in the importer's boxes is the importer's, not Save. */}
-      <div className="flashcards__actions">
-        <button id={`${id}-add`} type="button" className="btn" onClick={addCard}>
-          Add a card
-        </button>
-        <button
-          type="button"
-          className="btn btn--plain"
-          aria-expanded={importing}
-          aria-controls={`${id}-import`}
-          onClick={() => setImporting((o) => !o)}
+      {/*
+       * HELD WHILE A SAVE IS ON ITS WAY. The save sends the draft as it was when Save was
+       * pressed, and a successful one closes the editor and lets its kept draft go -- so what
+       * was typed in between was on screen, then gone, and in neither the set nor the draft.
+       * A disabled fieldset holds every box and button in it at once, natively, without
+       * drawing a row: the rows are memoised, and a prop on each would draw all of them twice.
+       * `role="none"`, because it groups nothing a reader needs named.
+       */}
+      <fieldset ref={held} className="stack flashcards__hold" disabled={saving} role="none">
+        <form
+          id={formId}
+          className="stack"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void save();
+          }}
         >
-          Add from text
-        </button>
-      </div>
-      {importing && (
-        <div id={`${id}-import`} className="flashcards__inset">
-          <FlashcardImport
-            headingLevel={3}
-            primary={false}
-            limit={Math.max(0, room)}
-            takeLabel={(n) => (n === 0 ? 'Add cards' : `Add ${cardCount(n)}`)}
-            onTake={(cards) => {
-              // The unused empty rows go, so the new cards follow the last real one.
-              setDraft((d) => ({
-                ...d,
-                cards: [
-                  ...d.cards.filter((c) => c.term.trim() || c.definition.trim()),
-                  ...cards.map((c) => ({ id: mutationId(), ...c })),
-                ],
-              }));
-              setImporting(false);
-              announce(`${cardCount(cards.length)} added at the end.`);
-              focusAfter(`${id}-add`);
-            }}
-          />
+          <div className="field">
+            <label className="field__label" htmlFor={`${id}-title`}>
+              Title
+            </label>
+            <input
+              id={`${id}-title`}
+              className="field__input"
+              dir="auto"
+              value={draft.title}
+              maxLength={units(TITLE_MAX)}
+              onChange={(e) => change({ title: e.target.value })}
+            />
+          </div>
+          <div className="field">
+            <label className="field__label" htmlFor={`${id}-description`}>
+              Description, if you want one
+            </label>
+            <textarea
+              id={`${id}-description`}
+              className="field__textarea flashcards__description"
+              rows={2}
+              dir="auto"
+              value={draft.description}
+              maxLength={units(DESCRIPTION_MAX)}
+              onChange={(e) => change({ description: e.target.value })}
+            />
+          </div>
+          <fieldset className="flashcards__langs">
+            <legend className="field__label">Languages, for reading cards aloud</legend>
+            <p className="form-note">
+              Set these when a side is not in your own language, so Listen uses a voice for it. A
+              voice installed on this device reads your cards; nothing is sent anywhere.
+            </p>
+            <LanguageChoice
+              label="Terms are in"
+              value={draft.termLang}
+              onChange={(termLang) => change({ termLang })}
+            />
+            <LanguageChoice
+              label="Definitions are in"
+              value={draft.definitionLang}
+              onChange={(definitionLang) => change({ definitionLang })}
+            />
+          </fieldset>
+
+          <h2 className="flashcards__subheading">Cards</h2>
+          <p className="sr-only" role="status">
+            {moved}
+          </p>
+          {rows}
+        </form>
+
+        {/* Outside the form: Enter in the importer's boxes is the importer's, not Save. */}
+        <div className="flashcards__actions">
+          <button id={`${id}-add`} type="button" className="btn" onClick={addCard}>
+            Add a card
+          </button>
+          <button
+            type="button"
+            className="btn btn--plain"
+            aria-expanded={importing}
+            aria-controls={`${id}-import`}
+            onClick={() => setImporting((o) => !o)}
+          >
+            Add from text
+          </button>
         </div>
-      )}
+        {importing && (
+          <div id={`${id}-import`} className="flashcards__inset">
+            <FlashcardImport
+              headingLevel={3}
+              primary={false}
+              limit={Math.max(0, room)}
+              takeLabel={(n) => (n === 0 ? 'Add cards' : `Add ${cardCount(n)}`)}
+              onTake={(cards) => {
+                // The unused empty rows go, so the new cards follow the last real one.
+                setDraft((d) => ({
+                  ...d,
+                  cards: [
+                    ...d.cards.filter((c) => c.term.trim() || c.definition.trim()),
+                    ...cards.map((c) => ({ id: mutationId(), ...c })),
+                  ],
+                }));
+                setImporting(false);
+                announce(`${cardCount(cards.length)} added at the end.`);
+                focusAfter(`${id}-add`);
+              }}
+            />
+          </div>
+        )}
+      </fieldset>
 
       {problems.length > 0 && (
         <div id={`${id}-problems`} tabIndex={-1} className="stack" role="alert">
@@ -677,6 +694,7 @@ export function FlashcardEditor({
       )}
       <div className="flashcards__actions">
         <button
+          id={`${id}-save`}
           type="submit"
           form={formId}
           className="btn btn--primary"

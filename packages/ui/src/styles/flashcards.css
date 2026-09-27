@@ -533,3 +533,13 @@
 .flashcards input[type='checkbox'] {
   accent-color: var(--accent);
 }
+
+/* The editor's boxes and buttons, held while a save is on its way: a fieldset for its
+   `disabled`, and nothing of a fieldset's look. `min-inline-size` is a fieldset's own
+   min-content, which would let a long unbroken word widen the page. */
+.flashcards__hold {
+  border: 0;
+  margin-inline: 0;
+  padding: 0;
+  min-inline-size: 0;
+}

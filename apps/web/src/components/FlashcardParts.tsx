@@ -161,7 +161,9 @@ export function ListenButton({
     <button
       type="button"
       className="btn btn--plain"
-      aria-label={`Listen to the ${side}: ${text}`}
+      // The side, not its words: a definition of 2,000 characters was read out in full each
+      // time the button was reached, and the words are on the card beside it.
+      aria-label={`Listen to the ${side}`}
       onClick={() => listen.listen(text, side, cardKey)}
     >
       Listen
@@ -189,12 +191,22 @@ export function readStored(key: string, where: Where = 'local'): string | null {
   }
 }
 
+/**
+ * A value that cannot be written takes the one before it away rather than leaving it: a draft
+ * that no longer fit the quota left the last one that did, and the editor, opened again, gave
+ * that back as "your unsaved changes" -- older than what the reader had typed. No value is a
+ * fresh start, which every screen already handles; an old one passes for the latest.
+ */
 export function writeStored(key: string, value: string | null, where: Where = 'local'): void {
   try {
     if (value === null) storage(where).removeItem(key);
     else storage(where).setItem(key, value);
   } catch {
-    /* a convenience, never a requirement */
+    try {
+      storage(where).removeItem(key);
+    } catch {
+      /* a convenience, never a requirement */
+    }
   }
 }
 

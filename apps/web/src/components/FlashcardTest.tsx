@@ -8,7 +8,7 @@
  * Multiple choice offers the answer and up to three of the set's other answers. Written is
  * graded exact-or-close. `lib/flashcards.ts` builds and grades it; nothing is recorded.
  */
-import { useId, useState } from 'react';
+import { memo, useCallback, useId, useState } from 'react';
 import {
   TEST_KINDS,
   buildTest,
@@ -33,6 +33,120 @@ const KIND_LABEL: Record<TestKind, string> = {
   choice: 'Multiple choice',
   written: 'Written',
 };
+
+/**
+ * One question, drawn on its own. A key typed in a written answer changed the whole page's
+ * responses and drew every question -- 32 to 80 ms a key at 2,000 questions, and 200 on a slow
+ * phone. Memoised, with `respond` stable, a key draws the one question it was typed into.
+ */
+const TestQuestionItem = memo(function TestQuestionItem({
+  q,
+  i,
+  response,
+  mark,
+  done,
+  idPrefix,
+  promptSide,
+  answerWith,
+  onRespond,
+}: {
+  q: TestQuestion;
+  i: number;
+  response: TestResponse;
+  mark: boolean | null;
+  done: boolean;
+  idPrefix: string;
+  promptSide: AnswerSide;
+  answerWith: AnswerSide;
+  onRespond: (index: number, value: TestResponse) => void;
+}) {
+  const first = i === 0;
+  return (
+    <li className="flashcards__question">
+      <fieldset disabled={done}>
+        <legend
+          id={first ? FIRST_ID : undefined}
+          tabIndex={first ? -1 : undefined}
+          className="flashcards__prompt"
+        >
+          <span className="flashcards__qnum">{i + 1}.</span>{' '}
+          <span className="meta">{SIDE_LABEL[promptSide]}</span> <span dir="auto">{q.prompt}</span>
+          {q.kind === 'true_false' && (
+            <span className="flashcards__shown">
+              <span className="meta">{SIDE_LABEL[answerWith]}</span>{' '}
+              <span dir="auto">{q.shown}</span>
+            </span>
+          )}
+        </legend>
+        {q.kind === 'true_false' && (
+          <div className="flashcards__choice">
+            {([true, false] as const).map((v) => (
+              <label key={String(v)} className="flashcards__radio">
+                <input
+                  type="radio"
+                  name={`${idPrefix}-q${i}`}
+                  checked={response === v}
+                  onChange={() => onRespond(i, v)}
+                />{' '}
+                {v ? 'True' : 'False'}
+              </label>
+            ))}
+          </div>
+        )}
+        {q.kind === 'choice' && (
+          <div className="flashcards__choice flashcards__choice--stacked">
+            {q.options.map((option) => (
+              <label key={option} className="flashcards__radio">
+                <input
+                  type="radio"
+                  name={`${idPrefix}-q${i}`}
+                  checked={response === option}
+                  onChange={() => onRespond(i, option)}
+                />{' '}
+                <span dir="auto">{option}</span>
+              </label>
+            ))}
+          </div>
+        )}
+        {q.kind === 'written' && (
+          <div className="field">
+            <label className="field__label" htmlFor={`${idPrefix}-q${i}`}>
+              The {answerWith}
+            </label>
+            <input
+              id={`${idPrefix}-q${i}`}
+              className="field__input"
+              dir="auto"
+              autoComplete="off"
+              autoCapitalize="off"
+              spellCheck={false}
+              maxLength={2000}
+              value={typeof response === 'string' ? response : ''}
+              onChange={(e) => onRespond(i, e.target.value)}
+            />
+          </div>
+        )}
+      </fieldset>
+      {mark !== null && (
+        <p
+          className={
+            mark ? 'flashcards__verdict' : 'flashcards__verdict flashcards__verdict--wrong'
+          }
+        >
+          {mark
+            ? 'Right.'
+            : response === null || response === ''
+              ? `Not answered. The answer is ${q.answer}.`
+              : q.kind === 'true_false'
+                ? `Wrong: you chose ${response ? 'True' : 'False'}, and it is ${q.truth ? 'true' : 'false'}. The answer is ${q.answer}.`
+                : q.kind === 'choice'
+                  ? `Wrong: you chose “${String(response)}”. The answer is ${q.answer}.`
+                  : `Wrong: you wrote “${String(response)}”. The answer is ${q.answer}.`}
+        </p>
+      )}
+    </li>
+  );
+});
 
 interface Sitting {
   questions: TestQuestion[];
@@ -78,12 +192,15 @@ export function FlashcardTest({
     focusAfter(FIRST_ID);
   };
 
-  const respond = (index: number, value: TestResponse) =>
-    setSitting((s) =>
-      s && !s.result
-        ? { ...s, responses: s.responses.map((r, i) => (i === index ? value : r)) }
-        : s,
-    );
+  const respond = useCallback(
+    (index: number, value: TestResponse) =>
+      setSitting((s) =>
+        s && !s.result
+          ? { ...s, responses: s.responses.map((r, i) => (i === index ? value : r)) }
+          : s,
+      ),
+    [],
+  );
 
   const submit = () => {
     if (!sitting || sitting.result) return;
@@ -239,98 +356,20 @@ export function FlashcardTest({
             </h2>
             {/* Numbered through the page: the sections come in the order the questions do. */}
             <ol className="flashcards__questions" start={(inSection[0]?.i ?? 0) + 1}>
-              {inSection.map(({ q, i }) => {
-                const first = i === 0;
-                const mark = result ? result.correct[i] : null;
-                return (
-                  <li key={`${q.cardId}-${i}`} className="flashcards__question">
-                    <fieldset disabled={result !== null}>
-                      <legend
-                        id={first ? FIRST_ID : undefined}
-                        tabIndex={first ? -1 : undefined}
-                        className="flashcards__prompt"
-                      >
-                        <span className="flashcards__qnum">{i + 1}.</span>{' '}
-                        <span className="meta">{SIDE_LABEL[promptSide]}</span>{' '}
-                        <span dir="auto">{q.prompt}</span>
-                        {q.kind === 'true_false' && (
-                          <span className="flashcards__shown">
-                            <span className="meta">{SIDE_LABEL[answerWith]}</span>{' '}
-                            <span dir="auto">{q.shown}</span>
-                          </span>
-                        )}
-                      </legend>
-                      {q.kind === 'true_false' && (
-                        <div className="flashcards__choice">
-                          {([true, false] as const).map((v) => (
-                            <label key={String(v)} className="flashcards__radio">
-                              <input
-                                type="radio"
-                                name={`${id}-q${i}`}
-                                checked={responses[i] === v}
-                                onChange={() => respond(i, v)}
-                              />{' '}
-                              {v ? 'True' : 'False'}
-                            </label>
-                          ))}
-                        </div>
-                      )}
-                      {q.kind === 'choice' && (
-                        <div className="flashcards__choice flashcards__choice--stacked">
-                          {q.options.map((option) => (
-                            <label key={option} className="flashcards__radio">
-                              <input
-                                type="radio"
-                                name={`${id}-q${i}`}
-                                checked={responses[i] === option}
-                                onChange={() => respond(i, option)}
-                              />{' '}
-                              <span dir="auto">{option}</span>
-                            </label>
-                          ))}
-                        </div>
-                      )}
-                      {q.kind === 'written' && (
-                        <div className="field">
-                          <label className="field__label" htmlFor={`${id}-q${i}`}>
-                            The {answerWith}
-                          </label>
-                          <input
-                            id={`${id}-q${i}`}
-                            className="field__input"
-                            dir="auto"
-                            autoComplete="off"
-                            autoCapitalize="off"
-                            spellCheck={false}
-                            maxLength={2000}
-                            value={typeof responses[i] === 'string' ? (responses[i] as string) : ''}
-                            onChange={(e) => respond(i, e.target.value)}
-                          />
-                        </div>
-                      )}
-                    </fieldset>
-                    {mark !== null && (
-                      <p
-                        className={
-                          mark
-                            ? 'flashcards__verdict'
-                            : 'flashcards__verdict flashcards__verdict--wrong'
-                        }
-                      >
-                        {mark
-                          ? 'Right.'
-                          : responses[i] === null || responses[i] === ''
-                            ? `Not answered. The answer is ${q.answer}.`
-                            : q.kind === 'true_false'
-                              ? `Wrong: you chose ${responses[i] ? 'True' : 'False'}, and it is ${q.truth ? 'true' : 'false'}. The answer is ${q.answer}.`
-                              : q.kind === 'choice'
-                                ? `Wrong: you chose “${String(responses[i])}”. The answer is ${q.answer}.`
-                                : `Wrong: you wrote “${String(responses[i])}”. The answer is ${q.answer}.`}
-                      </p>
-                    )}
-                  </li>
-                );
-              })}
+              {inSection.map(({ q, i }) => (
+                <TestQuestionItem
+                  key={`${q.cardId}-${i}`}
+                  q={q}
+                  i={i}
+                  response={responses[i] ?? null}
+                  mark={result ? (result.correct[i] ?? null) : null}
+                  done={result !== null}
+                  idPrefix={id}
+                  promptSide={promptSide}
+                  answerWith={answerWith}
+                  onRespond={respond}
+                />
+              ))}
             </ol>
           </section>
         );

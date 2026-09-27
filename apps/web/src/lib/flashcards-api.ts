@@ -37,8 +37,9 @@ export interface SetList {
   /** Most recently changed first. */
   sets: FlashcardSetSummary[];
   /**
-   * Whether this is every set the reader has: as many as the first page counted. Only a
-   * complete list may say a copy on this device is of a set that is gone.
+   * Whether this is every set the reader has: as many as were counted before the first page
+   * and again after the last. Only a complete list may say a copy on this device is of a set
+   * that is gone.
    */
   complete: boolean;
 }
@@ -50,13 +51,16 @@ export interface SetList {
  * a set saved while the later pages were on their way jumped to the first, already read, and
  * was left out of the list -- and a list a set short would, from this device's point of view,
  * say that set was gone. An id never moves, so each page starts after the last id read, and
- * every set that exists throughout the read is read exactly once. The first page's exact count
- * says whether any was made or deleted meanwhile -- nearly always. A set made behind the pages
- * already read, and another deleted in the same moment, leave the count as it was, and the
- * list is called complete without the new one. That takes two screens acting within the length
- * of one read, and what it costs is this device's copy of the new set, its round and its best
- * time, pruned as if it were gone -- not the set, which is read back the next time it is
- * opened.
+ * every set that exists throughout the read is read exactly once.
+ *
+ * COUNTED AT BOTH ENDS. The first page's exact count alone called a list complete that had
+ * missed a set: one made after that page, with an id sorting before the pages already read, is
+ * neither read nor counted, so the list and the count agree without it -- and its copy on this
+ * device, its round and its best time were pruned as if it were gone. So the sets are counted
+ * again once the last page is in, and the list is complete only when both counts are its
+ * length. A set made behind the pages and another deleted in the same moment still leave both
+ * counts as they were; that takes two screens acting within the length of one read, and costs
+ * this device's copy of the new set, not the set, which is read back the next time it opens.
  */
 export async function fetchSets(signal?: AbortSignal): Promise<SetList> {
   const rows: unknown[] = [];
@@ -81,8 +85,15 @@ export async function fetchSets(signal?: AbortSignal): Promise<SetList> {
     if (got.length < PAGE || !last) break;
     after = last.id;
   }
+  let recount = supabase.from('flashcard_sets').select('id', { count: 'exact', head: true });
+  if (signal) recount = recount.abortSignal(signal);
+  const { error: again, count: counted } = await recount;
+  if (again) throw rpcError(again);
   const sets = shapeSetSummaries(rows).sort(newestFirst);
-  return { sets, complete: count !== null && sets.length === count };
+  return {
+    sets,
+    complete: count !== null && sets.length === count && sets.length === (counted ?? null),
+  };
 }
 
 /**
