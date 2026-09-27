@@ -564,14 +564,26 @@
 /* The file box's button, drawn from tokens idle and held alike, so holding it only recolours
    it: the browser's own greyed it to under 2:1, and restyling it on hold moved its text. */
 .flashcards input[type='file']::file-selector-button {
-  font: inherit;
-  color: var(--text);
-  background: transparent;
+  /* A `.btn`, which a pseudo-element cannot be given as a class. */
+  font-family: var(--font-mono);
+  font-size: var(--step--1);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  background: none;
   border: 1px solid var(--rule-strong);
   border-radius: var(--radius-sm);
-  padding: var(--space-1) var(--space-3);
+  padding: var(--space-2) var(--space-3);
   margin-inline-end: var(--space-3);
   cursor: pointer;
+  transition:
+    color var(--transition),
+    border-color var(--transition);
+}
+
+.flashcards input[type='file']:enabled:hover::file-selector-button {
+  color: var(--text);
+  border-color: var(--text);
 }
 
 .flashcards input[type='file']:disabled {
@@ -581,5 +593,12 @@
 
 .flashcards input[type='file']:disabled::file-selector-button {
   color: var(--text-faint);
+  cursor: progress;
+}
+
+/* The importer holds itself (FlashcardImport's `held`), outside the editor's fieldset: the
+   same pointer as the rest of what waits. */
+.flashcards__import--held,
+.flashcards__import--held * {
   cursor: progress;
 }

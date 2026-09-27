@@ -423,7 +423,12 @@ export function FlashcardEditor({
     // or it was announced as "Save" and renamed under the reader.
     // "Save mine over it" and "Put it back" wait too, and focus on one is on a control that
     // no longer does anything: Save, saying so, takes it from them as well.
-    const moveFocus = over || (held.current?.contains(document.activeElement) ?? false);
+    // The importer holds itself outside the fieldset, and its file box is disabled: focus
+    // there would fall to the page as well.
+    const focusedIn = (element: Element | null) =>
+      element?.contains(document.activeElement) ?? false;
+    const moveFocus =
+      over || focusedIn(held.current) || focusedIn(document.getElementById(`${id}-import`));
     // A way out pressed once said "press again to leave" -- which, held, does nothing now.
     setLeaving(null);
     flushSync(() => setSaving(true));

@@ -120,7 +120,11 @@ export function FlashcardImport({
   const count = result?.cards.length ?? 0;
 
   return (
-    <div className="stack flashcards__import">
+    <div
+      className={
+        holding ? 'stack flashcards__import flashcards__import--held' : 'stack flashcards__import'
+      }
+    >
       <div className="field">
         <label className="field__label" htmlFor={`${id}-text`}>
           Paste your cards
@@ -188,6 +192,8 @@ export function FlashcardImport({
               type="radio"
               name={`${id}-between`}
               checked={between === kind}
+              // Said as held, as a held button is; drawn as ever, so it keeps its contrast.
+              aria-disabled={holding || undefined}
               onChange={() => {
                 if (!holding) setBetween(kind);
               }}
@@ -220,6 +226,7 @@ export function FlashcardImport({
               type="radio"
               name={`${id}-cards`}
               checked={cardsBy === kind}
+              aria-disabled={holding || undefined}
               onChange={() => {
                 if (!holding) setCardsBy(kind);
               }}

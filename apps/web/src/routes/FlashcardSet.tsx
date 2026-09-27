@@ -209,13 +209,14 @@ export function FlashcardSetPage({
   };
 
   // Escape leaves a study mode, as "Back to the set" does -- not the editor, where it would
-  // be too easy a way to lose what was typed, not from inside a field, and not from a mode
-  // holding work (`work`).
+  // be too easy a way to lose what was typed, not from a box being typed in, and not from a
+  // mode holding work (`work`), where it says why.
   const inMode = view.kind !== 'overview' && view.kind !== 'edit';
   useEffect(() => {
     if (!inMode) return;
     const onKey = (e: KeyboardEvent) => {
-      // A radio is a choice, not typing: focus sits on one after most answers in a Test.
+      // A radio or a checkbox is a choice, not typing, in any mode: focus sits on a radio
+      // after most answers in a Test.
       const choosing =
         e.target instanceof HTMLInputElement &&
         (e.target.type === 'radio' || e.target.type === 'checkbox');
