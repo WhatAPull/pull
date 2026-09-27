@@ -42,12 +42,37 @@ and reviewers should reject it on that basis alone.
      is spent — so the worst case for a day is the cap and not the demand.
    - One requester gets three fast jobs a day, then a widening stagger, and fifty in
      total — counted across both doors, under one per-requester advisory lock.
+   - Who may ask is an allowlist, or every reader with an account once the study beta
+     is open. It opens only on a release gate: the evaluator's report of a reviewed run,
+     whose gates, counts, pipeline and date the schema checks and whose review is the
+     operator's recorded word — written, as the switch is, by the database owner alone
+     (`docs/study-beta.md`). Opening it widens who may spend, never the cap: study
+     courses together are held to `study_daily_cap_cents()`, half the day, so they cannot
+     leave the catalogue's generation nothing.
    - The result is `private` and never joins the catalogue, so it cannot be a way to
      publish around law 4.
 
    A private generation outside those bounds is the thing this law forbids. Widening
    any of them — a bigger cap, a higher ceiling, a public result — is a change to the
    law and belongs in this file, not in a PR that quietly needs the room.
+
+   **Public study courses are that change, made here, and they are not a Studio result
+   made public.** A public course is prepared once by the project, never from a reader's
+   material: by an account the service role named a curator (`study_curators`), from text
+   the service role registered as the work's (`study_curated_sources`), of a work whose
+   `rights_status` is `public_domain` or `licensed`; reviewed by a person, and published as
+   a snapshot by the service role alone (`publish_study_course`). Its quotations are capped
+   in the schema — spans within 200 characters of each other are one quotation, of at most
+   300 characters; the courses published, withdrawn or not, quote between them at most a
+   tenth of each registered text, whatever work each is of, and a work's courses at most
+   20,000 characters of it, a passage quoted twice counted once — and its own words may not
+   repeat twelve in a row of the text outside them. The source itself is never published
+   (law 4). What the schema cannot check is that the registered text is the whole work, or
+   that a close paraphrase is not a condensation: the review is the control for those.
+   Readers add it by copy (`enrol_public_course`): no model call and nothing spent, so one
+   preparation serves every reader — the ratio above pointing the right way again. A
+   reader's own course made public is still the thing this law forbids. See
+   `docs/study-public-courses.md`.
 
 3. **Free law — the five stay free.**
    Audio, offline, unlimited history, unlimited stashing and curated Daily Pulls are
@@ -127,17 +152,18 @@ path helpers in `apps/web/src/lib/routes.ts` that are pure and unit-tested. Read
 state on purpose — a Pull is not a page — so a real address belongs only to what someone
 could send, or to a screen a reader would bookmark: `/explore`, `/search`, `/appearance`,
 `/source/:id`, `/pull/:id`, `/topic/:slug`, `/privacy` and `/terms`, plus `/graph`,
-`/import`, `/studio` and `/metacognition`, and `/demo`, which is reachable by address but
-is not a destination. `DESTINATIONS` in `App.tsx` is the authority for which of these appear in the
+`/import`, `/studio`, `/courses`, `/flashcards` and `/metacognition`, a reader's own
+`/course/:id` and `/flashcards/:id`, and `/demo`, which is reachable by address but is not a
+destination. `DESTINATIONS` in `App.tsx` is the authority for which of these appear in the
 navigation; the sections beside them stay tab state because each is keyed to a reader,
 which is also why a signed-out visitor is shown destinations and not sections.
 
-The four signed-in destinations — `/graph`, `/import`, `/studio` and `/metacognition` —
-are a rule with two halves rather than one flag. A destination withheld from a visitor or
+The signed-in destinations — `/graph`, `/import`, `/studio`, `/courses`, `/flashcards` and
+`/metacognition` — are a rule with two halves rather than one flag. A destination withheld from a visitor or
 a guest must also be withheld by the route, because a URL is still a URL: adding the flag
 alone left a guest arriving by bookmark on a titled, empty page, since `routeOpen` hides
 the feed and `isKnownPath` matches, so the 404 branch never fires. `/account` had solved
-this already and every one of the four now shares its answer — which is why they are named
+this already and every one of them now shares its answer, as do `/course/:id` and `/flashcards/:id` — which is why they are named
 here rather than counted: "the four added last" was written when there were three, and a
 list that has to be re-counted every time the app grows is one that goes stale silently. Data is fetched by `supabase-js`
 in the component that needs it; the offline copy lives in IndexedDB via `lib/offline.ts`, not

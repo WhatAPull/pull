@@ -3,7 +3,7 @@ import type { Session } from '@supabase/supabase-js';
 import { Settings } from './routes/Settings.js';
 import { Auth } from './routes/Auth.js';
 import { Colophon } from './components/Colophon.js';
-import { clearCachedPulls, clearReviewPack } from './lib/offline.js';
+import { clearCachedPulls, clearFlashcardSets, clearReviewPack } from './lib/offline.js';
 import { PlayerBar } from './components/PlayerBar.js';
 import { PlayerProvider } from './components/PlayerProvider.js';
 import { Daily } from './routes/Daily.js';
@@ -49,6 +49,10 @@ import { OnboardingDemo } from './components/OnboardingDemo.js';
 import { Ingestion } from './routes/Ingestion.js';
 import { Paths } from './routes/Paths.js';
 import { Path } from './routes/Path.js';
+import { Courses } from './routes/Courses.js';
+import { Course } from './routes/Course.js';
+import { Flashcards } from './routes/Flashcards.js';
+import { FlashcardSetPage } from './routes/FlashcardSet.js';
 
 import { Review } from './routes/Review.js';
 import { Search } from './routes/Search.js';
@@ -115,7 +119,8 @@ const DESTINATIONS: { path: string; label: string; signedIn?: true }[] = [
   { path: '/paths', label: 'Paths' },
   { path: '/search', label: 'Search' },
   /*
-   * All four are `signedIn`, and the flag is load-bearing rather than tidy.
+   * Every destination between here and Settings is `signedIn`, and the flag is load-bearing
+   * rather than tidy.
    *
    * `publicRoute` below lists what a visitor may actually open, and none of these are in
    * it — so while they were advertised without the flag, a signed-out visitor on Explore
@@ -129,6 +134,10 @@ const DESTINATIONS: { path: string; label: string; signedIn?: true }[] = [
   { path: '/graph', label: 'Graph', signedIn: true },
   { path: '/import', label: 'Import', signedIn: true },
   { path: '/studio', label: 'Studio', signedIn: true },
+  // A reader's private courses, made from their own material in Studio.
+  { path: '/courses', label: 'Courses', signedIn: true },
+  // A reader's own flashcard sets: private, free and offline.
+  { path: '/flashcards', label: 'Flashcards', signedIn: true },
   { path: '/metacognition', label: 'Progress', signedIn: true },
 
   { path: '/settings', label: 'Settings' },
@@ -481,6 +490,11 @@ export function App() {
         // rule while nothing cleared it. Scoping a store by user keeps one reader's rows
         // out of the next reader's screen; it does not take them off the machine.
         void clearCachedPulls(leaving);
+        // And the flashcard sets kept for studying offline, which are the reader's own text.
+        void clearFlashcardSets(leaving);
+        // And the page's title, which a course sets from the reader's own goal: the next
+        // person at the machine must not find it on the tab over the sign-in screen.
+        setRouteTitle(null);
       }
 
       setSession(s);
@@ -707,6 +721,10 @@ export function App() {
   const graphOpen = isPath(path, '/graph');
   const importOpen = isPath(path, '/import');
   const studioOpen = isPath(path, '/studio');
+  const coursesOpen = isPath(path, '/courses');
+  const courseId = routeParam(path, '/course');
+  const flashcardsOpen = isPath(path, '/flashcards');
+  const flashcardSetId = routeParam(path, '/flashcards');
   const demoOpen = isPath(path, '/demo');
   const metacognitionOpen = isPath(path, '/metacognition');
   /*
@@ -758,6 +776,10 @@ export function App() {
     graphOpen ||
     importOpen ||
     studioOpen ||
+    coursesOpen ||
+    courseId !== null ||
+    flashcardsOpen ||
+    flashcardSetId !== null ||
     demoOpen ||
     metacognitionOpen ||
     accountOpen ||
@@ -1175,6 +1197,37 @@ export function App() {
               <Studio userId={session.user.id} onNavigate={navigate} />
             )}
 
+            {/* A course is a reader's private material, so signed in and not a guest, as
+                Studio is: a guest can have no course, and a bookmark to one lands on the
+                guest note below rather than on an empty page. */}
+            {coursesOpen && !guest && session && (
+              <Courses userId={session.user.id} onNavigate={navigate} />
+            )}
+            {courseId !== null && !guest && session && (
+              <Course
+                key={courseId}
+                userId={session.user.id}
+                courseId={decodeSegment(courseId)}
+                onNavigate={navigate}
+                onTitle={reportRouteTitle}
+              />
+            )}
+
+            {/* A reader's own sets, so signed in and not a guest, as a course is. A guest's
+                rows are swept a day after last use, and `save_flashcard_set` refuses one. */}
+            {flashcardsOpen && !guest && session && (
+              <Flashcards key={session.user.id} userId={session.user.id} onNavigate={navigate} />
+            )}
+            {flashcardSetId !== null && !guest && session && (
+              <FlashcardSetPage
+                key={`${flashcardSetId}:${session.user.id}`}
+                userId={session.user.id}
+                setId={decodeSegment(flashcardSetId)}
+                onNavigate={navigate}
+                onTitle={reportRouteTitle}
+              />
+            )}
+
             {demoOpen && (
               <OnboardingDemo onComplete={() => navigate('/')} onSkip={() => navigate('/')} />
             )}
@@ -1218,17 +1271,25 @@ export function App() {
               a rail and an entirely empty main — `routeOpen` hides the feed, and
               `isKnownPath` matches, so the 404 branch does not catch it either.
             */}
-            {(graphOpen || importOpen || studioOpen || metacognitionOpen) && guest && (
-              <section className="stack measure">
-                <p className="meta">Reading as a guest</p>
-                <h1>This one needs an account.</h1>
-                <p>
-                  A guest session keeps your reading on this device and nothing else. These screens
-                  are built from a knowledge model that belongs to an account — what you have read,
-                  how well you are holding on to it, and what connects to what — so there is nothing
-                  here to show you yet.
-                </p>
-                {/*
+            {(graphOpen ||
+              importOpen ||
+              studioOpen ||
+              coursesOpen ||
+              courseId !== null ||
+              flashcardsOpen ||
+              flashcardSetId !== null ||
+              metacognitionOpen) &&
+              guest && (
+                <section className="stack measure">
+                  <p className="meta">Reading as a guest</p>
+                  <h1>This one needs an account.</h1>
+                  <p>
+                    A guest session keeps your reading on this device and nothing else. These
+                    screens are built from a knowledge model that belongs to an account — what you
+                    have read, how well you are holding on to it, and what connects to what — so
+                    there is nothing here to show you yet.
+                  </p>
+                  {/*
                   What /account says, because it is what actually happens. This read
                   "everything you have read as a guest carries over when you sign in",
                   which is false — signing in mints a different `auth.users` row,
@@ -1237,19 +1298,19 @@ export function App() {
                   most likely to be acted on: it sat under a prompt to sign in, on a screen
                   a guest reaches only after building up something to lose.
                 */}
-                {/* Body text, not `.meta`. The rule and its reason are written 25 lines
+                  {/* Body text, not `.meta`. The rule and its reason are written 25 lines
                     below on /account: `.meta` is a chip face, all-caps destroys word shape,
                     and it is wrong for the one sentence on a screen that carries a
                     consequence — which this now does. */}
-                <p>
-                  Signing in starts a fresh account, so what you have read as a guest stays behind.
-                  Worth knowing before you do it.
-                </p>
-                <button type="button" className="btn btn--primary" onClick={() => navigate('/')}>
-                  Back to reading
-                </button>
-              </section>
-            )}
+                  <p>
+                    Signing in starts a fresh account, so what you have read as a guest stays
+                    behind. Worth knowing before you do it.
+                  </p>
+                  <button type="button" className="btn btn--primary" onClick={() => navigate('/')}>
+                    Back to reading
+                  </button>
+                </section>
+              )}
 
             {accountOpen && guest && (
               <section className="stack measure">

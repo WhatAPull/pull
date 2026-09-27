@@ -10,6 +10,7 @@ import {
   semanticMarks,
   orderingSteps,
   type Question,
+  seededDraws,
   seededShuffle,
   selfReportedHard,
   whyWrong,
@@ -44,6 +45,27 @@ const mcq = (over: Partial<Question> = {}): Question => ({
     { distractor: 'A sign of bad luck', why: 'Luck is not a category the Stoics grant.' },
   ],
   ...over,
+});
+
+describe('seededDraws', () => {
+  it('draws the seed’s shuffle from its far end, one item at a time', () => {
+    const items = Array.from({ length: 50 }, (_, i) => `i${i}`);
+    for (const seed of ['a', 'b', 7, 'distractors']) {
+      expect([...seededDraws(items, seed)]).toEqual(seededShuffle(items, seed).reverse());
+    }
+    expect([...seededDraws(['only'], 's')]).toEqual(['only']);
+    expect([...seededDraws([], 's')]).toEqual([]);
+  });
+
+  it('draws only as far as it is asked', () => {
+    const items = Array.from({ length: 5 }, (_, i) => i);
+    const drawn: number[] = [];
+    for (const item of seededDraws(items, 'x')) {
+      drawn.push(item);
+      if (drawn.length === 2) break;
+    }
+    expect(drawn).toEqual(seededShuffle(items, 'x').reverse().slice(0, 2));
+  });
 });
 
 describe('seededShuffle', () => {

@@ -80,6 +80,22 @@ export interface SpeakOptions {
    * new one. A caller that ignores the argument keeps today's behaviour.
    */
   onEnd?: (token: SpeechToken) => void;
+  /**
+   * Speak only with a voice on this device, or not at all. For text that must not leave
+   * the device -- a reader's own study material -- a remote voice would send it to the
+   * browser's vendor. A chosen voice that is remote gives way to the local one in the
+   * reader's language. Checked every time the utterance starts, including a resume and a
+   * change of rate or voice, so a voice that disappears between choosing and speaking
+   * silences the text rather than handing it to the browser's default.
+   */
+  localOnly?: boolean;
+  /**
+   * The language the text is written in, when it is not the reader's own -- a flashcard's
+   * Spanish side, say. The voice is then one for that language: the chosen voice if it
+   * speaks it, otherwise a local one that does. With `localOnly` and no local voice in the
+   * language, nothing is said, rather than a Spanish word read by an English engine.
+   */
+  lang?: string | null;
 }
 
 /**
@@ -138,17 +154,45 @@ function findVoice(voiceURI: string): SpeechSynthesisVoice | null {
  * So: a local voice whose tag matches, then one in the same language family, and
  * otherwise nothing -- the browser's default is a better answer than a local voice
  * the reader cannot understand.
+ *
+ * `lang` names another language when the text is in one -- a flashcard set's Spanish
+ * side -- and the same rule holds for it: its voice, or none.
  */
-function preferredLocalVoice(): SpeechSynthesisVoice | null {
+function preferredLocalVoice(lang?: string | null): SpeechSynthesisVoice | null {
   const local = listVoices().filter((v) => v.localService);
   if (local.length === 0) return null;
-  const wanted = (globalThis.navigator?.language ?? 'en').toLowerCase();
-  const family = wanted.slice(0, 2);
+  const wanted = tag(lang || globalThis.navigator?.language || 'en');
   return (
-    local.find((v) => v.lang.toLowerCase() === wanted) ??
-    local.find((v) => v.lang.slice(0, 2).toLowerCase() === family) ??
+    local.find((v) => tag(v.lang) === wanted) ??
+    local.find((v) => sameLanguage(v.lang, wanted)) ??
     null
   );
+}
+
+/** A language tag compared as one: lower case, and `en_US` -- Android's form -- as `en-us`. */
+function tag(lang: string): string {
+  return lang.toLowerCase().replace(/_/g, '-');
+}
+
+/**
+ * Whether two tags name the same language, by the primary subtag: `en-GB` and `en-US` do,
+ * and so do `zh-Hant` and `zh-CN`. The whole subtag rather than its first two letters,
+ * which took Filipino (`fil`) for Finnish (`fi`).
+ */
+function sameLanguage(a: string, b: string): boolean {
+  return tag(a).split('-')[0] === tag(b).split('-')[0];
+}
+
+/**
+ * The voice that speaks on this device in the reader's language -- or in `lang`, when the
+ * text is in another -- or null when there is none. For text that should not leave the
+ * device -- a reader's own study material -- a caller speaks with this voice and offers
+ * nothing without one, rather than letting the browser choose a remote voice and send the
+ * text to its vendor.
+ */
+export function localVoiceURI(lang?: string | null): string | null {
+  if (!speechSupported()) return null;
+  return preferredLocalVoice(lang)?.voiceURI ?? null;
 }
 
 function finish(record: Live): void {
@@ -183,8 +227,22 @@ function begin(text: string, from: number, options: SpeakOptions, token: SpeechT
   // neither intelligible nor a kindness. `docs/privacy.md` says the same, and it
   // matters there: handing the choice back can mean a remote voice, and a remote
   // voice sends the text of the Pull to the browser's vendor.
-  const voice = (voiceURI ? findVoice(voiceURI) : null) ?? preferredLocalVoice();
+  const lang = options.lang || null;
+  let voice = (voiceURI ? findVoice(voiceURI) : null) ?? preferredLocalVoice(lang);
+  // A text in a language of its own is read by a voice for that language, whichever voice
+  // the reader chose for everything else.
+  if (lang && voice && !sameLanguage(voice.lang, lang)) voice = preferredLocalVoice(lang);
+  // Text that must stay on the device takes the reader's chosen voice only when that voice
+  // is local, and otherwise the local one in their language -- the player's voice is a
+  // setting for Pulls, and a remote one there must not carry a reader's own material.
+  if (options.localOnly && !voice?.localService) voice = preferredLocalVoice(lang);
+  if (options.localOnly && !voice?.localService) {
+    // Nothing local to speak it with: say nothing, and tell the caller it has ended.
+    options.onEnd?.(token);
+    return;
+  }
   if (voice) utterance.voice = voice;
+  if (lang) utterance.lang = lang;
 
   const record: Live = {
     text,

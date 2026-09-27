@@ -1,34 +1,101 @@
 # Privacy Policy
 
-**Effective 25 September 2026.** Every revision of this document is a commit in this
+**Effective 1 October 2026.** Every revision of this document is a commit in this
 repository, so what changed and when is public history rather than a claim.
 
-**Study course generation** is new, in a limited beta, and the app does not offer it yet.
-When it does, and you ask for a course built from study sources you saved, the title and
-text of the sources you choose are sent to Google's Gemini API to extract claims and write
-lessons and questions, which are stored privately in your account. It happens only when
-you ask and confirm. Every course also keeps the history of each claim, lesson and
-question's status (checked, held back, reported, corrected); a report you file, with any
-note, and a version you correct are kept with it, privately, and so is a record of which
-lessons and questions you were shown. See
-[What you create](#what-you-create) and [What never reaches a model](#what-never-reaches-a-model).
+**You can now make flashcard sets of your own.** A set is a title, a description if you
+give one, the language each side is written in if you choose one, and its cards — each a
+term and a definition you typed, pasted, or opened from a file (`flashcard_sets`,
+`flashcards`). A file you open is read in your browser and is not uploaded; only the cards
+you save are. Your sets are readable only by you, are never published and never join the
+catalogue, and nothing in them is sent to a model: studying them — card by card, Learn,
+Test and Match — happens in your browser, and how you did is not recorded by us. So you can
+study without a connection, a copy of each set you open stays in the browser you opened it
+in; a round of cards in progress, your best Match time, and changes to a set you have not
+saved yet are kept in that browser too — the changes in the tab you made them in. Each goes
+from a browser when you delete the set there (its unsaved changes, from the tab you delete
+it in), when you sign out there, and when you delete your account there; a set you delete
+on another device goes from this one the next time you open your list of sets here. Reading
+a card aloud uses only a voice installed on your device. Your sets are in your account
+export and are deleted with your account. See [What you create](#what-you-create).
 
-This revision also corrects statements that contradicted the rest of this page: the
-summary said a document you submitted for generation outlived your account (it does not),
-this page said you sign in with an emailed code (you sign in with Google or Microsoft) and
-that we do not keep your real name (the name your sign-in account supplies is kept), and
-it said the Anthropic fallback was "not enabled" while listing it as a processor (it is a
-setting the hosted service does not use, and is listed so that turning it on changes
-nothing you were told).
+The previous revision, effective 30 September, said that **you can add public study
+courses.** We publish some study courses ourselves, made from
+works in the public domain or licensed to us and checked by a person -- never from anything a
+reader saved. Adding one copies it into your account as one of your courses, with its short
+quotations from the work; from then on it is private to you and kept like your own courses,
+with the same record of what you read and answered. Adding one sends nothing to a model or
+anyone else, and deleting your account deletes your copy. We also keep when you added each
+one, so that no more than twenty are added in a day; that record stays if you delete the
+copy, and goes with your account. **If we withdraw a public course because of a complaint
+about the rights in it, we may delete every reader's copy of it** -- and with yours go your
+answers to its questions, your place in it, and what your answers showed you remember of it.
+See [What you create](#what-you-create).
 
-The previous revision, effective 23 September, described private study import. When you
+The revision before, effective 29 September, said that **study courses may open to every
+reader with an account, and we measure how well they teach.** Until then only readers we
+invited could make a study course. We will open courses
+to everyone only after a human-reviewed quality check passes, and what making one sends and
+keeps is unchanged. So that we can tell whether courses teach and not only whether they are
+used, each answer to a course's question now also records whether the course counted the
+ideas it tests as already known when you answered. From your study rows we compute totals
+-- how many courses were made, how many answers recalled an idea a week later, how often
+an idea the course counted as known was answered wrong, how many reports were made --
+which only the people running the service can read, and in which no row names a reader.
+Nothing is sent to a model. See [What you create](#what-you-create).
+
+Before that, the revision effective 28 September **made your study courses remember what your
+answers show.** For each claim a course
+teaches, we keep how well you remember it — worked out from your answers the course could
+check, the way your feed's review schedule is — and when you last answered it right or
+wrong (`study_claim_memory`). The course uses it to leave out lessons you have recently shown
+you know, to bring back a lesson after a wrong answer, and to ask questions again as memory
+fades. Only answers the course checked itself show that you know something; being shown a
+lesson, your own judgement of an answer, and an answer you looked up never do — though a
+wrong answer, or your own "not had", still says you did not. Nothing is sent to a model.
+See [What you create](#what-you-create).
+
+Earlier, the revision effective 27 September **recorded answers to your study courses'
+questions.** When you answer a question in one of your courses, we keep what you chose,
+typed or arranged (up to 1,000 characters), whether it was right, whether you looked at the
+passage first or were trying again after seeing the answer, and — for a short answer the
+course cannot check itself — your own judgement of it. The course uses these to show what
+you have practised and which ideas you have shown you remember. Your answers are checked by
+the database, not by a model, and no answer is sent to any model provider. An answer given
+without a connection waits on your device until it can be sent — through a sign-out, for
+when you sign in again — and is removed from the device when you delete your account.
+
+The one before that, effective 26 September, **offered study courses in the app** to
+accounts in the limited beta. In Studio you choose up to five study sources you saved and
+say what the course is for; once you confirm, the title and text of those sources, and that
+goal, are sent to Google's Gemini API, and the course it prepares is stored privately in
+your account. Preparing a course again after you correct a source sends the newest version
+of each of its sources, and the goal, the same way, after the same confirmation. Reading a course records which lessons
+you were shown, finished or skipped, so it can remember your place; that record is never
+counted as remembering anything. Listening to a lesson uses only a voice installed on your
+device, so your material is not sent to a speech service; without one, the app does not
+offer to read it aloud.
+
+Earlier still, the revision effective 25 September described study course generation before
+the app offered it: what is sent to Google's Gemini API and when, that each course keeps
+the history of each claim, lesson and question's status (checked, held back, reported,
+corrected), that a report you file and a version you correct are kept with it privately,
+and that the lessons and questions you were shown are recorded. It also corrected
+statements that contradicted the rest of this page: the summary said a document you
+submitted for generation outlived your account (it does not), this page said you sign in
+with an emailed code (you sign in with Google or Microsoft) and that we do not keep your
+real name (the name your sign-in account supplies is kept), and it said the Anthropic
+fallback was "not enabled" while listing it as a processor (it is a setting the hosted
+service does not use, and is listed so that turning it on changes nothing you were told).
+
+Before those, the revision effective 23 September described private study import. When you
 save material in Studio's Prepare study material mode, we store the extracted text you
 approved and each corrected version in your private account. We do not upload the
 original file, and saving alone does not send the text to a model provider. You can delete
 a study source and all its versions from Studio. See
 [What you create](#what-you-create) and [How long we keep things](#how-long-we-keep-things).
 
-The revision before that, effective 15 September, added Anthropic as an optional Studio
+And the one effective 15 September added Anthropic as an optional Studio
 summary fallback and described feedback sent through Settings. Those disclosures remain below.
 
 ## Scope
@@ -159,21 +226,46 @@ your account is in the beta is recorded in
 `study_generation_access`, with any note we wrote when adding you — which you can read,
 and which is in your export.
 
+**Public study courses** are courses we publish ourselves, from works in the public domain or
+licensed to us, checked by a person. Adding one copies it into the tables above as one of
+your courses (`study_courses.public_course_id`), with its short quotations from the work as a
+source of its own that Studio does not list; nothing is sent to a model or anyone else. From
+then on your copy is private to you and kept like your own courses. A lesson or question we
+corrected before publishing is marked as ours, not yours. Each time you add one is recorded
+in `study_public_enrolments` -- which course, and when -- because no more than twenty may be
+added in a day; that record is readable by you, is in your export, stays if you delete the
+copy, and is deleted with your account. If we withdraw a course because of a complaint about
+the rights in it, we may delete every reader's copy, and with yours your answers to it, your
+place in it and what your answers showed you remember of it.
+
 A course also keeps its own history (`study_status_log`): each status every claim, lesson
 and question has had — checked, held back, reported, corrected, withdrawn — and when. If
 you report part of a course (`study_reports`), the report and any note you add (up to
 1,000 characters) are kept with it; you can resolve a report but not edit or withdraw it,
 because it is the record of why something was hidden. If you correct a lesson or question,
 your version is stored alongside the one it replaces, which is kept rather than deleted.
-Answers to a course's questions will be kept in `study_answer_events`; nothing records them
-yet. Which lessons and questions of a course you were shown, finished or skipped are
+Answers to a course's questions are kept in `study_answer_events`: what you chose or typed,
+or the order you put steps in (up to 1,000 characters), whether it was right, whether you
+had looked at the passage first or were trying again after a wrong answer, and whether you
+judged it yourself; the time is when it reached us. Which lessons and questions of a course you were shown, finished or skipped are
 recorded in `study_progress_events` so the course can remember your place, with the time
 your device reported (a time more than thirty days back, or in the future, is stored as the
 nearest time that is not) and the time it reached us; being
-shown something is never counted as remembering it. All of this is readable only by you, is
-never reviewed by us, and is in your export. It is deleted with the version of the course it
+shown something is never counted as remembering it. How well you remember each claim of a
+course is kept in `study_claim_memory`, worked out from those answers. All of this is
+readable only by you, is never reviewed by us, and is in your export. It is deleted with the version of the course it
 belongs to — which deleting any source of that version deletes — with the course, and with
 your account.
+
+**Flashcard sets** are lists of terms and definitions you make yourself: typed, pasted, or
+opened from a file on your device, which is read in your browser and not uploaded. A set's
+title, description, the languages you say its sides are in, and each card's term, definition
+and place in the set are stored in `flashcard_sets` and `flashcards` under your account.
+They are readable only by you, are never published, never enter the catalogue or anybody
+else's experience, and are never sent to a model. Studying a set records nothing on our side:
+which cards you said you know, your answers and your times stay in your browser. A set's
+language is used for one thing, choosing a voice on your device to read it aloud. You can
+delete a set from its page; it is in your account export and deleted with your account.
 
 **Feedback** is worth its own sentence, because it is the one thing here you write _to us_
 rather than for yourself. Sending it stores what you wrote, the subject you chose, and the
@@ -195,19 +287,22 @@ own history to yourself, not about retaining it against your wishes.
 
 This is the category most services describe vaguely, so here it is precisely:
 
-| Data                                                            | Table                                                        | What it is                                                                          |
-| --------------------------------------------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
-| Which ideas you were shown, where in the feed, and what you did | `feed_impressions`                                           | Stops the feed repeating itself                                                     |
-| What you opened and for how long                                | `history_events` (incl. `dwell_ms`)                          | Your history, and the reading-time signal                                           |
-| Recall state per idea                                           | `knowledge_states`                                           | Stability and last-seen, from which Half-Life is computed                           |
-| A numeric summary of what you know                              | `user_knowledge_vectors`                                     | The centroid the Delta compares candidates against                                  |
-| Questions shown, answered or dismissed                          | `interrupt_events`, `session_seeds`                          | Bounds interleaved questions and backs off when you dismiss them                    |
-| Each recall attempt, as it happened                             | `recall_events`                                              | The grade, your stated confidence and what you typed, so a retry never counts twice |
-| Highlights you chose to keep                                    | `imports`, `import_items`, and pulls under a private summary | Your own copy of your own reading, so the product can schedule and search it        |
-| Questions you wrote for yourself                                | `user_questions`                                             | Asked in Review before ours, because yours is the one you wanted                    |
-| Learning path progress and completed steps                      | `path_progress`, `path_step_done`                            | Remembers your place, reflections and tested-out steps on curated learning paths    |
-| Sources you asked to see less of                                | `muted_works`                                                | Keeps them out of your feed and your Daily Pull until you unmute them               |
-| Lessons and questions of a study course you were shown          | `study_progress_events`                                      | Remembers your place in the course; never counted as recall                         |
+| Data                                                            | Table                                                        | What it is                                                                                                                                 |
+| --------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Which ideas you were shown, where in the feed, and what you did | `feed_impressions`                                           | Stops the feed repeating itself                                                                                                            |
+| What you opened and for how long                                | `history_events` (incl. `dwell_ms`)                          | Your history, and the reading-time signal                                                                                                  |
+| Recall state per idea                                           | `knowledge_states`                                           | Stability and last-seen, from which Half-Life is computed                                                                                  |
+| A numeric summary of what you know                              | `user_knowledge_vectors`                                     | The centroid the Delta compares candidates against                                                                                         |
+| Questions shown, answered or dismissed                          | `interrupt_events`, `session_seeds`                          | Bounds interleaved questions and backs off when you dismiss them                                                                           |
+| Each recall attempt, as it happened                             | `recall_events`                                              | The grade, your stated confidence and what you typed, so a retry never counts twice                                                        |
+| Highlights you chose to keep                                    | `imports`, `import_items`, and pulls under a private summary | Your own copy of your own reading, so the product can schedule and search it                                                               |
+| Questions you wrote for yourself                                | `user_questions`                                             | Asked in Review before ours, because yours is the one you wanted                                                                           |
+| Learning path progress and completed steps                      | `path_progress`, `path_step_done`                            | Remembers your place, reflections and tested-out steps on curated learning paths                                                           |
+| Sources you asked to see less of                                | `muted_works`                                                | Keeps them out of your feed and your Daily Pull until you unmute them                                                                      |
+| Lessons and questions of a study course you were shown          | `study_progress_events`                                      | Remembers your place in the course; never counted as recall                                                                                |
+| Answers to your study courses' questions                        | `study_answer_events`                                        | What you practised, what you have shown you remember, and whether the course counted it as known when you answered; what you typed is kept |
+| How well you remember each claim of your study courses          | `study_claim_memory`                                         | Leaves out lessons you know, brings back ones you got wrong, schedules review                                                              |
+| When you added each public study course                         | `study_public_enrolments`                                    | Holds adding public courses to twenty a day; kept if you delete the copy, deleted with your account                                        |
 
 **Highlights you import are yours, and stay yours.** When you keep a Kindle or Readwise
 export, the text of each highlight is stored verbatim — that is the point of keeping it —
@@ -323,17 +418,22 @@ it is not published, it never enters the catalogue or anybody else's feed, and i
 deleted with your account like everything else keyed to you. Asking for one needs an
 account, because generation costs real money and a guest session costs nothing to create.
 
-**A study course is the same exception, asked for separately** — and not offered in the
-app yet; the database accepts it only from accounts in the beta. Building one sends the
+**A study course is the same exception, asked for separately** — offered in Studio to
+accounts in the beta, and accepted by the database from no one else. Building one sends the
 title and text of the sources you chose, in passages, to Google's Gemini API, and then
 sends the claims found in them, with their quoted passages, their source titles and your
 goal, to write the lessons and questions. There is no fallback to another provider for
 courses. It needs an account in the beta and your confirmation, each time, that you are
-sending that text.
+sending that text — including each time you prepare a course again, which sends the newest
+version of each of its sources.
 
-Checking a course, reporting part of it and correcting it involve no model. Answers you give
-to a course's questions are not recorded yet; before practice ships, this page will say
-what is recorded, including anything you type.
+Checking a course, reporting part of it, correcting it and answering its questions involve
+no model. An answer is checked by the database against the course's own answer, and what you
+type is kept only in your account.
+
+**Flashcard sets involve no model at all.** The four ways of studying one run in your
+browser, a wrong option in a question is another card from your own set, and a typed answer
+is checked in your browser against the card.
 
 Two schema columns (`explanations.gap_score`, `graded_at`) anticipate a further feature that
 would have a model grade your Say It Back answers. **Nothing writes to them today, and no
@@ -413,7 +513,26 @@ What the app does put on your device, all of it first-party and all of it necess
   practice are free rather than a paid tier. All three are keyed to the account that
   fetched them, and the queued writes carry their owner and are only ever sent for them.
   Two mechanisms, one promise: a shared browser never shows one reader another's copy.
-  The downloaded practice is deleted when you sign out, rather than only being hidden.
+  The downloaded practice is deleted when you sign out, rather than only being hidden. The
+  queued writes wait through a sign-out, to be sent when the same account signs in again,
+  and are deleted from the device when you delete the account.
+- **A short answer you were judging**, in `localStorage`, from when the course's answer is
+  shown until what you say — whether you had it — is recorded or queued. If the page closes
+  first, it is sent as you judged it, or as not had if you had not judged it yet, so an
+  answer you had seen is never taken as one you remembered. It
+  is kept under your own id and the page's, sent only while you are signed in, waits through
+  a sign-out for you, and is removed from the device you delete your account on.
+- **Your flashcard sets**, in IndexedDB — a copy of each set you open, so you can study it
+  without a connection — and, in `localStorage`, a round of cards in progress and your best
+  time in Match, so a reload picks up where you were; a round is let go once it ends. In
+  `sessionStorage`, which the browser keeps for one tab, changes to a set you have not saved
+  yet, so leaving the page by accident does not lose them. All are kept under your own id,
+  in the browser they were made in, and are removed from it when you sign out there and when
+  you delete your account there. Deleting a set there removes its copy, its round and its
+  best time from that browser, and its unsaved changes from the tab you delete it in; changes
+  to it you had not saved in another tab stay in that tab until you save them or let them go.
+  A copy of a set you deleted on another device is removed the next time your list of sets is
+  read here; changes you had not saved stay in the tab until you save them or let them go.
 - **The app itself**, cached by a service worker.
 
 Clearing your browser's site data removes all of it, and signs you out.
@@ -440,6 +559,15 @@ choice back, your browser may well reach for a remote voice, so the paragraph ab
 land, picking a remote voice will be a trade you make knowingly. Today the app makes the
 quieter choice on your behalf.
 
+A lesson of your own study course is read more strictly still, because it is made from your
+material rather than from a published Pull: only a voice on your device ever speaks it --
+the voice you chose, when it is one, and otherwise a local voice in a language you read --
+and when your device has none the app says so and does not offer to read it. A lesson you
+listen to joins your listening queue while the page is open, so the player's controls reach
+it, and its title shows where the player's does: on the player bar, and in your device's
+media controls and lock screen. It is never stored with the queue on your device: when it
+ends, when you leave the lesson or close the page, or when you sign out, it is gone.
+
 Dictation — the **Dictate** button on "say it back" — is different, and the difference is
 worth stating plainly rather than leaving inside the same sentence. It uses your browser's
 speech recognition, and in most browsers that is **not** on your device: the audio goes to
@@ -453,15 +581,25 @@ and typing the same answer sends no audio at all.
 While your account exists, your data exists — unlimited history is one of the five things
 this product refuses to charge for, so we are not going to quietly trim it.
 
+You can delete a flashcard set, with all its cards, from the set's page, without deleting
+your account; what that browser kept of it goes with it (unsaved changes to it, from the tab
+you delete it in), and a copy on another device goes the next time you open your list of
+sets there.
+
 You can delete an individual private study source and all its versions from Studio.
 This removes the extracted text for that source, and every version of a study course and
 every cached model output built from it, with their reports, history, answers and
 progress, without deleting your account; a course left with no sources goes too. You can
 also delete a study course and keep the sources it was built from.
 
+We delete your copy of a public study course only if we withdraw that course because of a
+complaint about the rights in it. Your answers to it, your place in it and what your answers
+showed you remember of it go with the copy; nothing else in your account is touched, and the
+record of when you added it stays until you delete your account.
+
 When you delete your account, deletion cascades from your user record through every table
 keyed to it: profile, preferences, stashes, saves, notes, highlights, history, impressions,
-knowledge states, recall events, vectors, convictions and explanations. That is a foreign-key
+knowledge states, recall events, vectors, convictions, explanations and flashcard sets. That is a foreign-key
 cascade in the schema, not a scheduled cleanup job.
 
 You do this yourself, from **Account → Delete this account**. It is not a request you

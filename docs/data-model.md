@@ -1,6 +1,6 @@
 # Data model
 
-77 tables in `public`, created by the timestamped migrations in `supabase/migrations/`
+87 tables in `public`, created by the timestamped migrations in `supabase/migrations/`
 (`YYYYMMDDHHMMSS_name.sql`, applied in filename order). Every one has RLS enabled with
 at least one policy, every foreign key has a supporting index, and every
 `SECURITY DEFINER` function pins its `search_path`. CI check 4 replays the whole thing
@@ -26,6 +26,8 @@ User
  │                                                   the source they named
  ├── study_url_preview_daily_usage                ← the URL-preview quota
  ├── study_generation_access                      ← the course beta allowlist
+ ├── study_public_enrolments                      ← each public course the reader added; the
+ │                                                   daily limit counts these
  ├── study_courses ─── study_course_sources        ← a private course and the sources it
  │                                                   follows; separate from paths; each
  │                                                   generation below belongs to one
@@ -34,6 +36,8 @@ User
  │    │    │                                         from 1-5 versions
  │    │    ├── study_progress_events              ← shown, read, skipped; never proof
  │    │    ├── study_claims ─── study_claim_evidence   ← exact spans, checked in SQL
+ │    │    │    └── study_claim_memory          ← what the reader's answers left of each
+ │    │    │                                      claim; the study Delta reads it
  │    │    ├── study_lessons · study_items            ← study_lesson_claims and
  │    │    │                                             study_item_claims link the claims
  │    │    │                                             they cite; versioned, one live
@@ -46,6 +50,8 @@ User
  │                                                   reused across courses; gone with any
  │                                                   version it read
  ├── user_questions                               ← questions you wrote yourself
+ ├── flashcard_sets ─── flashcards                ← a reader's own term/definition sets;
+ │                                                   a card's id survives every edit
  ├── path_progress ─── path_step_done             ← learning path progress & test-outs
  ├── feed_recipes · feed_impressions
  ├── feedback                                     ← what a reader sent us from Settings
@@ -71,7 +77,16 @@ generation_dispatches · generation_hash_claims
 reports ─── moderation_decisions · rights_requests
 daily_pulls · daily_pull_selections · interleave_config · rate_limits
 blocked_email_domains                             ← refused at signup
+public_study_courses                              ← published from a rights-cleared work;
+                                                    readers' courses copy it
+study_curators · study_curated_sources            ← who prepares a public course, and the
+                                                    text registered as the work's
+study_release_gates ─── study_beta_settings · study_beta_log   ← the study beta: a reviewed
+                                                    release, the one switch, every change
 ```
+
+Schema `ops` holds no tables: aggregate views of study courses for operators, not exposed
+through the API ([`study-beta.md`](./study-beta.md)).
 
 ## Decisions worth knowing
 
@@ -147,7 +162,21 @@ skipped (`study_progress_events`) follows a lesson or question across the reader
 corrections; answers and proof stay with the version answered. A course goes with its last
 source, or through `delete_study_course`; its sources stay. It shares no key with the public
 `paths`, which are curated and keyed to public pulls. See
-[`study-courses.md`](./study-courses.md).
+[`study-courses.md`](./study-courses.md). A course with a `public_course_id` is a reader's
+copy of a public course: its generation has no job, its one source holds the course's
+excerpts, and it is never prepared again. See [`study-public-courses.md`](./study-public-courses.md).
+
+**A flashcard set is written through two functions and nothing else.** `flashcard_sets`
+and `flashcards` carry a read-own policy and no write grant: `save_flashcard_set` upserts a
+set by the client's id and keeps the id of every card it names, and `delete_flashcard_set`
+removes one. Its limits — 500 sets and 20,000 cards a reader, 2,000 cards and 2 MB of text
+a set — are about a reader's whole collection, which a row policy cannot see, and a save
+that names the version it began from is refused when the set has changed since, so two
+screens never save over each other unseen. A card id is never moved between sets because
+the per-card memory spaced review will key on it would move with it. Cards reference their
+set through `(set_id, owner_id)`, and carry `unique (owner_id, id)` for that memory's own
+composite key. Blank is one rule in the function and the tables, `flashcard_trim`. See
+[`flashcards.md`](./flashcards.md).
 
 **A reader's own question lives in its own table.** `user_questions` rather than a row in
 `quiz_questions`, because the pipeline upserts canonical questions with
@@ -237,10 +266,14 @@ reader's journey and allow testing out of ideas already held solid. `apply_path_
 writes a private reflection note, pulls forward the next due date within 3 days, and
 advances the path idempotently via `client_mutation_id`.
 
-**Cost data is not user-facing.** `cost_ledger`, `budget_reservations` and
-`moderation_decisions` have RLS enabled with a policy of `using (false)` —
+**Cost data is not user-facing.** `cost_ledger`, `budget_reservations`,
+`moderation_decisions`, the study beta's `study_release_gates`, `study_beta_settings` and
+`study_beta_log`, and the public courses' `public_study_courses`, `study_curators` and
+`study_curated_sources` (a signed-in reader reads the catalogue through definer functions)
+have RLS enabled with a policy of `using (false)` —
 service-role only. That is deliberate, not an oversight: the invariant check
-requires _a_ policy to exist, not that it grants anything.
+requires _a_ policy to exist, not that it grants anything. The study beta's three are
+narrower still: the service role only reads them, and the database owner writes them.
 
 **The daily spend cap is a reservation, not a reading.** `budget_reservations` is
 keyed `(job_id, step)` and counts the calls standing behind that row: a step whose

@@ -59,6 +59,9 @@ export async function fetchStudySources(userId: string): Promise<SavedStudySourc
     .from('study_source_versions')
     .select('id, source_id, version_no, title, format, origin_label, extraction_notes, created_at')
     .eq('owner_id', userId)
+    // A public course's excerpts are the course's, copied in when the reader enrolled: not a
+    // source of theirs to list, correct or build a course from.
+    .neq('format', 'public_course')
     .order('created_at', { ascending: false })
     .limit(100);
   if (error) throw rpcError(error);
