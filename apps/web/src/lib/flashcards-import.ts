@@ -52,6 +52,8 @@ export interface ImportResult {
   extraColumns: number;
   /** Whether the text went on past `READ_LIMIT` records, which were not read. */
   unread: boolean;
+  /** Null characters taken out of the text, which no set can hold (`normalise`). */
+  nulls: number;
 }
 
 /**
@@ -121,8 +123,37 @@ const ANKI_COLUMN = /^(guid|notetype|deck|tags) column$/;
 const HEADER_ROW = /^(term|front|question|word)$/i;
 const HEADER_ROW_2 = /^(definition|back|answer|meaning)$/i;
 
+/**
+ * The text as it is read: no byte-order mark, every line ending a new line, and no null
+ * characters. Postgres text cannot hold U+0000 -- a save with one was refused whole, as a raw
+ * `22P05` -- and a file full of them is UTF-16 read as UTF-8, one after every letter, which
+ * the preview showed as cards the save then refused. Taken out here, and counted, so the
+ * preview says so; the file is read as UTF-16 in the first place when its mark says it is.
+ */
 function normalise(text: string): string {
-  return text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+  return text
+    .replace(/^\uFEFF/, '')
+    .replace(/\r\n?/g, '\n')
+    .replaceAll('\u0000', '');
+}
+
+/**
+ * A file's bytes as text: UTF-16 when it begins with UTF-16's byte-order mark -- what Excel
+ * writes as "Unicode Text", and Notepad as "Unicode" -- and UTF-8 otherwise, as `File.text()`
+ * reads everything. Read as UTF-8, such a file was two replacement characters and a null
+ * after every letter; the preview listed its cards and the save refused them.
+ */
+export function decodeFileText(bytes: Uint8Array): string {
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder('utf-16le').decode(bytes);
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder('utf-16be').decode(bytes);
+  return new TextDecoder('utf-8').decode(bytes);
+}
+
+/** How many null characters a text has, for the preview to say it took them out. */
+function nullCount(text: string): number {
+  let n = 0;
+  for (let i = text.indexOf('\u0000'); i >= 0; i = text.indexOf('\u0000', i + 1)) n += 1;
+  return n;
 }
 
 /**
@@ -168,12 +199,18 @@ function ankiHeader(text: string): AnkiHeader {
   return { lines, count, html, separator, drop };
 }
 
-/** Anki's HTML, as text: a line break a line break, and every other tag gone. */
+/**
+ * Anki's HTML, as text: a line break a line break, and every other tag gone.
+ *
+ * A tag is read up to the next `<` at most, not to the next `>` wherever it is: a field of
+ * forty thousand `<` and no `>` had each one searched to the end of the field, and a file of
+ * them froze the tab for as long as it was quadratic.
+ */
 function ankiText(html: string): string {
   return html
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/(?:div|p)>/gi, '\n')
-    .replace(/<[^>]*>/g, '')
+    .replace(/<[^<>]*>/g, '')
     .replace(/&nbsp;/g, ' ')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
@@ -232,7 +269,10 @@ function plainRecords(text: string, options: ImportOptions, skipLines: number): 
  * AND A QUOTE THAT NEVER CLOSES IS TEXT. A field that opens with one and runs to the end of
  * the input would otherwise take every line after it into one card; instead the scan goes
  * back to that quote and reads it as a character, so one stray quote costs one card's
- * punctuation rather than the import.
+ * punctuation rather than the import. Where it opened and on which line is all it keeps: the
+ * record so far cannot change inside quotes, so it is the same record when the scan comes
+ * back. It once copied it at every quote that opened a field, and one line of `"",` forty
+ * thousand times -- 120 KB -- took seven seconds to read.
  */
 function quotedRecords(text: string, sep: string, skipLines: number): Records {
   const out: RawRecord[] = [];
@@ -246,7 +286,7 @@ function quotedRecords(text: string, sep: string, skipLines: number): Records {
   let recordLine = 1;
   let recordStart = 0;
   let literalQuote = -1;
-  let opened: { at: number; record: string[]; quoted: boolean[]; line: number } | null = null;
+  let opened: { at: number; line: number } | null = null;
 
   // The header's lines are not records.
   let begin = 0;
@@ -281,11 +321,10 @@ function quotedRecords(text: string, sep: string, skipLines: number): Records {
     }
     if (i === text.length) {
       if (inQuotes && opened) {
-        // Back to the quote that never closed, to read it as a character.
+        // Back to the quote that never closed, to read it as a character. Nothing was added to
+        // the record while it was open, so the record is as it was.
         literalQuote = opened.at;
         i = opened.at - 1;
-        record = opened.record;
-        quoted = opened.quoted;
         line = opened.line;
         field = '';
         fieldQuoted = false;
@@ -321,7 +360,7 @@ function quotedRecords(text: string, sep: string, skipLines: number): Records {
       inQuotes = true;
       fieldQuoted = true;
       atFieldStart = false;
-      opened = { at: i, record: [...record], quoted: [...quoted], line };
+      opened = { at: i, line };
     } else if (sep !== '' && text.startsWith(sep, i)) {
       endField();
       i += sep.length - 1;
@@ -341,10 +380,12 @@ function quotedRecords(text: string, sep: string, skipLines: number): Records {
  *
  * Anki's own columns come out first. Empty fields at the end are a spreadsheet's empty
  * columns, not part of the definition: `dog,perro,,` is `perro`. Past two fields, the rest
- * is joined back into the definition only when none of it was quoted and the file is not
- * Anki's -- `hacer, to do, to make`, split at its first separator as Quizlet splits it.
- * A quoted field, or any field of an Anki export, is a column its writer meant, and one past
- * the definition is left out and counted, rather than read into the definition.
+ * is joined back into the definition only when none of it was quoted, the file is not
+ * Anki's and the separator is typed text -- a comma, a dash or one of the reader's own:
+ * `hacer, to do, to make`, split at its first separator as Quizlet splits it. A quoted
+ * field, any field of an Anki export, and a field after a tab are columns their writer meant
+ * -- nobody types a tab into a definition, and a spreadsheet's third column is a column --
+ * and one past the definition is left out and counted, rather than read into it.
  */
 function cardSides(
   record: RawRecord,
@@ -358,7 +399,8 @@ function cardSides(
   }
   const [term, definition, ...rest] = fields;
   if (!term || !definition) return null;
-  const join = rest.length > 0 && anki.count === 0 && !definition.q && rest.every((x) => !x.q);
+  const join =
+    rest.length > 0 && sep !== '\t' && anki.count === 0 && !definition.q && rest.every((x) => !x.q);
   return {
     term: term.f,
     definition: join ? [definition, ...rest].map((x) => x.f).join(sep) : definition.f,
@@ -375,6 +417,7 @@ function cardSides(
  */
 export function parseImport(input: string, options: ImportOptions): ImportResult {
   const limit = Math.max(0, options.limit ?? CARD_LIMIT);
+  const nulls = nullCount(input);
   const text = normalise(input);
   const lines = options.cardsBy.kind === 'newline';
   // Only a file of lines has Anki's header, and only at its start.
@@ -430,7 +473,28 @@ export function parseImport(input: string, options: ImportOptions): ImportResult
     if (sides.extra) extraColumns += 1;
     cards.push({ term, definition });
   });
-  return { cards, problems, headers, over, extraColumns, unread };
+  return { cards, problems, headers, over, extraColumns, unread, nulls };
+}
+
+/** The letters of the scripts written right to left: Arabic, Hebrew and their neighbours. */
+const RIGHT_TO_LEFT =
+  /[\p{Script=Arabic}\p{Script=Hebrew}\p{Script=Syriac}\p{Script=Thaana}\p{Script=Nko}\p{Script=Samaritan}\p{Script=Mandaic}\p{Script=Adlam}\p{Script=Hanifi_Rohingya}]/u;
+
+/** How far into a text `leadingDirection` looks for its first letter. */
+const DIRECTION_SAMPLE = 400;
+
+/**
+ * The direction a text is written in, from its first letter -- what `dir="auto"` works out --
+ * found in its first few hundred characters and no further.
+ *
+ * FOR THE IMPORT BOX, WHICH CANNOT HAVE `dir="auto"`. Given it, the browser weighed the whole
+ * of what was pasted, and again as the box was drawn: a paste of a megabyte held the page for
+ * fourteen seconds, one of eight never came back to say it was more than a set holds, and the
+ * 8 MB limit was no limit. A list's direction is its first line's, which is here.
+ */
+export function leadingDirection(text: string): 'ltr' | 'rtl' {
+  const first = /\p{L}/u.exec(text.slice(0, DIRECTION_SAMPLE));
+  return first && RIGHT_TO_LEFT.test(first[0]) ? 'rtl' : 'ltr';
 }
 
 /**

@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   READ_LIMIT,
+  decodeFileText,
   exportFileName,
   guessSeparators,
+  leadingDirection,
   parseImport,
   separatorProblem,
   toTsv,
@@ -23,13 +25,22 @@ describe('pasting a set', () => {
   });
 
   it('splits at the first separator only, so a definition keeps its own', () => {
-    const out = parseImport('hacer\tto do\tto make', TAB_LINES);
-    expect(out.cards).toEqual([{ term: 'hacer', definition: 'to do\tto make' }]);
     const dash = parseImport('ir - to go - to leave', {
       between: { kind: 'dash' },
       cardsBy: { kind: 'newline' },
     });
     expect(dash.cards).toEqual([{ term: 'ir', definition: 'to go - to leave' }]);
+    expect(dash.extraColumns).toBe(0);
+  });
+
+  it('reads a third field after a tab as a column, left out and counted', () => {
+    // Nobody types a tab into a definition: after one, a third field is a spreadsheet's column.
+    const out = parseImport('hacer\tto do\tto make\nir\tto go', TAB_LINES);
+    expect(out.cards).toEqual([
+      { term: 'hacer', definition: 'to do' },
+      { term: 'ir', definition: 'to go' },
+    ]);
+    expect(out.extraColumns).toBe(1);
   });
 
   it('reads every separator Quizlet offers, and a custom one', () => {
@@ -257,6 +268,10 @@ describe('a CSV file', () => {
       { term: 'hacer', definition: 'to do, to make' },
     ]);
     expect(out.extraColumns).toBe(1);
+    // The definition unquoted and only the column after it quoted: still a column.
+    const after = parseImport('a,b,"c, d"', CSV);
+    expect(after.cards).toEqual([{ term: 'a', definition: 'b' }]);
+    expect(after.extraColumns).toBe(1);
   });
 
   it('reads a quote inside a field as a quote, not the start of one', () => {
@@ -294,10 +309,87 @@ describe('a CSV file', () => {
     expect(parseImport('ser,to be\nterm,definition', CSV).cards).toHaveLength(2);
   });
 
+  it('numbers the lines after Anki’s header as the file does, header lines counted', () => {
+    for (const options of [CSV, TAB_LINES]) {
+      const sep = options === CSV ? ',' : '\t';
+      const out = parseImport(
+        `#separator:${options === CSV ? 'comma' : 'tab'}\n#html:false\n\nno separator\nser${sep}to be`,
+        options,
+      );
+      expect(out.headers).toBe(2);
+      expect(out.problems.map((p) => p.where)).toEqual(['Line 4']);
+    }
+  });
+
   it('ignores a byte-order mark', () => {
     expect(parseImport('\uFEFFser,to be', CSV).cards).toEqual([
       { term: 'ser', definition: 'to be' },
     ]);
+  });
+
+  it('reads in linear time what a quote or a tag could make quadratic', () => {
+    // One line of `"",` forty thousand times -- 120 KB -- took seven seconds when each quote
+    // that opened a field copied the record so far; and a field of forty thousand `<` with no
+    // `>` a second, when each was a tag searched for to the end. Each is milliseconds now; the
+    // budget is far above that and far below either.
+    let t = performance.now();
+    const quoted = parseImport('"",'.repeat(40000), CSV);
+    expect(performance.now() - t).toBeLessThan(500);
+    expect(quoted.problems).toHaveLength(1);
+    t = performance.now();
+    const tags = parseImport(`#html:true\n#separator:tab\na\tb${'<'.repeat(40000)}c\n`, TAB_LINES);
+    expect(performance.now() - t).toBeLessThan(500);
+    expect(tags.problems.map((p) => p.reason)).toEqual([
+      'The definition is over 2,000 characters.',
+    ]);
+    expect(parseImport('#html:true\na\tb<i>c</i><d', TAB_LINES).cards).toEqual([
+      { term: 'a', definition: 'bc<d' },
+    ]);
+  });
+});
+
+describe('a file in another encoding', () => {
+  const utf16 = (text: string, bigEndian = false) => {
+    const bytes = new Uint8Array(2 + text.length * 2);
+    bytes.set(bigEndian ? [0xfe, 0xff] : [0xff, 0xfe]);
+    for (let i = 0; i < text.length; i += 1) {
+      const unit = text.charCodeAt(i);
+      bytes[2 + i * 2 + (bigEndian ? 1 : 0)] = unit & 0xff;
+      bytes[2 + i * 2 + (bigEndian ? 0 : 1)] = unit >> 8;
+    }
+    return bytes;
+  };
+
+  it('reads UTF-16 by its byte-order mark, as Excel’s Unicode Text writes it', () => {
+    const text = 'adiós\tgoodbye\r\nπ\tpi\r\n';
+    expect(decodeFileText(utf16(text))).toBe(text);
+    expect(decodeFileText(utf16(text, true))).toBe(text);
+    expect(decodeFileText(new TextEncoder().encode(`\uFEFF${text}`))).toBe(text);
+    expect(parseImport(decodeFileText(utf16(text)), TAB_LINES).cards).toEqual([
+      { term: 'adiós', definition: 'goodbye' },
+      { term: 'π', definition: 'pi' },
+    ]);
+  });
+
+  it('takes out the null characters no set can hold, and counts them', () => {
+    // UTF-16 with no mark, read as UTF-8: a null after every letter.
+    const out = parseImport(
+      's\u0000e\u0000r\u0000\t\u0000t\u0000o\u0000 \u0000b\u0000e\u0000',
+      TAB_LINES,
+    );
+    expect(out.cards).toEqual([{ term: 'ser', definition: 'to be' }]);
+    expect(out.nulls).toBe(9);
+    expect(parseImport('ser\tto be', TAB_LINES).nulls).toBe(0);
+  });
+});
+
+describe('the import box’s direction', () => {
+  it('is its first letter’s, looked for at its start and no further', () => {
+    expect(leadingDirection('كتاب\tbook')).toBe('rtl');
+    expect(leadingDirection('  1. שלום\thello')).toBe('rtl');
+    expect(leadingDirection('book\tكتاب')).toBe('ltr');
+    expect(leadingDirection('')).toBe('ltr');
+    expect(leadingDirection(`${'1 '.repeat(300)}كتاب`)).toBe('ltr');
   });
 });
 

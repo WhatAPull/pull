@@ -6,6 +6,7 @@ import {
   MATCH_CARDS,
   SET_BYTES_LIMIT,
   acceptedAnswers,
+  acceptedKeys,
   answerKey,
   answerLearn,
   answerOf,
@@ -61,6 +62,7 @@ import {
   writtenCorrect,
   type Flashcard,
   type FlashcardSet,
+  type LearnQuestion,
   type LearnState,
   type MatchState,
   type TestQuestion,
@@ -460,6 +462,17 @@ describe('Learn', () => {
     const q = learnQuestion(s, cards);
     expect(q?.kind === 'choice' && q.options).toHaveLength(CHOICES);
   });
+
+  it('has nothing to ask, and is not done, when none of its cards is left in the set', () => {
+    // "The ones you missed", every one deleted elsewhere and the set read again: no question
+    // and never done, and a round that is over as it starts -- which the screen says in words
+    // rather than offering round after empty round.
+    const s = startLearn(cards, ['gone', 'also gone'], 'term', 'x');
+    expect(learnProgress(s)).toEqual({ mastered: 0, total: 0 });
+    expect(learnQuestion(s, cards)).toBeNull();
+    expect(learnDone(s)).toBe(false);
+    expect(learnRoundOver(s)).toBe(true);
+  });
 });
 
 describe('Test', () => {
@@ -527,7 +540,7 @@ describe('Test', () => {
         cardId: 'c1',
         prompt: 'to be (lasting)',
         answer: 'ser',
-        accepted: ['ser'],
+        accepted: new Set([answerKey('ser')]),
       },
     ]);
   });
@@ -541,17 +554,29 @@ describe('Test', () => {
         cardId: 'c3',
         prompt: 'ir',
         answer: 'to go',
-        accepted: ['to go'],
+        accepted: new Set([answerKey('to go')]),
         options: ['to go', 'to be'],
       },
-      { kind: 'written', cardId: 'c4', prompt: 'to have', answer: 'tener', accepted: ['tener'] },
-      { kind: 'written', cardId: 'c5', prompt: 'to do', answer: 'hacer', accepted: ['hacer'] },
+      {
+        kind: 'written',
+        cardId: 'c4',
+        prompt: 'to have',
+        answer: 'tener',
+        accepted: new Set([answerKey('tener')]),
+      },
+      {
+        kind: 'written',
+        cardId: 'c5',
+        prompt: 'to do',
+        answer: 'hacer',
+        accepted: new Set([answerKey('hacer')]),
+      },
       {
         kind: 'choice',
         cardId: 'c1',
         prompt: 'ser',
         answer: 'x',
-        accepted: ['x'],
+        accepted: new Set([answerKey('x')]),
         options: ['x', 'y'],
       },
     ];
@@ -611,6 +636,39 @@ describe('Match', () => {
     }
     expect(canMatch(VERBS)).toBe(true);
     expect(canMatch(VERBS.slice(0, 1))).toBe(false);
+  });
+
+  it('agrees with trying every pair, over thousands of small sets that clash', () => {
+    // Tile texts from a handful, some of them one answer to a reader (`b`, `B.`), so sets are
+    // full of the stars, triangles, parallel lines and shared ends `matchPair` has to see past.
+    const texts = ['a', 'b', 'B.', 'c', 'd', 'e'];
+    let state = 7;
+    const random = (n: number) => {
+      // A fixed sequence (mulberry32), so a failure is the same failure every run.
+      state = (state + 0x6d2b79f5) | 0;
+      let t = Math.imul(state ^ (state >>> 15), 1 | state);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) % n;
+    };
+    const keysOf = (c: Flashcard) => [answerKey(c.term), answerKey(c.definition)];
+    const apart = (x: Flashcard, y: Flashcard) => {
+      const [a, b] = keysOf(x);
+      const [c, d] = keysOf(y);
+      return a !== b && c !== d && ![a, b].some((k) => k === c || k === d);
+    };
+    for (let round = 0; round < 5000; round += 1) {
+      const cards = Array.from({ length: random(8) }, (_, i) =>
+        card(`k${i}`, texts[random(texts.length)] as string, texts[random(texts.length)] as string),
+      );
+      const brute = cards.some((x, i) => cards.some((y, j) => i < j && apart(x, y)));
+      expect(canMatch(cards), JSON.stringify(cards)).toBe(brute);
+      const game = startMatch(cards, `m${round}`);
+      expect(game !== null, JSON.stringify(cards)).toBe(brute);
+      if (!game) continue;
+      const laid = cards.filter((c) => game.tiles.some((t) => t.cardId === c.id));
+      expect(laid.length).toBeGreaterThanOrEqual(2);
+      for (const x of laid) for (const y of laid) if (x !== y) expect(apart(x, y)).toBe(true);
+    }
   });
 
   it('clears a card’s term and definition as a pair, and stops the clock at the last', () => {
@@ -885,6 +943,54 @@ describe('cards that share a prompt', () => {
     expect(written && learnCorrect(written, '   ')).toBe(false);
   });
 
+  it('forgives a slip in the card’s own answer, and takes another card’s as it is', () => {
+    const qs = buildTest(BANKS, { count: 5, kinds: ['written'], answerWith: 'definition' }, 'w');
+    const at = (id: string) => qs.findIndex((q) => q.cardId === id);
+    const graded = (id: string, typed: string) =>
+      gradeTest(
+        qs,
+        qs.map((_, k) => (k === at(id) ? typed : null)),
+      ).correct[at(id)];
+    // `rivver` is one letter over a six-letter word: a slip, and the river card's own answer.
+    expect(graded('river', 'the edge of a rivver')).toBe(true);
+    // The same slip of the other meaning is not graded close: another card's answer is right
+    // when it is typed as it is, which is one lookup however many cards share the prompt.
+    expect(graded('money', 'the edge of a rivver')).toBe(false);
+    expect(graded('money', 'The edge of a river!')).toBe(true);
+    // A choice is right by its key too: the other meaning, had it been offered, is an answer.
+    const choice: TestQuestion = {
+      kind: 'choice',
+      cardId: 'river',
+      prompt: 'bank',
+      answer: 'the edge of a river',
+      accepted: acceptedKeys(BANKS, river, 'definition'),
+      options: ['the edge of a river', 'an animal that barks'],
+    };
+    expect(gradeTest([choice], ['a place that keeps money']).correct).toEqual([true]);
+    expect(gradeTest([choice], ['an animal that barks']).correct).toEqual([false]);
+  });
+
+  it('keys an answer of no letters apart from any answer of letters', () => {
+    // `+` has no letters and is keyed by its text; `raw+` has letters and a mark. They were one
+    // key, so typing `+` was right for a card whose answer is `raw+`.
+    expect(answerKey('+')).not.toBe(answerKey('raw+'));
+    const cards = [card('p', 'plus', 'raw+'), card('q', 'sign', '+')];
+    const q = buildTest(cards, { count: 2, kinds: ['written'], answerWith: 'definition' }, 's');
+    const plus = q.findIndex((x) => x.cardId === 'p');
+    expect(
+      gradeTest(
+        q,
+        q.map((_, k) => (k === plus ? '+' : null)),
+      ).correct[plus],
+    ).toBe(false);
+    expect(
+      gradeTest(
+        q,
+        q.map((_, k) => (k === plus ? 'raw +' : null)),
+      ).correct[plus],
+    ).toBe(true);
+  });
+
   it('asks in writing a card whose only other answers are right ones too', () => {
     const pair = BANKS.slice(0, 2);
     const s = startLearn(pair, ['river', 'money'], 'definition', 'p');
@@ -944,6 +1050,34 @@ describe('a large set', () => {
       }
     }
     expect(startLearn(big, ids, 'definition', 'seed').writtenOnly).toEqual([]);
+  });
+
+  it('marks a test of every card, and a written answer in Learn, where one prompt has them all', () => {
+    // Answered with the term, 1,997 of `alike`'s cards have one prompt, "the same answer", and
+    // every one of their terms is right for it. Marking held each typed answer to all of them
+    // by the slip rule: 77 seconds for this test, and a tenth of a second a Learn answer.
+    const qs = buildTest(alike, { ...all, answerWith: 'term' }, 'grade');
+    const responses = qs.map((q) =>
+      q.kind === 'true_false' ? true : q.kind === 'choice' ? (q.options[0] ?? null) : 'no idea',
+    );
+    let t = performance.now();
+    expect(gradeTest(qs, responses).total).toBe(CARD_LIMIT);
+    expect(performance.now() - t).toBeLessThan(BUDGET_MS);
+
+    const asked = learnQuestion(
+      startLearn(alike, ['a-10'], 'term', 'seed'),
+      alike,
+    ) as LearnQuestion;
+    const written = { ...asked, kind: 'written' } as LearnQuestion;
+    t = performance.now();
+    for (let i = 0; i < 100; i += 1) learnCorrect(written, 'no idea');
+    expect(performance.now() - t).toBeLessThan(BUDGET_MS);
+    // And what it marks: its own term, close; another's with the same prompt, as it is and not
+    // close; and never the term of a card whose prompt is another.
+    expect(learnCorrect(written, 'questoin 10')).toBe(true);
+    expect(learnCorrect(written, 'Question 1234.')).toBe(true);
+    expect(learnCorrect(written, 'questoin 1234')).toBe(false);
+    expect(learnCorrect(written, 'question 1')).toBe(false);
   });
 
   it('still offers three distractors where there are three to offer', () => {

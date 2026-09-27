@@ -218,11 +218,13 @@ export function summaryOf(set: FlashcardSet): FlashcardSetSummary {
  * are one answer to a reader typing it, so they are one option, never two.
  *
  * An answer that normalises to nothing -- `?`, `…` -- keeps its own text, or every such
- * answer in a set would be taken for the same one.
+ * answer in a set would be taken for the same one. Its key begins with the bar, which a key of
+ * letters never does, so the two cannot meet: marked `raw|`, the answer `+` had the key of the
+ * answer `raw+`, and a typed answer is right by its key alone.
  */
 export function answerKey(text: string): string {
   const letters = normaliseAnswer(text);
-  return letters ? `${letters}|${semanticMarks(text)}` : `raw|${text.trim()}`;
+  return letters ? `${letters}|${semanticMarks(text)}` : `|${text.trim()}`;
 }
 
 /**
@@ -325,46 +327,63 @@ function sideIndex(cards: readonly Flashcard[], answerWith: AnswerSide): SideInd
 }
 
 /**
- * The answers right for this card's prompt, its own first, and how many of the set's answers
- * are left to offer as wrong ones. A card the set does not hold -- a caller's copy -- is keyed
- * as it stands.
+ * The keys of the answers right for this card's prompt, its prompt's group of them, and how
+ * many of the set's answers are left to offer as wrong ones. A card the set does not hold -- a
+ * caller's copy -- is keyed as it stands.
+ *
+ * Lookups, and the group's own set of keys handed back rather than copied: a question carries
+ * it, and a prompt two thousand cards share is one set of two thousand keys, not one a card.
  */
 function rightFor(
   index: SideIndex,
   card: Flashcard,
   answerWith: AnswerSide,
-): { keys: ReadonlySet<string>; accepted: readonly Answer[]; others: number } {
+): { keys: ReadonlySet<string>; own: Answer; group: RightAnswers | undefined; others: number } {
   const promptKey = index.promptKeys.get(card.id) ?? answerKey(promptOf(card, answerWith));
   const own = {
     key: index.answerKeys.get(card.id) ?? answerKey(answerOf(card, answerWith)),
     text: answerOf(card, answerWith),
   };
   const group = index.rightFor.get(promptKey);
-  const accepted = [own, ...(group?.answers ?? []).filter((a) => a.key !== own.key)];
   // The set's own card is in its prompt's group, and every key of a group is one of the
   // set's answers: a lookup. Only a card the set does not hold is counted the long way.
   if (group?.keys.has(own.key)) {
-    return { keys: group.keys, accepted, others: index.answers.length - group.keys.size };
+    return { keys: group.keys, own, group, others: index.answers.length - group.keys.size };
   }
   const keys = new Set(group?.keys).add(own.key);
   const ownInSet = index.answers.some((a) => a.key === own.key);
   return {
     keys,
-    accepted,
+    own,
+    group,
     others: index.answers.length - (group?.keys.size ?? 0) - (ownInSet ? 1 : 0),
   };
 }
 
 /**
  * Every answer that is right for this card's prompt, in words: the card's own first, then
- * those of the other cards that share its prompt. A typed answer close to any of them is right.
+ * those of the other cards that share its prompt. Chosen or typed as it is, any of them is
+ * right; typed close, only the card's own (`typedCorrect`).
  */
 export function acceptedAnswers(
   cards: readonly Flashcard[],
   card: Flashcard,
   answerWith: AnswerSide,
 ): string[] {
-  return rightFor(sideIndex(cards, answerWith), card, answerWith).accepted.map((a) => a.text);
+  const { own, group } = rightFor(sideIndex(cards, answerWith), card, answerWith);
+  return [own, ...(group?.answers ?? []).filter((a) => a.key !== own.key)].map((a) => a.text);
+}
+
+/**
+ * The keys of every answer right for this card's prompt -- what a question carries, and
+ * grades a choice or a typed answer against.
+ */
+export function acceptedKeys(
+  cards: readonly Flashcard[],
+  card: Flashcard,
+  answerWith: AnswerSide,
+): ReadonlySet<string> {
+  return rightFor(sideIndex(cards, answerWith), card, answerWith).keys;
 }
 
 /**
@@ -438,6 +457,27 @@ export function choiceOptions(
 /** Whether a typed answer is this card's answer: exact, or close by `gradeCloze`'s rule. */
 export function writtenCorrect(typed: string, answer: string): boolean {
   return gradeCloze(typed, answer).correct;
+}
+
+/**
+ * Whether a typed answer is right for its prompt: any answer right for the prompt, typed as it
+ * is -- the same letters and marks, `answerKey`'s -- or the card's own answer, typed close by
+ * `gradeCloze`'s slip rule. A blank is never right.
+ *
+ * THE SLIP RULE IS FOR THE CARD'S OWN ANSWER. It once ran against every answer right for the
+ * prompt, and a prompt many cards share -- a part of speech, `der`/`die`/`das`, a set whose
+ * definitions are all one phrase -- made that thousands of comparisons for one answer: marking
+ * a Test of 2,000 such cards took 77 seconds with the page frozen, and one written answer in
+ * Learn a tenth of a second. Another card's answer is now one lookup, however many cards share
+ * the prompt; a slip in it is marked wrong, and Learn's "I was right" is there for that.
+ */
+export function typedCorrect(
+  typed: string,
+  answer: string,
+  accepted: ReadonlySet<string>,
+): boolean {
+  if (typed.trim() === '') return false;
+  return accepted.has(answerKey(typed)) || writtenCorrect(typed, answer);
 }
 
 /* --------------------------------------------------------------------------
@@ -606,8 +646,8 @@ export function startLearn(
 }
 
 /**
- * A question of Learn. `accepted` is every answer right for the prompt -- the card's own and
- * any other card's with the same prompt -- which `learnCorrect` grades against.
+ * A question of Learn. `accepted` is the keys of every answer right for the prompt -- the
+ * card's own and any other card's with the same prompt -- which `learnCorrect` grades against.
  */
 export type LearnQuestion =
   | {
@@ -615,10 +655,16 @@ export type LearnQuestion =
       card: Flashcard;
       prompt: string;
       answer: string;
-      accepted: string[];
+      accepted: ReadonlySet<string>;
       options: string[];
     }
-  | { kind: 'written'; card: Flashcard; prompt: string; answer: string; accepted: string[] };
+  | {
+      kind: 'written';
+      card: Flashcard;
+      prompt: string;
+      answer: string;
+      accepted: ReadonlySet<string>;
+    };
 
 /**
  * The question being asked, or null between rounds and at the end. Asked on every draw of
@@ -634,7 +680,7 @@ export function learnQuestion(
   if (!card) return null;
   const prompt = promptOf(card, state.answerWith);
   const answer = answerOf(card, state.answerWith);
-  const accepted = acceptedAnswers(cards, card, state.answerWith);
+  const accepted = acceptedKeys(cards, card, state.answerWith);
   // The seed carries the round, so a card asked again is not answered by where its option was.
   const asked = state.answered?.cardId === card.id ? state.answered.asked : state.stages[card.id];
   if (asked === 'choice') {
@@ -651,11 +697,11 @@ export function learnQuestion(
 
 /**
  * Whether a response to a Learn question is right: the option that is an answer to its
- * prompt, or typed close to one of them. A blank is never right.
+ * prompt, or typed as `typedCorrect` says. A blank is never right.
  */
 export function learnCorrect(question: LearnQuestion, response: string): boolean {
-  if (question.kind === 'choice') return question.accepted.includes(response);
-  return response.trim() !== '' && question.accepted.some((a) => writtenCorrect(response, a));
+  if (question.kind === 'choice') return question.accepted.has(answerKey(response));
+  return typedCorrect(response, question.answer, question.accepted);
 }
 
 function advanced(state: LearnState, cardId: string, from: LearnStage, correct: boolean) {
@@ -760,11 +806,17 @@ export type TestQuestion =
       cardId: string;
       prompt: string;
       answer: string;
-      /** Every answer right for the prompt, as `acceptedAnswers` gives them. */
-      accepted: string[];
+      /** The keys of every answer right for the prompt, as `acceptedKeys` gives them. */
+      accepted: ReadonlySet<string>;
       options: string[];
     }
-  | { kind: 'written'; cardId: string; prompt: string; answer: string; accepted: string[] };
+  | {
+      kind: 'written';
+      cardId: string;
+      prompt: string;
+      answer: string;
+      accepted: ReadonlySet<string>;
+    };
 
 /**
  * A test over `count` cards the seed picks, the kinds dealt out in turn among the cards so
@@ -793,7 +845,7 @@ export function buildTest(
     const answer = answerOf(card, answerWith);
     const dealt = kinds[i % kinds.length] as TestKind;
     const cardSeed = `${seed}:${card.id}`;
-    const accepted = acceptedAnswers(cards, card, answerWith);
+    const accepted = acceptedKeys(cards, card, answerWith);
     if (dealt === 'choice') {
       const opts = choiceOptions(cards, card, answerWith, cardSeed);
       if (opts.length > 0)
@@ -834,6 +886,7 @@ export interface TestResult {
  * Every question graded at once. An unanswered question is a wrong one. A choice or a typed
  * answer is right when it is right for the prompt -- any of `accepted`, not only the card's
  * own -- since a reader asked for "bank" who answers with its other meaning has answered it.
+ * A lookup and one `gradeCloze` a question (`typedCorrect`), however many cards share a prompt.
  */
 export function gradeTest(
   questions: readonly TestQuestion[],
@@ -845,11 +898,9 @@ export function gradeTest(
       case 'true_false':
         return typeof r === 'boolean' && r === q.truth;
       case 'choice':
-        return typeof r === 'string' && q.accepted.includes(r);
+        return typeof r === 'string' && q.accepted.has(answerKey(r));
       case 'written':
-        return (
-          typeof r === 'string' && r.trim() !== '' && q.accepted.some((a) => writtenCorrect(r, a))
-        );
+        return typeof r === 'string' && typedCorrect(r, q.answer, q.accepted);
     }
   });
   const missed = [...new Set(questions.filter((_, i) => !correct[i]).map((q) => q.cardId))];

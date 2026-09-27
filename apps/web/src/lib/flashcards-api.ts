@@ -51,7 +51,12 @@ export interface SetList {
  * was left out of the list -- and a list a set short would, from this device's point of view,
  * say that set was gone. An id never moves, so each page starts after the last id read, and
  * every set that exists throughout the read is read exactly once. The first page's exact count
- * says whether any was made or deleted meanwhile.
+ * says whether any was made or deleted meanwhile -- nearly always. A set made behind the pages
+ * already read, and another deleted in the same moment, leave the count as it was, and the
+ * list is called complete without the new one. That takes two screens acting within the length
+ * of one read, and what it costs is this device's copy of the new set, its round and its best
+ * time, pruned as if it were gone -- not the set, which is read back the next time it is
+ * opened.
  */
 export async function fetchSets(signal?: AbortSignal): Promise<SetList> {
   const rows: unknown[] = [];
