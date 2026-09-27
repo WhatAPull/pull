@@ -13,6 +13,17 @@ import { CHOICE_KINDS, type GradableQuestion, type Graded, type StudyKind } from
 export type QuestionPurpose = 'placement' | 'practice' | 'review';
 export type QuestionState = 'not_seen' | 'shown' | 'answered' | 'recall_demonstrated';
 
+/**
+ * Who wrote a question: the model; the reader, correcting it -- their own words, practice and
+ * never proof; or the project, which corrected it before publishing the public course this
+ * is a copy of -- checked by a person, not the reader's own, and proof as the model's is.
+ */
+export type QuestionAuthor = 'model' | 'reader' | 'project';
+
+function questionAuthor(v: unknown): QuestionAuthor {
+  return v === 'reader' || v === 'project' ? v : 'model';
+}
+
 /** One row of `study_course_questions`: where a question sits and how the reader stands. */
 export interface QuestionEntry {
   itemId: string;
@@ -20,7 +31,7 @@ export interface QuestionEntry {
   purpose: QuestionPurpose;
   kind: StudyKind;
   state: QuestionState;
-  authoredBy: 'model' | 'reader';
+  authoredBy: QuestionAuthor;
   /** When the claims it tests fall due for review; null before it is answered. */
   dueAt: string | null;
   /** Due now, by the server's clock -- which timed the lapse -- not the device's. */
@@ -35,7 +46,7 @@ export interface StudyQuestion extends GradableQuestion {
   prompt: string;
   cloze: string | null;
   explanation: string;
-  authoredBy: 'model' | 'reader';
+  authoredBy: QuestionAuthor;
 }
 
 const KINDS: readonly StudyKind[] = [
@@ -66,7 +77,7 @@ export function shapeQuestionEntries(data: unknown): QuestionEntry[] {
         purpose: oneOf(r.purpose, PURPOSES, 'practice'),
         kind,
         state: oneOf(r.state, STATES, 'not_seen'),
-        authoredBy: r.authored_by === 'reader' ? 'reader' : 'model',
+        authoredBy: questionAuthor(r.authored_by),
         dueAt: nullableStr(r.due_at),
         due: r.due === true,
       } satisfies QuestionEntry;
@@ -97,7 +108,7 @@ export function shapeQuestion(row: unknown): StudyQuestion | null {
     sequence: texts(row.sequence),
     pairs: rows(row.pairs).map((p) => ({ left: str(p.left), right: str(p.right) })),
     explanation: str(row.explanation),
-    authoredBy: row.authored_by === 'reader' ? 'reader' : 'model',
+    authoredBy: questionAuthor(row.authored_by),
   };
   // A kind whose parts are missing cannot be asked fairly; the validator should never let
   // one through, and a screen should not render half a question if it does.

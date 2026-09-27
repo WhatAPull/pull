@@ -85,6 +85,12 @@ describe('StudyQuestionCard', () => {
     expect(render({ ...base, authoredBy: 'reader' })).toContain('practice, not proof');
   });
 
+  it('does not call a public course’s corrected question the reader’s own', () => {
+    const html = render({ ...base, authoredBy: 'project' });
+    expect(html).not.toContain('Your own version');
+    expect(html).not.toContain('practice, not proof');
+  });
+
   it('offers the passage behind the question when there is one', () => {
     expect(render(base, { renderHint: () => 'passage' })).toContain('Show the passage it rests on');
     expect(render(base)).not.toContain('Show the passage');

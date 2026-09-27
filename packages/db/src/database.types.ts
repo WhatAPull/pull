@@ -1662,6 +1662,86 @@ export type Database = {
           },
         ]
       }
+      public_study_courses: {
+        Row: {
+          excerpt_title: string
+          excerpts: string
+          from_generation: string | null
+          goal: string
+          id: string
+          lesson_count: number
+          objectives: string[]
+          outline: Json
+          overview: string | null
+          published_at: string
+          question_count: number
+          quotations: Json
+          recap: string | null
+          review_note: string | null
+          reviewed_by: string
+          slug: string
+          snapshot: Json
+          title: string
+          withdrawn_at: string | null
+          withdrawn_reason: string | null
+          work_id: string
+        }
+        Insert: {
+          excerpt_title: string
+          excerpts: string
+          from_generation?: string | null
+          goal: string
+          id?: string
+          lesson_count: number
+          objectives?: string[]
+          outline: Json
+          overview?: string | null
+          published_at?: string
+          question_count: number
+          quotations: Json
+          recap?: string | null
+          review_note?: string | null
+          reviewed_by: string
+          slug: string
+          snapshot: Json
+          title: string
+          withdrawn_at?: string | null
+          withdrawn_reason?: string | null
+          work_id: string
+        }
+        Update: {
+          excerpt_title?: string
+          excerpts?: string
+          from_generation?: string | null
+          goal?: string
+          id?: string
+          lesson_count?: number
+          objectives?: string[]
+          outline?: Json
+          overview?: string | null
+          published_at?: string
+          question_count?: number
+          quotations?: Json
+          recap?: string | null
+          review_note?: string | null
+          reviewed_by?: string
+          slug?: string
+          snapshot?: Json
+          title?: string
+          withdrawn_at?: string | null
+          withdrawn_reason?: string | null
+          work_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "public_study_courses_work_id_fkey"
+            columns: ["work_id"]
+            isOneToOne: false
+            referencedRelation: "works"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       pull_relations: {
         Row: {
           created_at: string
@@ -2527,18 +2607,83 @@ export type Database = {
           goal: string
           id: string
           owner_id: string
+          public_course_id: string | null
         }
         Insert: {
           created_at?: string
           goal: string
           id?: string
           owner_id: string
+          public_course_id?: string | null
         }
         Update: {
           created_at?: string
           goal?: string
           id?: string
           owner_id?: string
+          public_course_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "study_courses_public_course_id_fkey"
+            columns: ["public_course_id"]
+            isOneToOne: false
+            referencedRelation: "public_study_courses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      study_curated_sources: {
+        Row: {
+          registered_at: string
+          registered_by: string
+          source_version_id: string
+          work_id: string
+        }
+        Insert: {
+          registered_at?: string
+          registered_by: string
+          source_version_id: string
+          work_id: string
+        }
+        Update: {
+          registered_at?: string
+          registered_by?: string
+          source_version_id?: string
+          work_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "study_curated_sources_source_version_id_fkey"
+            columns: ["source_version_id"]
+            isOneToOne: true
+            referencedRelation: "study_source_versions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "study_curated_sources_work_id_fkey"
+            columns: ["work_id"]
+            isOneToOne: false
+            referencedRelation: "works"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      study_curators: {
+        Row: {
+          added_at: string
+          added_by: string
+          user_id: string
+        }
+        Insert: {
+          added_at?: string
+          added_by: string
+          user_id: string
+        }
+        Update: {
+          added_at?: string
+          added_by?: string
+          user_id?: string
         }
         Relationships: []
       }
@@ -2615,11 +2760,12 @@ export type Database = {
           disagreements: Json
           goal: string
           id: string
-          job_id: string
+          job_id: string | null
           objectives: string[]
           overview: string | null
           owner_id: string
-          processing_consent_at: string
+          processing_consent_at: string | null
+          public_course_id: string | null
           recap: string | null
           text_failures: string[]
           text_status: string
@@ -2635,11 +2781,12 @@ export type Database = {
           disagreements?: Json
           goal: string
           id?: string
-          job_id: string
+          job_id?: string | null
           objectives?: string[]
           overview?: string | null
           owner_id: string
-          processing_consent_at: string
+          processing_consent_at?: string | null
+          public_course_id?: string | null
           recap?: string | null
           text_failures?: string[]
           text_status?: string
@@ -2655,11 +2802,12 @@ export type Database = {
           disagreements?: Json
           goal?: string
           id?: string
-          job_id?: string
+          job_id?: string | null
           objectives?: string[]
           overview?: string | null
           owner_id?: string
-          processing_consent_at?: string
+          processing_consent_at?: string | null
+          public_course_id?: string | null
           recap?: string | null
           text_failures?: string[]
           text_status?: string
@@ -2680,6 +2828,13 @@ export type Database = {
             columns: ["job_id"]
             isOneToOne: true
             referencedRelation: "generation_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "study_generations_public_course_id_fkey"
+            columns: ["public_course_id"]
+            isOneToOne: false
+            referencedRelation: "public_study_courses"
             referencedColumns: ["id"]
           },
         ]
@@ -3132,6 +3287,35 @@ export type Database = {
           },
         ]
       }
+      study_public_enrolments: {
+        Row: {
+          enrolled_at: string
+          id: string
+          owner_id: string
+          public_course_id: string
+        }
+        Insert: {
+          enrolled_at?: string
+          id?: string
+          owner_id: string
+          public_course_id: string
+        }
+        Update: {
+          enrolled_at?: string
+          id?: string
+          owner_id?: string
+          public_course_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "study_public_enrolments_public_course_id_fkey"
+            columns: ["public_course_id"]
+            isOneToOne: false
+            referencedRelation: "public_study_courses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       study_release_gates: {
         Row: {
           fixture_digest: string
@@ -3340,6 +3524,7 @@ export type Database = {
           id: string
           origin_label: string | null
           owner_id: string
+          quotations: Json | null
           source_id: string
           title: string
           version_no: number
@@ -3353,6 +3538,7 @@ export type Database = {
           id?: string
           origin_label?: string | null
           owner_id: string
+          quotations?: Json | null
           source_id: string
           title: string
           version_no: number
@@ -3366,6 +3552,7 @@ export type Database = {
           id?: string
           origin_label?: string | null
           owner_id?: string
+          quotations?: Json | null
           source_id?: string
           title?: string
           version_no?: number
@@ -3939,6 +4126,11 @@ export type Database = {
           objectives: string[] | null
           overview: string | null
           preparing: boolean | null
+          public_course_id: string | null
+          public_course_label: string | null
+          public_course_on_offer: boolean | null
+          public_course_work_id: string | null
+          public_course_work_title: string | null
           question_count: number | null
           recap: string | null
           source_count: number | null
@@ -3946,7 +4138,15 @@ export type Database = {
           update_available: boolean | null
           withheld: Json | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "study_courses_public_course_id_fkey"
+            columns: ["public_course_id"]
+            isOneToOne: false
+            referencedRelation: "public_study_courses"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       study_visible_claims: {
         Row: {
@@ -4491,6 +4691,10 @@ export type Database = {
         }
         Returns: Json
       }
+      enrol_public_course: {
+        Args: { p_public_course_id: string }
+        Returns: Json
+      }
       generate_mfa_recovery_codes: { Args: never; Returns: string[] }
       generation_budget_state: { Args: never; Returns: string }
       generation_secret: { Args: { p_name: string }; Returns: string }
@@ -4510,6 +4714,26 @@ export type Database = {
       }
       get_path: { Args: { p_slug: string }; Returns: Json }
       get_paths: { Args: never; Returns: Json }
+      get_public_study_course: {
+        Args: { p_slug: string }
+        Returns: {
+          goal: string
+          id: string
+          lesson_count: number
+          objectives: string[]
+          outline: Json
+          overview: string
+          published_at: string
+          question_count: number
+          recap: string
+          rights_status: Database["public"]["Enums"]["rights_status"]
+          slug: string
+          title: string
+          work_id: string
+          work_kind: Database["public"]["Enums"]["work_kind"]
+          work_title: string
+        }[]
+      }
       get_source_delta: { Args: { p_work_id: string }; Returns: Json }
       get_summary_delta: { Args: { p_summary_id: string }; Returns: Json }
       get_topic: { Args: { p_limit?: number; p_slug: string }; Returns: Json }
@@ -4559,6 +4783,24 @@ export type Database = {
       knowledge_vector_cap: { Args: never; Returns: number }
       known_comparison_cap: { Args: never; Returns: number }
       known_retrievability_floor: { Args: never; Returns: number }
+      list_public_study_courses: {
+        Args: never
+        Returns: {
+          goal: string
+          id: string
+          lesson_count: number
+          objectives: string[]
+          overview: string
+          published_at: string
+          question_count: number
+          rights_status: Database["public"]["Enums"]["rights_status"]
+          slug: string
+          title: string
+          work_id: string
+          work_kind: Database["public"]["Enums"]["work_kind"]
+          work_title: string
+        }[]
+      }
       min_job_cents: { Args: never; Returns: number }
       my_sessions: {
         Args: never
@@ -4606,6 +4848,25 @@ export type Database = {
           p_cron_days?: number
           p_output_days?: number
           p_response_hours?: number
+        }
+        Returns: Json
+      }
+      public_study_course_origin: {
+        Args: { p_id: string }
+        Returns: {
+          on_offer: boolean
+          rights_label: string
+          work_id: string
+          work_title: string
+        }[]
+      }
+      publish_study_course: {
+        Args: {
+          p_generation_id: string
+          p_note?: string
+          p_reviewed_by: string
+          p_slug: string
+          p_work_id: string
         }
         Returns: Json
       }
@@ -4717,6 +4978,10 @@ export type Database = {
           p_pull_id: string
         }
         Returns: Json
+      }
+      remove_public_course_copies: {
+        Args: { p_id: string; p_limit?: number }
+        Returns: number
       }
       renew_source_claim: {
         Args: { p_job_id: string; p_lease?: string }
@@ -5093,6 +5358,12 @@ export type Database = {
       }
       study_unspaced_class: { Args: never; Returns: string }
       study_word_class: { Args: never; Returns: string }
+      study_word_runs: {
+        Args: { p_text: string; p_words: number }
+        Returns: {
+          run: string
+        }[]
+      }
       summary_is_readable: {
         Args: { s: Database["public"]["Tables"]["summaries"]["Row"] }
         Returns: boolean
@@ -5114,6 +5385,10 @@ export type Database = {
         Returns: number
       }
       validate_study_course: { Args: { p_job_id: string }; Returns: Json }
+      withdraw_public_study_course: {
+        Args: { p_by: string; p_id: string; p_reason: string }
+        Returns: Json
+      }
       work_is_authorable: { Args: { p_work_id: string }; Returns: boolean }
     }
     Enums: {

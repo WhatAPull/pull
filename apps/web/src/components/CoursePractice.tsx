@@ -48,6 +48,7 @@ const FINISH_WAIT_MS = 8000;
 export function CoursePractice({
   userId,
   courseId,
+  copy = false,
   itemIds,
   mode,
   heading,
@@ -58,6 +59,8 @@ export function CoursePractice({
   userId: string;
   /** The course the run is in: its answers keep their order in the offline queue. */
   courseId: string;
+  /** The course is a copy of a public course: its questions are the work's, not the reader's sources'. */
+  copy?: boolean;
   itemIds: readonly string[];
   mode: PracticeMode;
   heading: string;
@@ -472,6 +475,7 @@ export function CoursePractice({
             )}
             {fix === 'report' && (
               <ReportForm
+                copy={copy}
                 kind="item"
                 working={working}
                 error={fixError}

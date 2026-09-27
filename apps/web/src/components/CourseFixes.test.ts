@@ -36,6 +36,25 @@ describe('ReportForm', () => {
     expect(html).toContain('This is not what my source says');
     expect(html).toContain('every lesson and question that rests on it');
     expect(html).toMatch(/role="alert"[^>]*>That is as many reports/);
+    // A report on the reader's own course says nothing of anyone else seeing it or not.
+    expect(html).not.toContain('What a Pull');
+  });
+
+  it('in a copy of a public course, names the work and says the report goes nowhere', () => {
+    const html = renderToStaticMarkup(
+      createElement(ReportForm, {
+        kind: 'item',
+        copy: true,
+        working: false,
+        error: null,
+        onSubmit: noop,
+        onCancel: noop,
+      }),
+    );
+    expect(html).toContain('The work does not say this');
+    expect(html).toContain('It cannot be answered from the work');
+    expect(html).not.toMatch(/my sources?/);
+    expect(html).toContain('This stays in your copy; What a Pull does not see it.');
   });
 });
 

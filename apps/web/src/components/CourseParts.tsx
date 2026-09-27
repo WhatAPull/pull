@@ -104,8 +104,9 @@ export function PassageInContext({ passage }: { passage: PassageWindow }) {
 
 /**
  * Where a lesson's teaching comes from: each claim it rests on, with the exact passages of
- * the reader's own material. `renderContext` lets the container show a passage in its
- * surrounding text once the reader asks for it.
+ * the reader's own material -- or, in a copy of a public course, of the work it quotes.
+ * `renderContext` lets the container show a passage in its surrounding text, or its whole
+ * quotation, once the reader asks for it.
  */
 export function LessonSources({
   claims,
@@ -271,6 +272,8 @@ export function StoppingPoint({
  * every lesson is read or skipped; how many were read is the progress line's to say.
  */
 export function CourseRecap({ course }: { course: CourseSummary }) {
+  // A copy of a public course is made from one work, not from the reader's sources.
+  const copy = course.publicCourseId !== null;
   return (
     <section className="stack course__recap" aria-labelledby="course-recap-title">
       <p className="meta">The end of the course</p>
@@ -278,7 +281,9 @@ export function CourseRecap({ course }: { course: CourseSummary }) {
       {course.recap ? <Paragraphs text={course.recap} /> : null}
       {course.disagreements.length > 0 && (
         <>
-          <h3 className="course__subheading">Where your sources disagree</h3>
+          <h3 className="course__subheading">
+            {copy ? 'Where the work disagrees with itself' : 'Where your sources disagree'}
+          </h3>
           <ul className="course__notes">
             {course.disagreements.map((d, i) => (
               <li key={i}>{d.description}</li>
@@ -288,10 +293,13 @@ export function CourseRecap({ course }: { course: CourseSummary }) {
       )}
       {course.withheld.length > 0 && (
         <>
-          <h3 className="course__subheading">What your sources cannot answer</h3>
+          <h3 className="course__subheading">
+            {copy ? 'What the work cannot answer' : 'What your sources cannot answer'}
+          </h3>
           <p>
-            Questions your goal suggests that the material does not settle, so the course does not
-            pretend to.
+            {copy
+              ? 'Questions the course’s goal suggests that the work does not settle, so the course does not pretend to.'
+              : 'Questions your goal suggests that the material does not settle, so the course does not pretend to.'}
           </p>
           <ul className="course__notes">
             {course.withheld.map((w, i) => (

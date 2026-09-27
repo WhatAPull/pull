@@ -1,10 +1,23 @@
 # Privacy Policy
 
-**Effective 29 September 2026.** Every revision of this document is a commit in this
+**Effective 30 September 2026.** Every revision of this document is a commit in this
 repository, so what changed and when is public history rather than a claim.
 
-**Study courses may open to every reader with an account, and we measure how well they
-teach.** Until now only readers we invited could make a study course. We will open courses
+**You can add public study courses.** We publish some study courses ourselves, made from
+works in the public domain or licensed to us and checked by a person -- never from anything a
+reader saved. Adding one copies it into your account as one of your courses, with its short
+quotations from the work; from then on it is private to you and kept like your own courses,
+with the same record of what you read and answered. Adding one sends nothing to a model or
+anyone else, and deleting your account deletes your copy. We also keep when you added each
+one, so that no more than twenty are added in a day; that record stays if you delete the
+copy, and goes with your account. **If we withdraw a public course because of a complaint
+about the rights in it, we may delete every reader's copy of it** -- and with yours go your
+answers to its questions, your place in it, and what your answers showed you remember of it.
+See [What you create](#what-you-create).
+
+The previous revision, effective 29 September, said that **study courses may open to every
+reader with an account, and we measure how well they teach.** Until then only readers we
+invited could make a study course. We will open courses
 to everyone only after a human-reviewed quality check passes, and what making one sends and
 keeps is unchanged. So that we can tell whether courses teach and not only whether they are
 used, each answer to a course's question now also records whether the course counted the
@@ -14,7 +27,7 @@ an idea the course counted as known was answered wrong, how many reports were ma
 which only the people running the service can read, and in which no row names a reader.
 Nothing is sent to a model. See [What you create](#what-you-create).
 
-The previous revision, effective 28 September, **made your study courses remember what your
+The revision before, effective 28 September, **made your study courses remember what your
 answers show.** For each claim a course
 teaches, we keep how well you remember it — worked out from your answers the course could
 check, the way your feed's review schedule is — and when you last answered it right or
@@ -25,7 +38,7 @@ lesson, your own judgement of an answer, and an answer you looked up never do �
 wrong answer, or your own "not had", still says you did not. Nothing is sent to a model.
 See [What you create](#what-you-create).
 
-The revision before, effective 27 September, **recorded answers to your study courses'
+Before that, the revision effective 27 September **recorded answers to your study courses'
 questions.** When you answer a question in one of your courses, we keep what you chose,
 typed or arranged (up to 1,000 characters), whether it was right, whether you looked at the
 passage first or were trying again after seeing the answer, and — for a short answer the
@@ -35,7 +48,7 @@ the database, not by a model, and no answer is sent to any model provider. An an
 without a connection waits on your device until it can be sent — through a sign-out, for
 when you sign in again — and is removed from the device when you delete your account.
 
-Before that, the revision effective 26 September **offered study courses in the app** to
+Earlier, the revision effective 26 September **offered study courses in the app** to
 accounts in the limited beta. In Studio you choose up to five study sources you saved and
 say what the course is for; once you confirm, the title and text of those sources, and that
 goal, are sent to Google's Gemini API, and the course it prepares is stored privately in
@@ -46,7 +59,7 @@ counted as remembering anything. Listening to a lesson uses only a voice install
 device, so your material is not sent to a speech service; without one, the app does not
 offer to read it aloud.
 
-Earlier, the revision effective 25 September described study course generation before
+Earlier still, the revision effective 25 September described study course generation before
 the app offered it: what is sent to Google's Gemini API and when, that each course keeps
 the history of each claim, lesson and question's status (checked, held back, reported,
 corrected), that a report you file and a version you correct are kept with it privately,
@@ -58,7 +71,7 @@ real name (the name your sign-in account supplies is kept), and it said the Anth
 fallback was "not enabled" while listing it as a processor (it is a setting the hosted
 service does not use, and is listed so that turning it on changes nothing you were told).
 
-Earlier still, the revision effective 23 September described private study import. When you
+Before those, the revision effective 23 September described private study import. When you
 save material in Studio's Prepare study material mode, we store the extracted text you
 approved and each corrected version in your private account. We do not upload the
 original file, and saving alone does not send the text to a model provider. You can delete
@@ -196,6 +209,18 @@ your account is in the beta is recorded in
 `study_generation_access`, with any note we wrote when adding you — which you can read,
 and which is in your export.
 
+**Public study courses** are courses we publish ourselves, from works in the public domain or
+licensed to us, checked by a person. Adding one copies it into the tables above as one of
+your courses (`study_courses.public_course_id`), with its short quotations from the work as a
+source of its own that Studio does not list; nothing is sent to a model or anyone else. From
+then on your copy is private to you and kept like your own courses. A lesson or question we
+corrected before publishing is marked as ours, not yours. Each time you add one is recorded
+in `study_public_enrolments` -- which course, and when -- because no more than twenty may be
+added in a day; that record is readable by you, is in your export, stays if you delete the
+copy, and is deleted with your account. If we withdraw a course because of a complaint about
+the rights in it, we may delete every reader's copy, and with yours your answers to it, your
+place in it and what your answers showed you remember of it.
+
 A course also keeps its own history (`study_status_log`): each status every claim, lesson
 and question has had — checked, held back, reported, corrected, withdrawn — and when. If
 you report part of a course (`study_reports`), the report and any note you add (up to
@@ -250,6 +275,7 @@ This is the category most services describe vaguely, so here it is precisely:
 | Lessons and questions of a study course you were shown          | `study_progress_events`                                      | Remembers your place in the course; never counted as recall                                                                                |
 | Answers to your study courses' questions                        | `study_answer_events`                                        | What you practised, what you have shown you remember, and whether the course counted it as known when you answered; what you typed is kept |
 | How well you remember each claim of your study courses          | `study_claim_memory`                                         | Leaves out lessons you know, brings back ones you got wrong, schedules review                                                              |
+| When you added each public study course                         | `study_public_enrolments`                                    | Holds adding public courses to twenty a day; kept if you delete the copy, deleted with your account                                        |
 
 **Highlights you import are yours, and stay yours.** When you keep a Kindle or Readwise
 export, the text of each highlight is stored verbatim — that is the point of keeping it —
@@ -518,6 +544,11 @@ This removes the extracted text for that source, and every version of a study co
 every cached model output built from it, with their reports, history, answers and
 progress, without deleting your account; a course left with no sources goes too. You can
 also delete a study course and keep the sources it was built from.
+
+We delete your copy of a public study course only if we withdraw that course because of a
+complaint about the rights in it. Your answers to it, your place in it and what your answers
+showed you remember of it go with the copy; nothing else in your account is touched, and the
+record of when you added it stays until you delete your account.
 
 When you delete your account, deletion cascades from your user record through every table
 keyed to it: profile, preferences, stashes, saves, notes, highlights, history, impressions,

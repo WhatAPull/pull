@@ -15,12 +15,15 @@ import { usePlayer } from '../components/PlayerProvider.js';
 import { isOfflineFailure } from '../lib/offline.js';
 import { sqlDetail, sqlState } from '../lib/rpc-error.js';
 import { currentTrack } from '../lib/player.js';
+import { routerClick } from '../lib/routes.js';
 import { localVoiceURI, onVoicesChanged } from '../lib/speech.js';
 import {
   allLessons,
   applyProgress,
   asSentence,
   awaitingPreparation,
+  contextWindow,
+  copyWords,
   courseProgressLabel,
   correctionRefusal,
   courseStatus,
@@ -33,7 +36,6 @@ import {
   lessonsLeft,
   nextLesson,
   draftUnsaved,
-  passageWindow,
   planAfterCorrection,
   planLessons,
   planSession,
@@ -52,6 +54,7 @@ import {
   type PlannedLesson,
   type LessonProgressKind,
   type ReportReason,
+  type SourceText,
 } from '../lib/study-course.js';
 import {
   deleteCourse,
@@ -157,7 +160,7 @@ export function Course({
   const [lessonError, setLessonError] = useState<string | null>(null);
   const [recorded, setRecorded] = useState<{ kind: LessonProgressKind; lessonId: string }[]>([]);
   const [progressNote, setProgressNote] = useState<string | null>(null);
-  const [texts, setTexts] = useState<Record<string, string>>({});
+  const [texts, setTexts] = useState<Record<string, SourceText>>({});
   // A source text that would not load, said as such rather than cached as empty for good.
   const [textFailed, setTextFailed] = useState<Record<string, string>>({});
   const [opened, setOpened] = useState<Record<string, boolean>>({});
@@ -600,7 +603,7 @@ export function Course({
         'correct',
         `Your correction to “${oldTitle}” was not saved.`,
         e,
-        correctionRefusal(sqlState(e), sqlDetail(e)),
+        correctionRefusal(sqlState(e), sqlDetail(e), Boolean(course?.publicCourseId)),
       );
     } finally {
       fixSettled();
@@ -795,13 +798,17 @@ export function Course({
       return rest;
     });
     fetchSourceText(version)
-      .then((text) => setTexts((t) => ({ ...t, [version]: text })))
+      .then((source) => setTexts((t) => ({ ...t, [version]: source })))
       .catch((e: unknown) =>
         setTextFailed((f) => ({
           ...f,
-          [version]: isOfflineFailure(e)
-            ? 'Your text needs a connection to open. Close this and try again when you reconnect.'
-            : 'Your text could not be loaded just now. Close this and try again.',
+          [version]: course?.publicCourseId
+            ? isOfflineFailure(e)
+              ? 'The quotation needs a connection to open. Close this and try again when you reconnect.'
+              : 'The quotation could not be loaded just now. Close this and try again.'
+            : isOfflineFailure(e)
+              ? 'Your text needs a connection to open. Close this and try again when you reconnect.'
+              : 'Your text could not be loaded just now. Close this and try again.',
         })),
       );
   };
@@ -809,12 +816,15 @@ export function Course({
   const renderContext = (claim: LessonClaim, ordinal: number) => {
     const key = `${claim.claimId}:${ordinal}`;
     const evidence = claim.evidence.find((e) => e.ordinal === ordinal);
-    const text = texts[claim.versionId];
+    const source = texts[claim.versionId];
     const failed = textFailed[claim.versionId];
     const open = Boolean(opened[key]);
     // Only for a passage the reader opened: each is a walk over a text of up to 200,000
-    // characters, and a lesson cites up to twenty-four.
-    const passage = open && evidence && text ? passageWindow(text, evidence) : null;
+    // characters, and a lesson cites up to twenty-four. A copy of a public course has no text
+    // around a span but the quotation it is in: its text is the course's quotations, each a
+    // separate passage of the work, so it shows that quotation and not its neighbours.
+    const copy = Boolean(course?.publicCourseId);
+    const passage = open && evidence && source?.text ? contextWindow(copy, source, evidence) : null;
     return (
       <div>
         <button
@@ -824,23 +834,31 @@ export function Course({
           aria-controls={`context-${key}`}
           onClick={() => showContext(claim, ordinal)}
         >
-          {open ? 'Hide the surrounding text' : 'Show it in your text'}
+          {copy
+            ? open
+              ? 'Hide the quotation'
+              : 'Show the whole quotation'
+            : open
+              ? 'Hide the surrounding text'
+              : 'Show it in your text'}
         </button>
         {open && (
           <div id={`context-${key}`}>
-            {text === undefined ? (
+            {source === undefined ? (
               failed ? (
                 <p>{failed}</p>
               ) : (
                 <p className="meta" role="status">
-                  Loading your text…
+                  {copy ? 'Loading the quotation…' : 'Loading your text…'}
                 </p>
               )
             ) : passage ? (
               <PassageInContext passage={passage} />
             ) : (
               <p>
-                The surrounding text is not available: this version of your source may have changed.
+                {copy
+                  ? 'The quotation is not available.'
+                  : 'The surrounding text is not available: this version of your source may have changed.'}
               </p>
             )}
           </div>
@@ -1002,7 +1020,7 @@ export function Course({
         <h1 id="course-title" tabIndex={-1}>
           The course is deleted.
         </h1>
-        <p>Its sources stay in Studio, and you can make a new course from them.</p>
+        <p>{copyWords(course).deleted}</p>
       </section>
     );
   }
@@ -1012,7 +1030,10 @@ export function Course({
       <section className="stack measure">
         {back}
         <h1>No such course.</h1>
-        <p>It may have been deleted, or its last source was.</p>
+        <p>
+          It may have been deleted, or its last source was. A copy of a public course is also
+          removed if What a Pull withdraws the course over its rights.
+        </p>
       </section>
     );
   }
@@ -1033,6 +1054,7 @@ export function Course({
         key={view.itemIds.join(',')}
         userId={userId}
         courseId={courseId}
+        copy={course.publicCourseId !== null}
         itemIds={view.itemIds}
         mode={view.mode}
         heading={view.heading}
@@ -1254,8 +1276,8 @@ export function Course({
                 </p>
               ) : (
                 <p>
-                  Reading aloud needs a voice installed on this device, so that your material is not
-                  sent to a speech service.
+                  Reading aloud needs a voice installed on this device, so that what you study is
+                  not sent to a speech service.
                 </p>
               ))}
             <details
@@ -1265,7 +1287,11 @@ export function Course({
                 if (!(e.currentTarget as HTMLDetailsElement).open) setClaimReport(null);
               }}
             >
-              <summary>Where this comes from in your material</summary>
+              <summary>
+                {course.publicCourseId
+                  ? 'Where this comes from in the work'
+                  : 'Where this comes from in your material'}
+              </summary>
               <LessonSources
                 claims={lesson.claims}
                 renderContext={renderContext}
@@ -1273,6 +1299,7 @@ export function Course({
                   claimReport === claim.claimId ? (
                     <ReportForm
                       kind="claim"
+                      copy={Boolean(course.publicCourseId)}
                       working={working}
                       sending={inFlight === `claim:${claim.claimId}`}
                       error={fixError}
@@ -1362,6 +1389,7 @@ export function Course({
               {fix === 'report' && (
                 <ReportForm
                   kind="lesson"
+                  copy={Boolean(course.publicCourseId)}
                   working={working}
                   sending={inFlight === 'report'}
                   error={fixError}
@@ -1520,14 +1548,38 @@ export function Course({
   const readCount = lessons.filter((l) => l.state === 'read').length;
   // A course nobody has opened yet: nothing shown, read or skipped.
   const untouched = lessons.length > 0 && lessons.every((l) => l.state === 'not_seen');
+  const words = copyWords(course);
 
   return (
     <section className="stack measure course">
       <div className="course__bar">{back}</div>
-      <p className="meta">Your private course</p>
+      <p className="meta">
+        {course.publicCourseId ? 'Your copy of a public course' : 'Your private course'}
+      </p>
       <h1 id="course-title" className="display" tabIndex={-1}>
         {title}
       </h1>
+      {course.publicCourseId && (
+        <p className="meta">
+          A course on{' '}
+          {course.publicCourseWorkId ? (
+            <a
+              href={`/source/${encodeURIComponent(course.publicCourseWorkId)}`}
+              onClick={routerClick(
+                onNavigate,
+                `/source/${encodeURIComponent(course.publicCourseWorkId)}`,
+              )}
+            >
+              {course.publicCourseWorkTitle ?? 'its work'}
+            </a>
+          ) : (
+            // A work without a page to open is named, not linked.
+            (course.publicCourseWorkTitle ?? 'a work no longer listed')
+          )}
+          {course.publicCourseLabel ? ` · ${course.publicCourseLabel}` : ''}
+        </p>
+      )}
+      {words.offerNote && <p className="meta">{words.offerNote}</p>}
       {course.title && course.goal && <p className="meta">Goal: {course.goal}</p>}
       {noticeLine}
 
@@ -1606,7 +1658,10 @@ export function Course({
             course.heldBack ? (
               <p>
                 Every lesson in this course was held back by its checks, so there is nothing to
-                read. Correct your sources in Studio and prepare it again.
+                read.
+                {course.publicCourseId
+                  ? ''
+                  : ' Correct your sources in Studio and prepare it again.'}
               </p>
             ) : (
               <p>
@@ -1686,7 +1741,8 @@ export function Course({
       <hr className="rule" />
       {(course.updateAvailable || status === 'failed' || status === 'empty') &&
         !course.preparing &&
-        !course.awaitingValidation && (
+        !course.awaitingValidation &&
+        !course.publicCourseId && (
           <div className="stack">
             <h2 className="course__subheading">Prepare this course again</h2>
             <p>
@@ -1723,8 +1779,8 @@ export function Course({
       {armed ? (
         <div className="stack" role="group" aria-labelledby="course-delete-warning">
           <p id="course-delete-warning" tabIndex={-1}>
-            Deleting this course removes its lessons, its questions and your place in it. Its
-            sources stay in Studio, and you can make a new course from them.
+            Deleting this course removes its lessons, its questions and your place in it.{' '}
+            {words.deleteWarning}
           </p>
           <div className="course__actions">
             <button
@@ -1760,9 +1816,7 @@ export function Course({
           </button>
         </p>
       )}
-      <p className="meta">
-        This course is private to you. It was made from your own material and is never published.
-      </p>
+      <p className="meta">{words.footer}</p>
     </section>
   );
 }

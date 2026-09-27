@@ -52,6 +52,16 @@ describe('shaping questions', () => {
     expect(shapeQuestion('junk')).toBeNull();
   });
 
+  it('keeps who wrote a question: the project’s correction is not the reader’s own', () => {
+    expect(shapeQuestion({ ...row, authored_by: 'reader' })?.authoredBy).toBe('reader');
+    expect(shapeQuestion({ ...row, authored_by: 'project' })?.authoredBy).toBe('project');
+    expect(shapeQuestion({ ...row, authored_by: 'someone' })?.authoredBy).toBe('model');
+    expect(
+      shapeQuestionEntries([{ item_id: 'q1', kind: 'cloze', authored_by: 'project' }])[0]
+        ?.authoredBy,
+    ).toBe('project');
+  });
+
   it('reads the question list, dropping what it cannot ask', () => {
     const entries = shapeQuestionEntries([
       { item_id: 'q1', lesson_id: null, purpose: 'review', kind: 'cloze', state: 'answered' },

@@ -1,12 +1,16 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { isOfflineFailure } from '../lib/offline.js';
 import {
   courseProgressLabel,
   courseStatus,
   courseTitle,
+  coursesReadFailure,
+  enrolledCopies,
+  publicCopyLabel,
   type CourseSummary,
 } from '../lib/study-course.js';
 import { COURSE_LIST_LIMIT, fetchCourses } from '../lib/study-course-api.js';
+import { PublicCourseList } from '../components/PublicCourseList.js';
 
 function statusLine(course: CourseSummary): string {
   switch (courseStatus(course)) {
@@ -21,7 +25,10 @@ function statusLine(course: CourseSummary): string {
   }
 }
 
-/** The reader's private courses: each one's name, where it stands, and a way in. */
+/**
+ * The reader's private courses -- their own, and their copies of public courses -- each one's
+ * name, where it stands and a way in; then the public courses they may add.
+ */
 export function Courses({
   userId,
   onNavigate,
@@ -35,9 +42,15 @@ export function Courses({
   const [error, setError] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  // A public course was added below: read the list again without taking the page down, so the
+  // card that was pressed keeps its place and focus.
+  const [refresh, setRefresh] = useState(0);
+  const quiet = useRef(false);
 
   useEffect(() => {
     const controller = new AbortController();
+    const quietly = quiet.current;
+    quiet.current = false;
     fetchCourses(controller.signal)
       .then((list) => {
         if (controller.signal.aborted) return;
@@ -49,12 +62,14 @@ export function Courses({
       .catch((e: unknown) => {
         if (controller.signal.aborted) return;
         console.error('Courses request failed', e);
+        const failure = coursesReadFailure(quietly, e);
+        if (failure === null) return;
         setOffline(isOfflineFailure(e));
-        setError(e instanceof Error ? e.message : String(e));
+        setError(failure);
         setSettled(true);
       });
     return () => controller.abort();
-  }, [userId, attempt]);
+  }, [userId, attempt, refresh]);
 
   if (!settled) {
     return (
@@ -119,6 +134,7 @@ export function Courses({
                   {courseTitle(c)}
                 </button>
                 <span className="courses__status">{statusLine(c)}</span>
+                {c.publicCourseId && <p className="meta">{publicCopyLabel(c)}</p>}
                 {c.title && <p className="meta">Goal: {c.goal}</p>}
               </li>
             ))}
@@ -131,11 +147,20 @@ export function Courses({
           )}
           {!more && (
             <p className="meta">
-              That is every course. They are private to you, and new ones are made in Studio.
+              That is every course. They are private to you: your own are made in Studio, and a
+              public course you add is your copy of it.
             </p>
           )}
         </>
       )}
+      <PublicCourseList
+        enrolled={enrolledCopies(courses)}
+        onEnrolled={() => {
+          quiet.current = true;
+          setRefresh((n) => n + 1);
+        }}
+        onNavigate={onNavigate}
+      />
     </section>
   );
 }

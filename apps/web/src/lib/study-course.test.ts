@@ -41,6 +41,23 @@ import {
   lessonDraft,
   allLessons,
   GOAL_SUGGESTIONS,
+  contextWindow,
+  coursesReadFailure,
+  enrolledCopies,
+  enrolRefusal,
+  excerptWindow,
+  lessonCountLabel,
+  publicCopyLabel,
+  copyWords,
+  reportReasons,
+  REPORT_REASONS,
+  shapeEnrolment,
+  shapeSourceText,
+  publicCourseRightsLabel,
+  publicCourseSource,
+  publishedLabel,
+  shapePublicCourses,
+  shapePublicOutline,
 } from './study-course.js';
 
 const overviewRow = {
@@ -136,6 +153,322 @@ describe('shapeCourseSummary', () => {
     expect(c?.objectives).toEqual([]);
     expect(c?.generationId).toBeNull();
     expect(shapeCourseSummaries([{ goal: 'no id' }, overviewRow, 'junk'])).toHaveLength(1);
+  });
+
+  it('reads where a copy of a public course came from, and nothing for a course of one’s own', () => {
+    expect(course()).toMatchObject({
+      publicCourseId: null,
+      publicCourseLabel: null,
+      publicCourseWorkId: null,
+      publicCourseWorkTitle: null,
+      publicCourseOnOffer: false,
+    });
+    expect(
+      shapeCourseSummary({
+        ...overviewRow,
+        public_course_id: 'p1',
+        public_course_label: 'public domain',
+        public_course_work_id: 'w1',
+        public_course_work_title: 'Test-enhanced learning',
+        public_course_on_offer: true,
+      }),
+    ).toMatchObject({
+      publicCourseId: 'p1',
+      publicCourseLabel: 'public domain',
+      publicCourseWorkId: 'w1',
+      publicCourseWorkTitle: 'Test-enhanced learning',
+      publicCourseOnOffer: true,
+    });
+    // Withdrawn, or its rights in question: no longer on offer, and anything but true is not.
+    for (const offered of [false, null, undefined, 'true']) {
+      expect(
+        shapeCourseSummary({
+          ...overviewRow,
+          public_course_id: 'p1',
+          public_course_on_offer: offered,
+        })?.publicCourseOnOffer,
+      ).toBe(false);
+    }
+    // Rights in question: the work is still named, its rights no longer are.
+    expect(
+      shapeCourseSummary({ ...overviewRow, public_course_id: 'p1', public_course_label: null })
+        ?.publicCourseLabel,
+    ).toBeNull();
+  });
+});
+
+describe('public courses', () => {
+  const row = {
+    id: 'p1',
+    slug: 'immediate-versus-delayed',
+    title: 'Immediate versus delayed',
+    goal: 'Explain the argument',
+    overview: 'What the paper says about timing.',
+    objectives: ['Explain the contrast.'],
+    lesson_count: 2,
+    question_count: 1,
+    work_id: 'w1',
+    work_title: 'Test-enhanced learning',
+    rights_status: 'public_domain',
+    published_at: '2026-09-26T04:41:00Z',
+  };
+
+  it('shapes the catalogue, dropping a row with no id or rights it may not offer', () => {
+    const list = shapePublicCourses([
+      row,
+      { ...row, id: 'p2', rights_status: 'licensed' },
+      { ...row, id: 'p3', rights_status: 'user_owned' },
+      { ...row, id: 'p4', rights_status: 'review_required' },
+      { ...row, id: undefined },
+      'junk',
+    ]);
+    expect(list.map((c) => [c.id, c.rightsStatus])).toEqual([
+      ['p1', 'public_domain'],
+      ['p2', 'licensed'],
+    ]);
+    expect(list[0]).toMatchObject({
+      slug: 'immediate-versus-delayed',
+      goal: 'Explain the argument',
+      objectives: ['Explain the contrast.'],
+      lessonCount: 2,
+      publishedAt: '2026-09-26T04:41:00Z',
+    });
+  });
+
+  it('says where a course comes from, its rights and its size in words', () => {
+    expect(publicCourseSource({ workTitle: 'Meditations', rightsStatus: 'public_domain' })).toBe(
+      'A course on Meditations · public domain',
+    );
+    expect(publicCourseSource({ workTitle: 'A paper', rightsStatus: 'licensed' })).toBe(
+      'A course on A paper · licensed',
+    );
+    expect(publicCourseRightsLabel('licensed')).toBe('licensed');
+    expect(lessonCountLabel(1)).toBe('1 lesson');
+    expect(lessonCountLabel(2)).toBe('2 lessons');
+    expect(publishedLabel('2026-09-26T04:41:00Z')).toMatch(/^Published .*26.*2026$/);
+    expect(publishedLabel('')).toBeNull();
+    expect(publishedLabel('not a date')).toBeNull();
+  });
+
+  it('groups the outline into its units, in order', () => {
+    const units = shapePublicOutline([
+      {
+        outline: [
+          { unitNo: 1, unitTitle: 'Timing', title: 'Lesson one', minutes: 3 },
+          { unitNo: 1, unitTitle: 'Timing', title: 'Lesson two', minutes: 4 },
+          { unitNo: 2, unitTitle: 'Spacing', title: 'Lesson three', minutes: 2 },
+          { unitNo: 2, unitTitle: 'Spacing', title: '' },
+        ],
+      },
+    ]);
+    expect(units?.map((u) => [u.unitTitle, u.lessons.map((l) => l.title)])).toEqual([
+      ['Timing', ['Lesson one', 'Lesson two']],
+      ['Spacing', ['Lesson three']],
+    ]);
+    // A course with nothing in its outline has no lessons to show; no course at all is one no
+    // longer offered, which is not the same thing to say.
+    expect(shapePublicOutline([{ outline: [] }])).toEqual([]);
+    expect(shapePublicOutline([])).toBeNull();
+    expect(shapePublicOutline(null)).toBeNull();
+  });
+
+  it('names a copy in the reader’s list by its work, or as no longer offered', () => {
+    expect(
+      publicCopyLabel({ publicCourseOnOffer: true, publicCourseWorkTitle: 'Meditations' }),
+    ).toBe('Public course · a course on Meditations');
+    expect(publicCopyLabel({ publicCourseOnOffer: true, publicCourseWorkTitle: null })).toBe(
+      'Public course',
+    );
+    expect(
+      publicCopyLabel({ publicCourseOnOffer: false, publicCourseWorkTitle: 'Meditations' }),
+    ).toBe('Public course · no longer offered');
+  });
+
+  it('says what a course is and what deleting it leaves: the reader’s own, a copy on offer, and one not', () => {
+    const own = copyWords({ publicCourseId: null, publicCourseOnOffer: false });
+    expect(own).toEqual({
+      offerNote: null,
+      deleteWarning: 'Its sources stay in Studio, and you can make a new course from them.',
+      deleted: 'Its sources stay in Studio, and you can make a new course from them.',
+      footer:
+        'This course is private to you. It was made from your own material and is never published.',
+    });
+    // Deleted, the course may be gone from the page's state: it is said as the reader's own.
+    expect(copyWords(null)).toEqual(own);
+    expect(copyWords({ publicCourseId: 'p1', publicCourseOnOffer: true })).toEqual({
+      offerNote: null,
+      deleteWarning: 'You can add it again from Courses; it starts over.',
+      deleted: 'You can add it again from Courses; it starts over.',
+      footer:
+        'Your copy is private to you: what you read and answer is yours alone. The course itself is published by What a Pull.',
+    });
+    // No longer offered: what is true while the page is shown, and no promise the copy is kept
+    // -- the copies of a course withdrawn over its rights are removed.
+    const gone = copyWords({ publicCourseId: 'p1', publicCourseOnOffer: false });
+    expect(gone).toEqual({
+      offerNote: 'No longer offered. You can go on studying your copy.',
+      deleteWarning:
+        'It is no longer offered, so it cannot be added again: deleting it is for good.',
+      deleted: 'It was no longer offered, so it cannot be added again.',
+      footer:
+        'Your copy is private to you: what you read and answer is yours alone. The course itself was published by What a Pull.',
+    });
+    expect(Object.values(gone).join(' ')).not.toMatch(/stays|keep|always|forever/i);
+  });
+
+  it('reads the answer to adding one, and an answer that names no copy as none', () => {
+    expect(shapeEnrolment({ courseId: 'c1', replayed: false })).toEqual({
+      courseId: 'c1',
+      replayed: false,
+    });
+    expect(shapeEnrolment({ courseId: 'c1', replayed: true, generationId: 'g1' })).toEqual({
+      courseId: 'c1',
+      replayed: true,
+    });
+    // A first enrolment's answer says `replayed: false`; anything but true is not a replay.
+    expect(shapeEnrolment({ courseId: 'c1' })?.replayed).toBe(false);
+    expect(shapeEnrolment({ courseId: 'c1', replayed: 'true' })?.replayed).toBe(false);
+    for (const unreadable of [null, 'c1', [], {}, { courseId: 7 }, { courseId: '' }]) {
+      expect(shapeEnrolment(unreadable)).toBeNull();
+    }
+  });
+
+  it('keeps the list as it was when a quiet read of it after adding one fails', () => {
+    expect(coursesReadFailure(true, new Error('Failed to fetch'))).toBeNull();
+    expect(coursesReadFailure(false, new Error('Failed to fetch'))).toBe('Failed to fetch');
+    expect(coursesReadFailure(false, 'down')).toBe('down');
+  });
+
+  it('finds the reader’s copy of each public course they added', () => {
+    const copies = enrolledCopies([
+      { courseId: 'c1', publicCourseId: null },
+      { courseId: 'c2', publicCourseId: 'p1' },
+      { courseId: 'c3', publicCourseId: 'p2' },
+    ]);
+    expect([...copies]).toEqual([
+      ['p1', 'c2'],
+      ['p2', 'c3'],
+    ]);
+    expect(enrolledCopies([]).size).toBe(0);
+  });
+
+  it('says each refusal to add one in words, and leaves the rest to the server', () => {
+    expect(enrolRefusal('P0002')).toMatch(/no longer offered/);
+    expect(enrolRefusal('54000')).toMatch(/00:00 UTC/);
+    expect(enrolRefusal('28000')).toMatch(/account/);
+    expect(enrolRefusal('42501')).toBe('Your session has ended. Sign in again, then add it.');
+    expect(enrolRefusal('XX000')).toBeNull();
+    expect(enrolRefusal(undefined)).toBeNull();
+  });
+
+  it('shows a span within its own quotation, never running into the next', () => {
+    const text = 'the group that restudied remembered more\n\nthe recall test group did better';
+    const quotations = [
+      [0, 40],
+      [42, 74],
+    ] as const;
+    const start = text.indexOf('recall test');
+    const w = excerptWindow(text, quotations, {
+      start,
+      end: start + 'recall test'.length,
+      spanText: 'recall test',
+    });
+    expect(w).toMatchObject({
+      before: 'the ',
+      span: 'recall test',
+      after: ' group did better',
+      clippedStart: true,
+      clippedEnd: true,
+    });
+    const first = excerptWindow(text, quotations, { start: 4, end: 9, spanText: 'group' });
+    expect(first?.after).toBe(' that restudied remembered more');
+    expect(excerptWindow(text, quotations, { start: 4, end: 9, spanText: 'other' })).toBeNull();
+    // Offsets are code points: a quotation before this one with an astral character in it.
+    const astral = '𝒳 marks it\n\nthe span here';
+    const at = Array.from(astral).indexOf('s', 14);
+    expect(
+      excerptWindow(
+        astral,
+        [
+          [0, 10],
+          [12, 25],
+        ],
+        { start: at, end: at + 4, spanText: 'span' },
+      ),
+    ).toMatchObject({ before: 'the ', span: 'span', after: ' here' });
+  });
+
+  it('cuts a quotation where the copy says it ends, blank lines and all', () => {
+    // One quotation of two paragraphs, a blank line inside it, then the next quotation. Cut at
+    // the blank lines, the first would lose its first paragraph, or its second.
+    const first = 'First paragraph.\n\nSecond one, with the span.\nA line.';
+    const text = `${first}\n\nNext quotation.`;
+    const quotations = [
+      [0, first.length],
+      [first.length + 2, text.length],
+    ] as const;
+    const start = text.indexOf('the span');
+    const w = excerptWindow(text, quotations, { start, end: start + 8, spanText: 'the span' });
+    expect(w?.before).toBe('First paragraph.\n\nSecond one, with ');
+    expect(w?.after).toBe('.\nA line.');
+    // A span across two quotations is in neither, and a range past the text is no quotation.
+    const across = text.indexOf('line.');
+    expect(
+      excerptWindow(text, quotations, {
+        start: across,
+        end: across + 12,
+        spanText: text.slice(across, across + 12),
+      }),
+    ).toBeNull();
+    expect(
+      excerptWindow(text, [[0, 999]], { start, end: start + 8, spanText: 'the span' }),
+    ).toBeNull();
+    // Without the copy's ranges there is no quotation to show.
+    expect(excerptWindow(text, [], { start, end: start + 8, spanText: 'the span' })).toBeNull();
+  });
+
+  it('shows a copy’s passage in its quotation, and a reader’s own in its surrounding text', () => {
+    const text = `${'Before. '.repeat(60)}the span${' After.'.repeat(60)}`;
+    const start = text.indexOf('the span');
+    const evidence = { start, end: start + 8, spanText: 'the span' };
+    const source = { text, quotations: [[start - 8, start + 15]] as const };
+    expect(contextWindow(true, source, evidence)).toMatchObject({
+      before: 'Before. ',
+      after: ' After.',
+    });
+    const own = contextWindow(false, source, evidence);
+    expect(own?.before.length).toBeGreaterThan(200);
+    expect(own).toEqual(passageWindow(text, evidence));
+  });
+
+  it('reads a version’s text, and its quotation ranges where it has them', () => {
+    expect(
+      shapeSourceText({
+        extracted_text: 'Quoted.\n\nQuoted again.',
+        quotations: [
+          [0, 7],
+          [9, 22],
+        ],
+      }),
+    ).toEqual({
+      text: 'Quoted.\n\nQuoted again.',
+      quotations: [
+        [0, 7],
+        [9, 22],
+      ],
+    });
+    expect(shapeSourceText({ extracted_text: 'Mine.', quotations: null })).toEqual({
+      text: 'Mine.',
+      quotations: [],
+    });
+    // A range that is not two whole numbers, in order, is no range.
+    expect(
+      shapeSourceText({
+        extracted_text: 'x',
+        quotations: [[3, 1], [0.5, 2], [0, 2.5], ['0', 2], [0], [-1, 2], [0, 1]],
+      }).quotations,
+    ).toEqual([[0, 1]]);
+    expect(shapeSourceText(undefined)).toEqual({ text: '', quotations: [] });
   });
 });
 
@@ -246,6 +579,11 @@ describe('preparationRefusal', () => {
   it('reads the DETAIL a code shares between refusals', () => {
     expect(preparationRefusal('55000', 'preparing')).toMatch(/already being prepared/);
     expect(preparationRefusal('55000', 'unchanged')).toMatch(/has changed since/);
+    // A copy prepared again, and a course prepared from a copy's excerpts, are two refusals.
+    expect(preparationRefusal('55000', 'public', true)).toBe(
+      'This is a public course, copied into your courses: it is not prepared again.',
+    );
+    expect(preparationRefusal('55000', 'public')).toMatch(/excerpts are the course’s own/);
     expect(preparationRefusal('42501', 'beta')).toMatch(/limited beta/);
     expect(preparationRefusal('42501', 'unavailable')).toMatch(/no longer in your account/);
     expect(preparationRefusal('22023', 'too_large')).toMatch(/200,000-character limit/);
@@ -617,6 +955,37 @@ describe('correcting a lesson', () => {
     expect(correctionRefusal('55P03', undefined)).toMatch(/Try again in a moment/);
     expect(correctionRefusal('54000', undefined)).toMatch(/00:00 UTC/);
     expect(correctionRefusal('XX000', undefined)).toBeNull();
+  });
+
+  it('says a failed check in a copy of a public course as the work’s, not the reader’s sources', () => {
+    expect(
+      correctionRefusal('22023', 'unsourced_link,no_known_claims,instruction_like', true),
+    ).toBe(
+      'It links to a page the work does not mention. It no longer rests on a claim from the work. ' +
+        'Part of it reads like an instruction to a model rather than teaching.',
+    );
+    expect(correctionRefusal('22023', 'no_known_claims')).toBe(
+      'It no longer rests on a claim from your sources.',
+    );
+  });
+
+  it('offers a copy’s reasons as the work’s, the same reasons in the same order', () => {
+    for (const kind of ['lesson', 'claim', 'item'] as const) {
+      const own = reportReasons(kind);
+      const copy = reportReasons(kind, true);
+      expect(own).toEqual(REPORT_REASONS[kind]);
+      expect(copy.map((r) => r.reason)).toEqual(own.map((r) => r.reason));
+      expect(copy.some((r) => /\b(my|your) sources?\b/i.test(r.label))).toBe(false);
+    }
+    expect(reportReasons('item', true).map((r) => r.label)).toEqual([
+      'Its answer is wrong',
+      'The work does not say this',
+      'More than one answer could be right',
+      'It cannot be answered from the work',
+      'Something else',
+    ]);
+    expect(reportReasons('claim', true)[0]?.label).toBe('This is not what the work says');
+    expect(reportReasons('lesson', true)[1]?.label).toBe('The work does not say this');
   });
 
   it('says why a report was refused', () => {
