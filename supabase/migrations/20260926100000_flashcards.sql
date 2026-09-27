@@ -32,17 +32,29 @@
 
 -- ------------------------------------------------------------------ blank
 
-/* A text without the whitespace at either end, as `.trim()` leaves it. */
+/*
+ * A text without the whitespace at either end, as `.trim()` leaves it.
+ *
+ * A standard body (`return`), which Postgres parses when the function is made and so records
+ * as calling `study_space_class()`. The tables' checks below call this function, and a quoted
+ * body left that second link unrecorded: `drop function public.study_space_class()` went
+ * through, and every save would have failed from then on. Now the drop is refused. What no
+ * record refuses is a `create or replace` of that function, which would change what the checks
+ * accept without checking the rows already stored -- so its comment, below, says so.
+ */
 create function public.flashcard_trim(p_text text)
 returns text
 language sql
 immutable
 parallel safe
 set search_path = ''
-as $fn$
-  select regexp_replace(
-    p_text, '^' || public.study_space_class() || '+|' || public.study_space_class() || '+$', '', 'g')
-$fn$;
+return regexp_replace(
+  p_text, '^' || public.study_space_class() || '+|' || public.study_space_class() || '+$', '', 'g');
+
+comment on function public.study_space_class() is
+  'JavaScript''s \s, as .trim() and /\s+/ read it. Table checks depend on it through '
+  'public.flashcard_trim (20260926100000): redefining it changes what they accept, and the '
+  'rows already stored are not checked again.';
 
 revoke all on function public.flashcard_trim(text) from public, anon, authenticated, service_role;
 
@@ -229,7 +241,11 @@ begin
   -- Read from `auth.users` rather than from the claim, as the other definer doors do
   -- (20260901190000): the table is the fact, and the claim a copy of it. Once, and a token
   -- that outlived its account is no reader -- not a foreign key failing on the insert below.
-  select u.is_anonymous into v_guest from auth.users u where u.id = uid;
+  -- Key-share locked, as the study doors read it (20260925230000): an account being deleted
+  -- waits for this save to finish, and a save that arrives while it is deleted waits for the
+  -- deletion and is no reader. Unlocked, it read the row a deletion had not yet committed,
+  -- went on, and failed on its own foreign key -- or deadlocked the deletion.
+  select u.is_anonymous into v_guest from auth.users u where u.id = uid for key share;
   if not found then
     raise exception 'saving a flashcard set requires a signed-in reader' using errcode = '28000';
   end if;

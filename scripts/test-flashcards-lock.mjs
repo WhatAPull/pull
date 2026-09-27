@@ -13,9 +13,16 @@
  * waiting on the reader's lock, and when the first commits must be refused at the total
  * (`54000 total`) -- counted after the first's cards, not beside them.
  *
- * Writes as the owner to make that reader, and as the reader through the function. The reader
- * is deleted at the end, pass or fail, and their sets and cards with them. Runs as part of
- * `pnpm db:test`.
+ * And an account deleted while a save arrives. The save reads its reader from `auth.users`
+ * with a key-share lock: without it, a save beside `delete_my_account`'s last statement read
+ * the row the deletion had not yet committed, went on, and failed on its own foreign key as a
+ * raw 23503 -- or deadlocked the deletion. So a third session deletes a second reader and holds
+ * its transaction open, a fourth saves as that reader, must be seen waiting, and when the
+ * deletion commits must be refused as no reader (`28000`).
+ *
+ * Writes as the owner to make those readers, and as each reader through the function. The
+ * readers are deleted at the end, pass or fail, and their sets and cards with them. Runs as
+ * part of `pnpm db:test`.
  */
 import { execFileSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -93,10 +100,24 @@ const lockIs = (granted) => `
     select 1 from pg_locks l
     where l.locktype = 'advisory' and l.objsubid = 1 and l.granted = ${granted}
       and ((l.classid::bigint << 32) | l.objid::bigint) = ${lockKey})`;
-const asReader = `
+const as = (who) => `
   select set_config('role', 'authenticated', true) is not null,
          set_config('request.jwt.claims',
-                    '{"sub":"${reader}","role":"authenticated"}', true) is not null;`;
+                    '{"sub":"${who}","role":"authenticated"}', true) is not null;`;
+const asReader = as(reader);
+const makeReader = (who) => `
+  insert into auth.users (id, instance_id, aud, role, email, encrypted_password,
+                          created_at, updated_at, is_anonymous,
+                          raw_app_meta_data, raw_user_meta_data)
+  values ('${who}', '00000000-0000-0000-0000-000000000000', 'authenticated',
+          'authenticated', 'flashcards-lock-${who.slice(0, 8)}@example.test', '',
+          now(), now(), false, '{"provider":"email","providers":["email"]}', '{}');`;
+/** Whether another session is running a statement that carries `marker`, and how. */
+const seen = (marker, how) => `
+  select exists (
+    select 1 from pg_stat_activity
+    where pid <> pg_backend_pid() and query like '%${marker}%' and ${how})`;
+const leaving = randomUUID();
 const cards = `(select jsonb_agg(jsonb_build_object('term', 't' || i, 'definition', 'd'))
                 from generate_series(1, 1500) i)`;
 
@@ -105,12 +126,7 @@ try {
   // A reader with 18,000 cards across nine sets: room for 2,000 more, so one save of 1,500
   // fits and a second does not -- but only when it is counted after the first.
   psql(`
-    insert into auth.users (id, instance_id, aud, role, email, encrypted_password,
-                            created_at, updated_at, is_anonymous,
-                            raw_app_meta_data, raw_user_meta_data)
-    values ('${reader}', '00000000-0000-0000-0000-000000000000', 'authenticated',
-            'authenticated', 'flashcards-lock-${reader.slice(0, 8)}@example.test', '',
-            now(), now(), false, '{"provider":"email","providers":["email"]}', '{}');
+    ${makeReader(reader)}
     insert into public.flashcard_sets (id, owner_id, title)
     select extensions.gen_random_uuid(), '${reader}', 'Filler ' || k from generate_series(1, 9) k;
     insert into public.flashcards (set_id, owner_id, position, term, definition)
@@ -158,8 +174,44 @@ try {
   }
   const held = Number(psql(`select count(*) from public.flashcards where owner_id = '${reader}'`));
   if (held !== 19500) failures.push(`the reader holds ${held} cards, not 19,500`);
+
+  // The account deleted, and not yet committed, as a save arrives.
+  psql(makeReader(leaving));
+  const tag = leaving.slice(0, 8);
+  const deletion = session(`
+    begin;
+    delete from auth.users where id = '${leaving}';
+    select pg_sleep(4) /* deleting-${tag} */;
+    commit;`);
+  await until(seen(`deleting-${tag}`, `state = 'active'`), 'the deletion to hold its row');
+  const late = session(`
+    begin;
+    ${as(leaving)}
+    do $late$
+    declare
+      v_state  text;
+      v_detail text;
+    begin
+      -- saving-${tag}
+      perform public.save_flashcard_set(jsonb_build_object(
+        'title', 'Late', 'cards', jsonb_build_array(jsonb_build_object('term', 't', 'definition', 'd'))));
+      raise notice 'late:ok';
+    exception when others then
+      get stacked diagnostics v_state = returned_sqlstate, v_detail = pg_exception_detail;
+      raise notice 'late:%/%', v_state, v_detail;
+    end $late$;
+    commit;`);
+  await until(seen(`saving-${tag}`, `wait_event_type = 'Lock'`), 'the save to wait on the account');
+  const [d, l] = await Promise.all([deletion, late]);
+  if (d.code !== 0) failures.push(`the account deletion failed:\n${d.out}`);
+  const answered = /late:(\S+)/.exec(l.out)?.[1];
+  if (l.code !== 0 || answered !== '28000/') {
+    failures.push(
+      `a save that waited on its account's deletion was not refused as no reader: ${answered ?? l.out}`,
+    );
+  }
 } finally {
-  psql(`delete from auth.users where id = '${reader}'`);
+  psql(`delete from auth.users where id in ('${reader}', '${leaving}')`);
 }
 
 if (failures.length > 0) {
@@ -167,4 +219,6 @@ if (failures.length > 0) {
   for (const f of failures) console.error(`  ${f}`);
   process.exit(1);
 }
-console.log('flashcards lock: ok (the second save waited, and was counted after the first)');
+console.log(
+  'flashcards lock: ok (the second save waited, and was counted after the first; a save beside its account’s deletion waited, and was no reader)',
+);

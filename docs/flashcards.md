@@ -35,7 +35,9 @@ flashcard_sets ─── flashcards     a set, and its cards in order
   takes off — the Unicode spaces, the line breaks, tab, and U+FEFF, as
   `study_space_class()` spells them — by `flashcard_trim`, and the tables' checks use the
   same function. A title of one no-break space is blank to the editor and to the database
-  alike. Lengths are characters (code points) on both sides: the editor counts them, not
+  alike. `flashcard_trim` has a standard body, so Postgres records that it calls
+  `study_space_class()` and refuses to drop that function from under the checks; redefining
+  it would change what they accept, which its comment says. Lengths are characters (code points) on both sides: the editor counts them, not
   JavaScript's UTF-16 units, and a box stops typing only at twice its limit, so it never
   cuts a text the database would take.
 - **Private, and nothing else.** One policy each, `for select to authenticated using
@@ -90,11 +92,15 @@ flashcard_sets ─── flashcards     a set, and its cards in order
   `baseUpdatedAt`, which is the reader's word, and for a deleted set puts it back with what
   they saved (**Put it back, as it is here**) or leaves it deleted.
 - One save at a time per reader (`pg_advisory_xact_lock` on `flashcards:<uid>`), taken before
-  anything is counted, so two tabs cannot race any limit. The lock is the only one taken: the
-  set's row is not locked first, since that would lock another reader's row before its owner
-  is known. A file of SQL is one session and cannot race itself, so
-  `scripts/test-flashcards-lock.mjs`, in `pnpm db:test`, runs two: the second save is seen
-  waiting on the first, and is refused at the total once the first commits.
+  anything is counted, so two tabs cannot race any limit. The set's row is not locked first,
+  since that would lock another reader's row before its owner is known. The reader's own
+  `auth.users` row is read key-share locked, as the study doors read it: an account being
+  deleted waits for a save to finish, and a save that arrives during the deletion waits for it
+  and is refused `28000` -- unlocked, it failed on its own foreign key, or deadlocked the
+  deletion. A file of SQL is one session and cannot race itself, so
+  `scripts/test-flashcards-lock.mjs`, in `pnpm db:test`, runs sessions side by side: the
+  second of two saves is seen waiting on the first, and is refused at the total once the first
+  commits; and a save beside its account's deletion is seen waiting, and is no reader.
 
 `delete_flashcard_set(p_id uuid)` deletes the reader's set and its cards, under the same
 lock, and answers true. A set that does not exist, was already deleted, or is somebody
@@ -108,7 +114,7 @@ Neither function is executable by anyone but `authenticated`: not `anon`, and no
 
 | SQLSTATE | DETAIL    | Why                                                                                                                                                                                                                            |
 | -------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `28000`  |           | No reader in the request, or a token whose account no longer exists                                                                                                                                                            |
+| `28000`  |           | No reader in the request, or a token whose account no longer exists -- or was deleted while the save waited for it                                                                                                             |
 | `42501`  | `guest`   | A guest session, read from `auth.users.is_anonymous` rather than the token's claim. A guest's rows are swept a day after last use                                                                                              |
 | `22023`  |           | Malformed: not an object; an id that is not a uuid; a base that is not a time; a title, description, language, term or definition out of range; cards not an array or empty; a card id given twice; a card id from another set |
 | `40001`  | `changed` | `baseUpdatedAt` is not the set's `updated_at` — it changed since the editor opened it — and this save would change it: a field, or a card's id, words or place                                                                 |
@@ -136,12 +142,14 @@ set of 150 cards embedded as `flashcards(*)` came back with 100. So:
   the composite foreign key — read 100 at a time **by id**, each page after the last id
   read, and sorted by `updated_at` in the browser. It was paged by `updated_at`, which a
   save moves: a set saved while the later pages were on their way jumped to the first page,
-  already read, and was left out. The first page's exact count says whether the list is
-  complete — no set made or deleted while it was read — which only a complete list may be
-  trusted to say when it comes to pruning this device's copies (below). It cannot tell one
-  set made behind the pages already read from one deleted in the same moment, since the count
-  still agrees; that window is the length of a read, and what it costs is this device's copy
-  of the new set, its round and its best time, not the set, which the next opening reads back.
+  already read, and was left out. The sets are counted before the first page and again after
+  the last, and the list is complete — no set made or deleted while it was read — only when
+  both counts are its length, which only a complete list may be trusted to say when it comes
+  to pruning this device's copies (below). One count, the first, missed a set made after the
+  first page with an id before the cursor: neither read nor counted. Two cannot tell a set
+  made behind the pages from another deleted in the same moment, since both counts still
+  agree; that window is the length of a read, and what it costs is this device's copy of the
+  new set, its round and its best time, not the set, which the next opening reads back.
 - **A set** is its row, then its cards by `position` in parallel pages of 100, then its
   `updated_at` again. A set that changed while being read — its time moved, or its card count
   disagrees — is read again from the start, up to three times.
@@ -175,6 +183,12 @@ set of 150 cards embedded as `flashcards(*)` came back with 100. So:
   Up and Down find the card where it is when the press lands, a press on a card already gone
   does nothing, and what is said ("Card 974 removed.") is the card's place as it was then —
   said again when the same words come twice.
+- **Held while it saves.** Every box and button of the editor is held (a disabled fieldset)
+  until the save answers, and focus in them moves to Save, which says "Saving…". What was
+  typed in between used to reach neither the set — the save carries the draft as it was when
+  Save was pressed — nor the kept draft, which the editor lets go once a save succeeds. A new
+  set's save opens the set only if the reader is still on the screen they saved from; one who
+  left for the list finds it read in there.
 - Saving needs a connection; offline, Save says why instead of failing.
 
 ## Importing

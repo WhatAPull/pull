@@ -101,6 +101,29 @@ grant execute on function pg_temp.refusal(text) to authenticated, anon;
 grant execute on function pg_temp.save_sql(jsonb) to authenticated, anon;
 grant execute on function pg_temp.holds_reader_lock(uuid) to authenticated, anon;
 
+/*
+ * The tables' checks call `flashcard_trim`, and it calls `study_space_class()`. Postgres
+ * records that second link -- the trim has a standard body -- so the space class cannot be
+ * dropped from under the checks. The schema, not a reader's view of it: asserted as the owner.
+ */
+do $dep$
+begin
+  if not exists (
+    select 1 from pg_depend d
+    where d.classid = 'pg_proc'::regclass
+      and d.objid = 'public.flashcard_trim(text)'::regprocedure
+      and d.refobjid = 'public.study_space_class()'::regprocedure
+  ) then
+    raise exception 'flashcard_trim does not record that it calls study_space_class()';
+  end if;
+  begin
+    drop function public.study_space_class();
+  exception when dependent_objects_still_exist then
+    return;
+  end;
+  raise exception 'study_space_class() could be dropped from under the flashcard checks';
+end $dep$;
+
 do $test$
 declare
   reader_a  uuid := extensions.gen_random_uuid();
