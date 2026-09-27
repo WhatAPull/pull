@@ -76,16 +76,25 @@ flashcard_sets ─── flashcards     a set, and its cards in order
   reader's list. A card's own `updated_at` moves when it does.
 - **Two screens do not save over each other unseen.** `baseUpdatedAt` is the `updatedAt`
   of the set the editor began from, exactly as the API gave it (to the microsecond; never
-  round-tripped through a `Date`). A set that has changed since — saved in another tab or
-  on another device — is refused as `40001 changed`, and a set deleted since as `P0002`.
-  Without it a tab left open on old cards saved them back, deleting every card another tab
-  had added, and a stale tab could put back a set deleted elsewhere. The editor then asks:
+  round-tripped through a `Date`). A save from a set that has changed since — saved in
+  another tab or on another device — is refused as `40001 changed` when it would change the
+  set again, and a save to a set deleted since as `P0002`. Without it a tab left open on old
+  cards saved them back, deleting every card another tab had added, and a stale tab could put
+  back a set deleted elsewhere. **A retry is not a conflict**: a save that landed and lost its
+  answer, sent again as it was, names a base its own first attempt made stale, and was refused
+  as changed — the editor then told the reader the set had been changed somewhere else, which
+  it had not. So a stale base is refused only when the save would change the set's fields or
+  its cards (their ids, words and order, as stored); one that would change nothing is made as
+  nothing, and answers with the time the set is at. On a refusal the editor asks:
   **Load the latest, and let mine go**, or **Save mine over it** — the same save sent without
   `baseUpdatedAt`, which is the reader's word, and for a deleted set puts it back with what
   they saved (**Put it back, as it is here**) or leaves it deleted.
-- One save at a time per reader (`pg_advisory_xact_lock` on `flashcards:<uid>`), so two
-  tabs cannot race any limit. The lock is the only one taken: the set's row is not locked
-  first, since that would lock another reader's row before its owner is known.
+- One save at a time per reader (`pg_advisory_xact_lock` on `flashcards:<uid>`), taken before
+  anything is counted, so two tabs cannot race any limit. The lock is the only one taken: the
+  set's row is not locked first, since that would lock another reader's row before its owner
+  is known. A file of SQL is one session and cannot race itself, so
+  `scripts/test-flashcards-lock.mjs`, in `pnpm db:test`, runs two: the second save is seen
+  waiting on the first, and is refused at the total once the first commits.
 
 `delete_flashcard_set(p_id uuid)` deletes the reader's set and its cards, under the same
 lock, and answers true. A set that does not exist, was already deleted, or is somebody
@@ -102,7 +111,7 @@ Neither function is executable by anyone but `authenticated`: not `anon`, and no
 | `28000`  |           | No reader in the request, or a token whose account no longer exists                                                                                                                                                            |
 | `42501`  | `guest`   | A guest session, read from `auth.users.is_anonymous` rather than the token's claim. A guest's rows are swept a day after last use                                                                                              |
 | `22023`  |           | Malformed: not an object; an id that is not a uuid; a base that is not a time; a title, description, language, term or definition out of range; cards not an array or empty; a card id given twice; a card id from another set |
-| `40001`  | `changed` | `baseUpdatedAt` is not the set's `updated_at`: it changed since the editor opened it                                                                                                                                           |
+| `40001`  | `changed` | `baseUpdatedAt` is not the set's `updated_at` — it changed since the editor opened it — and this save would change it: a field, or a card's id, words or place                                                                 |
 | `54000`  | `sets`    | The reader has 500 sets and this would be another                                                                                                                                                                              |
 | `54000`  | `cards`   | More than 2,000 cards                                                                                                                                                                                                          |
 | `54000`  | `size`    | More than 2 MB of text in the set, trimmed, in UTF-8 bytes                                                                                                                                                                     |
@@ -110,7 +119,8 @@ Neither function is executable by anyone but `authenticated`: not `anon`, and no
 | `P0002`  |           | The id is another reader's set, or — with `baseUpdatedAt` — no set at all. It says only that the id is taken or free — out of 2^122 — and nothing of that set is read                                                          |
 
 PostgREST answers `40001`, `54000` and `P0002` with HTTP 500 and the SQLSTATE and DETAIL in
-the body; the web reads the body, never the status.
+the body, as it answers every such refusal in this repository (`docs/study-courses.md` says
+the same of `P0002`); the web reads the body, never the status.
 
 The web says each in words (`saveRefusal` in `lib/flashcards.ts`), and checks the same
 rules in the editor first (`validateDraft`), so the database's refusals are its second line
@@ -128,7 +138,10 @@ set of 150 cards embedded as `flashcards(*)` came back with 100. So:
   save moves: a set saved while the later pages were on their way jumped to the first page,
   already read, and was left out. The first page's exact count says whether the list is
   complete — no set made or deleted while it was read — which only a complete list may be
-  trusted to say when it comes to pruning this device's copies (below).
+  trusted to say when it comes to pruning this device's copies (below). It cannot tell one
+  set made behind the pages already read from one deleted in the same moment, since the count
+  still agrees; that window is the length of a read, and what it costs is this device's copy
+  of the new set, its round and its best time, not the set, which the next opening reads back.
 - **A set** is its row, then its cards by `position` in parallel pages of 100, then its
   `updated_at` again. A set that changed while being read — its time moved, or its card count
   disagrees — is read again from the start, up to three times.
@@ -157,6 +170,11 @@ set of 150 cards embedded as `flashcards(*)` came back with 100. So:
   memoised with stable handlers, and the list is drawn from a deferred copy of the cards, so
   typing into a set of 1,200 cards costs a few milliseconds of React a key rather than
   drawing 2,400 boxes.
+- **A row's buttons name its card, not its place**, since the place a row is drawn with is a
+  draw behind: Remove card 970 and, within that draw, Remove card 975 took card 976. Remove,
+  Up and Down find the card where it is when the press lands, a press on a card already gone
+  does nothing, and what is said ("Card 974 removed.") is the card's place as it was then —
+  said again when the same words come twice.
 - Saving needs a connection; offline, Save says why instead of failing.
 
 ## Importing
@@ -170,7 +188,8 @@ set of 150 cards embedded as `flashcards(*)` came back with 100. So:
   is how people type a list by hand. The defaults are a tab and a new line, which is
   Quizlet's export: it pastes straight in.
 - Each card is split at its **first** separator, so a definition keeps any of its own
-  (`hacer, to do, to make` is `hacer` and `to do, to make`). Both sides are trimmed.
+  (`hacer, to do, to make` is `hacer` and `to do, to make`) — except a tab, which nobody types
+  into a definition: after a tab a third field is a column (below). Both sides are trimmed.
 - **A comma and new lines is CSV**, and read as CSV: a field in double quotes may hold
   commas, line breaks and `""`. A quote opens a quoted field only at the start of a field,
   as `parseCsvRecords` in `lib/ingestion.ts` reads it (a separate parser here, because this
@@ -179,9 +198,10 @@ set of 150 cards embedded as `flashcards(*)` came back with 100. So:
   rest of the file.
 - **Past two columns.** Empty fields at the end of a row are a spreadsheet's empty columns
   and are dropped (`dog,perro,,` is `perro`). More fields than two are joined back into the
-  definition only when none of them was quoted — `hacer, to do, to make`, split at the first
-  separator as Quizlet splits it. A quoted field is a column its writer meant, so a third
-  one is left out, and the preview says how many lines had columns left out.
+  definition only when none of them was quoted and the separator is typed text — a comma, a
+  dash or a custom one: `hacer, to do, to make`, split at the first separator as Quizlet
+  splits it. A quoted field, or one after a tab, is a column its writer meant, so a third one
+  is left out, and the preview says how many lines had columns left out.
 - **Anki's text export**: its header lines — Anki's own keys only (`#separator:tab`,
   `#html:true`, `#tags column:3` and so on), and only in the block the file begins with —
   are skipped; a card may begin with `#`, or look like `#define: a macro`, anywhere. The
@@ -196,7 +216,18 @@ set of 150 cards embedded as `flashcards(*)` came back with 100. So:
   `Term` / `Definition` loses it on a round trip, visibly.
 - **Bounded.** Text over 8 MB, pasted or opened, is not read (a set holds 2 MB); reading
   stops at 20,000 lines — ten for every card a set holds — and says so; and the preview draws
-  the first 200 cards and 200 problems, with the count of the rest.
+  the first 200 cards and 200 problems, with the count of the rest. Reading is linear: a quote
+  opening a field once copied the record so far (one line of `"",` forty thousand times took
+  seven seconds), and an HTML tag was looked for to the end of its field. The box has no
+  `dir="auto"`, which had the browser weigh the whole paste — fourteen seconds for a megabyte,
+  and a paste of eight never came back to say it was too long; its direction is its first
+  letter's, looked for in its first 400 characters (`leadingDirection`).
+- **Encodings.** A file is read as UTF-8, or as UTF-16 when it begins with UTF-16's mark —
+  what Excel's "Unicode Text" writes. Null characters, which no set can hold (Postgres text
+  cannot), are taken out of whatever is read, and the preview says how many: a file full of
+  them is usually UTF-16 without its mark.
+- **Add waits for the preview.** The text is read a draw behind the typing, and until that
+  draw comes Add is held, so it never takes the cards of the text before a paste.
 - **Nothing is dropped silently.** A blank line is nothing; every other line either becomes a
   card or is listed under the preview with its line number and why — no separator, no term,
   no definition, a side too long. The preview lists the cards before anything is saved, and
@@ -221,17 +252,21 @@ an address — and all four run in the browser. Every shuffle is seeded (`seeded
 where the order is per card, so nothing reorders under the reader between renders; a new
 sitting (Shuffle, Retake, Play again) is a new seed. A typed answer is graded by
 `gradeCloze` — exact, or close by its slip rule, with marks such as `+` compared — the rule
-the rest of the app grades typed recall with. Every mode has **Answer with: Term /
-Definition**; the other side is the prompt. Esc, or **Back to the set**, leaves a mode, and
-focus moves to the new heading on every screen change.
+the rest of the app grades typed recall with, against the card's own answer; another card's
+answer that is right for the prompt (below) is right typed as it is. Every mode has
+**Answer with: Term / Definition**; the other side is the prompt. Esc, or **Back to the
+set**, leaves a mode, and focus moves to the new heading on every screen change.
 
 **Distractors** are the set's own other cards' answers on the side being answered: each
 once, and never one a reader would take for the right answer — two answers with the same
 `normaliseAnswer` letters and `semanticMarks` are one answer, and **the answer of another
 card with the same prompt is a right answer too** ("bank": a river's edge, and a lender), so
-it is never a wrong option or a false statement, and is accepted when chosen or typed. So a
-set of four or more offers four choices, a set of two or three offers two or three, and a
-card with nothing to choose between is asked in writing.
+it is never a wrong option or a false statement, and is accepted when chosen or typed —
+typed by its key (`answerKey`: the same letters and marks), a lookup, while the slip rule is
+for the card's own answer alone. Held to every answer of its prompt by the slip rule, a
+prompt 1,997 cards share made marking a Test of 2,000 take 77 seconds; it takes tens of
+milliseconds. So a set of four or more offers four choices, a set of two or three offers two
+or three, and a card with nothing to choose between is asked in writing.
 
 **Keyed once.** Each card's answer and prompt are keyed once per set and side, kept against
 the cards array itself (a `WeakMap`), and three distractors are drawn from a seeded order of
@@ -274,7 +309,9 @@ counts it — the reader's own judgement, which is fine here because nothing is 
 Progress is "Mastered 12 of 40" on the hairline `Meter`. A card with nothing to choose
 between — a set of one, or cards whose only other answers are right ones too — is asked in
 writing from the start and after a miss. The end says
-"You've learnt all N" and offers **Learn again**. Learn answers with the term by default:
+"You've learnt all N" and offers **Learn again**. Learn over the ones a test missed, every one
+since deleted elsewhere, has nothing to ask, and says so with the way back — rather than
+rounds of nothing, each over as it began. Learn answers with the term by default:
 a written answer is graded exact-or-close, which is fair for a word and harsh for a
 sentence.
 
@@ -290,7 +327,7 @@ dealt multiple choice or true/false with no other answer to offer is asked in wr
 **Submit** grades everything at once: "15 / 20", every question marked right or wrong in
 words — "Wrong: you chose …", "you wrote …" — with the answer beside it, an unanswered
 question counted wrong. A choice or a typed answer is right when it is right for the prompt:
-the card's own answer or another same-prompt card's. **Retake**
+the card's own answer, or another same-prompt card's — typed as it is. **Retake**
 is a new seed; **Learn the ones you missed** opens Learn over just those cards.
 
 ### Match
@@ -326,7 +363,9 @@ returns, and a mode open on it starts afresh if the set changed meanwhile.
 **What leaves the device, and when**, per device:
 
 - A set deleted here takes its copy and every key of its with it — its round, its best
-  Match time, its draft.
+  Match time, and its draft in this tab. A draft in another tab is that tab's, and stays
+  there until it is let go, or saved — when the editor, finding the set gone, asks whether to
+  put it back.
 - A set deleted on another device goes from this one the next time a complete list is read
   here: its copy and its round and best time, but not a draft, which is the reader's own
   unsaved typing and stays in the tab until saved or let go.

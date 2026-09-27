@@ -150,6 +150,11 @@ function LanguageChoice({
  *
  * Nothing else writes into a box once it is drawn: a row added, moved or removed is a row
  * drawn, moved or dropped by its key, and a draft replaced wholesale is a new editor.
+ *
+ * AND A ROW'S BUTTONS NAME ITS CARD, NOT ITS PLACE. The place a row is drawn with is a draw
+ * behind, like the list: Remove card 970 and then, within a draw, Remove card 975 took card 976,
+ * and Down held on card 1 moved it back and forth. A button says which card it is on, and the
+ * editor finds where that card is in the draft as it is when the press lands.
  */
 const FlashcardRow = memo(function FlashcardRow({
   card,
@@ -165,8 +170,8 @@ const FlashcardRow = memo(function FlashcardRow({
   last: boolean;
   idPrefix: string;
   onChange: (cardId: string, side: 'term' | 'definition', value: string) => void;
-  onMove: (index: number, delta: -1 | 1) => void;
-  onRemove: (index: number) => void;
+  onMove: (cardId: string, delta: -1 | 1) => void;
+  onRemove: (cardId: string) => void;
 }) {
   const n = index + 1;
   return (
@@ -208,7 +213,7 @@ const FlashcardRow = memo(function FlashcardRow({
           className="btn btn--plain"
           aria-label={`Move card ${n} up`}
           aria-disabled={index === 0}
-          onClick={() => onMove(index, -1)}
+          onClick={() => onMove(card.id, -1)}
         >
           Up
         </button>
@@ -217,7 +222,7 @@ const FlashcardRow = memo(function FlashcardRow({
           className="btn btn--plain"
           aria-label={`Move card ${n} down`}
           aria-disabled={last}
-          onClick={() => onMove(index, 1)}
+          onClick={() => onMove(card.id, 1)}
         >
           Down
         </button>
@@ -225,7 +230,7 @@ const FlashcardRow = memo(function FlashcardRow({
           type="button"
           className="btn btn--plain"
           aria-label={`Remove card ${n}`}
-          onClick={() => onRemove(index)}
+          onClick={() => onRemove(card.id)}
         >
           Remove
         </button>
@@ -283,6 +288,14 @@ export function FlashcardEditor({
   const [leaving, setLeaving] = useState<null | 'top' | 'bottom'>(null);
   const [importing, setImporting] = useState(false);
   const [moved, setMoved] = useState('');
+  /*
+   * Said in the live region beside the cards. The same words twice -- "Card 5 removed." for
+   * two cards in turn -- change nothing in the region, and a screen reader says nothing the
+   * second time; so a repeat is told apart by a no-break space, which is not read.
+   */
+  const announce = useCallback((words: string) => {
+    setMoved((said) => (said === words ? `${words}\u00a0` : words));
+  }, []);
   // Worked out a draw behind the typing, so a key press never waits on a pass over the set.
   // Only for asking before the tab closes; a way out pressed here asks of the draft as it is.
   const settled = useDeferredValue(draft);
@@ -348,24 +361,45 @@ export function FlashcardEditor({
     focusAfter(`${id}-term-${card.id}`);
   };
 
+  /*
+   * By the card's id, found in the draft as it is. `latest` is the draft as last drawn, and
+   * each press moves it on at once, so a second press before the first is drawn finds the
+   * cards the first left; the update finds the card again in whatever draft it is applied to,
+   * so it moves or removes that card and no other. A press on a row whose card is already
+   * gone does nothing, and says nothing.
+   */
   const removeCard = useCallback(
-    (index: number) => {
+    (cardId: string) => {
       const cards = latest.current.cards;
+      const index = cards.findIndex((c) => c.id === cardId);
+      if (index < 0) return;
       const after = cards[index + 1] ?? cards[index - 1];
-      setDraft((d) => ({ ...d, cards: d.cards.filter((_, i) => i !== index) }));
-      setMoved(`Card ${index + 1} removed.`);
+      latest.current = { ...latest.current, cards: cards.filter((c) => c.id !== cardId) };
+      setDraft((d) => ({ ...d, cards: d.cards.filter((c) => c.id !== cardId) }));
+      announce(`Card ${index + 1} removed.`);
       focusAfter(after ? `${id}-term-${after.id}` : `${id}-add`);
     },
-    [focusAfter, id],
+    [announce, focusAfter, id],
   );
 
-  const move = useCallback((index: number, delta: -1 | 1) => {
-    const count = latest.current.cards.length;
-    const to = index + delta;
-    if (to < 0 || to >= count) return;
-    setDraft((d) => ({ ...d, cards: moveDraftCard(d.cards, index, delta) }));
-    setMoved(`Card ${index + 1} is now card ${to + 1} of ${count}.`);
-  }, []);
+  const move = useCallback(
+    (cardId: string, delta: -1 | 1) => {
+      const cards = latest.current.cards;
+      const index = cards.findIndex((c) => c.id === cardId);
+      const to = index + delta;
+      if (index < 0 || to < 0 || to >= cards.length) return;
+      latest.current = { ...latest.current, cards: moveDraftCard(cards, index, delta) };
+      setDraft((d) => {
+        const at = d.cards.findIndex((c) => c.id === cardId);
+        const next = at + delta;
+        return at < 0 || next < 0 || next >= d.cards.length
+          ? d
+          : { ...d, cards: moveDraftCard(d.cards, at, delta) };
+      });
+      announce(`Card ${index + 1} is now card ${to + 1} of ${cards.length}.`);
+    },
+    [announce],
+  );
 
   /** Saves the draft -- over a newer version of the set when the reader chose that. */
   const save = async (over = false) => {
@@ -565,7 +599,7 @@ export function FlashcardEditor({
                 ],
               }));
               setImporting(false);
-              setMoved(`${cardCount(cards.length)} added at the end.`);
+              announce(`${cardCount(cards.length)} added at the end.`);
               focusAfter(`${id}-add`);
             }}
           />
@@ -607,13 +641,23 @@ export function FlashcardEditor({
                 >
                   Load the latest, and let mine go
                 </button>
-                <button type="button" className="btn btn--plain" onClick={() => void save(true)}>
+                <button
+                  type="button"
+                  className="btn btn--plain"
+                  aria-describedby={`${id}-conflict`}
+                  onClick={() => void save(true)}
+                >
                   Save mine over it
                 </button>
               </>
             ) : (
               <>
-                <button type="button" className="btn" onClick={() => void save(true)}>
+                <button
+                  type="button"
+                  className="btn"
+                  aria-describedby={`${id}-conflict`}
+                  onClick={() => void save(true)}
+                >
                   Put it back, as it is here
                 </button>
                 <button

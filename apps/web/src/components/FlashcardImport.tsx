@@ -8,7 +8,9 @@ import { useDeferredValue, useId, useMemo, useState } from 'react';
 import { CARD_LIMIT } from '../lib/flashcards.js';
 import {
   READ_LIMIT,
+  decodeFileText,
   guessSeparators,
+  leadingDirection,
   parseImport,
   separatorProblem,
   type CardSeparator,
@@ -77,6 +79,8 @@ export function FlashcardImport({
   const problem = separatorProblem(options);
   // Parsed a draw behind the typing, so a key in a long paste is not held up by reading it all.
   const pasted = useDeferredValue(text);
+  // And until that draw comes, the preview is of the text before: nothing is taken from it.
+  const pending = pasted !== text;
   const tooLong = pasted.length > FILE_LIMIT;
   const result = useMemo(
     () => (problem || tooLong || !pasted.trim() ? null : parseImport(pasted, options)),
@@ -91,7 +95,7 @@ export function FlashcardImport({
       return;
     }
     try {
-      const read = await file.text();
+      const read = decodeFileText(new Uint8Array(await file.arrayBuffer()));
       const guess = guessSeparators(file.name, read);
       setBetween(guess.between.kind);
       if (guess.between.kind === 'custom') setBetweenCustom(guess.between.text);
@@ -112,11 +116,12 @@ export function FlashcardImport({
         <label className="field__label" htmlFor={`${id}-text`}>
           Paste your cards
         </label>
+        {/* Its direction from its first line, never `dir="auto"`: see `leadingDirection`. */}
         <textarea
           id={`${id}-text`}
           className="field__textarea"
           rows={8}
-          dir="auto"
+          dir={leadingDirection(text)}
           value={text}
           onChange={(e) => setText(e.target.value)}
           aria-describedby={`${id}-text-note`}
@@ -231,7 +236,7 @@ export function FlashcardImport({
                 ? 'Nothing pasted yet.'
                 : `${cardCount(count)} to add` +
                   (result.problems.length > 0
-                    ? `, and ${result.problems.length} ${result.problems.length === 1 ? 'line that is' : 'lines that are'} not a card.`
+                    ? `, and ${result.problems.length.toLocaleString()} ${result.problems.length === 1 ? 'line that is' : 'lines that are'} not a card.`
                     : '.')}
         </p>
         {result && result.over > 0 && (
@@ -245,7 +250,16 @@ export function FlashcardImport({
           <p className="form-note">
             {result.headers === 1
               ? 'One header line was skipped.'
-              : `${result.headers} header lines were skipped.`}
+              : `${result.headers.toLocaleString()} header lines were skipped.`}
+          </p>
+        )}
+        {result && result.nulls > 0 && (
+          <p className="form-note">
+            {result.nulls === 1
+              ? 'One null character was'
+              : `${result.nulls.toLocaleString()} null characters were`}{' '}
+            taken out, which a set cannot hold. If the cards read oddly, the file may be in another
+            encoding: save it as UTF-8 and open it again.
           </p>
         )}
         {result?.unread && (
@@ -310,10 +324,10 @@ export function FlashcardImport({
         <button
           type="button"
           className={primary ? 'btn btn--primary' : 'btn'}
-          aria-disabled={disabled || busy || count === 0}
+          aria-disabled={disabled || busy || pending || count === 0}
           aria-describedby={disabled && disabledReason ? `${id}-disabled` : undefined}
           onClick={() => {
-            if (disabled || busy || !result || count === 0) return;
+            if (disabled || busy || pending || !result || count === 0) return;
             onTake(result.cards);
           }}
         >

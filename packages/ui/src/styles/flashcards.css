@@ -15,6 +15,9 @@
   overflow-wrap: anywhere;
 }
 
+/* No margin of their own at the sides or below -- and none taken away above, where a list in a
+   `.stack` has the stack's gap. `margin: 0` came after `.stack > * + *`, at the same weight,
+   and took it: the list's first hairline sat on the note above it. */
 .flashcards__list,
 .flashcards__modes,
 .flashcards__cards,
@@ -23,7 +26,8 @@
 .flashcards__tiles,
 .flashcards__problems {
   list-style: none;
-  margin: 0;
+  margin-inline: 0;
+  margin-block-end: 0;
   padding: 0;
 }
 
@@ -125,7 +129,8 @@
 .flashcards__mode-name {
   padding-left: 0;
   padding-right: 0;
-  text-align: left;
+  /* `start`, not `left`: a title in Arabic reads from the right, as its `dir="auto"` says. */
+  text-align: start;
   text-transform: none;
   letter-spacing: -0.015em;
   font-family: var(--font-display);
@@ -197,7 +202,8 @@
   align-items: baseline;
   gap: var(--space-2) var(--space-4);
   border: 0;
-  margin: 0;
+  margin-inline: 0;
+  margin-block-end: 0;
   padding: 0;
 }
 
@@ -275,7 +281,7 @@
 .flashcards__option {
   display: block;
   width: 100%;
-  text-align: left;
+  text-align: start;
   font-family: var(--font-body);
   font-size: var(--step-0);
   line-height: var(--line-snug);
@@ -334,7 +340,8 @@
    lines up with the first answer instead. */
 .flashcards__questions {
   list-style: none;
-  margin: 0;
+  margin-inline: 0;
+  margin-block-end: 0;
   padding: 0;
 }
 
@@ -384,7 +391,7 @@
   width: 100%;
   height: 100%;
   min-height: 5rem;
-  text-align: left;
+  text-align: start;
   font-family: var(--font-body);
   font-size: var(--step-0);
   line-height: var(--line-snug);
@@ -440,7 +447,8 @@
   flex-wrap: wrap;
   gap: var(--space-2) var(--space-5);
   border: 0;
-  margin: 0;
+  margin-inline: 0;
+  margin-block-end: 0;
   padding: 0;
 }
 

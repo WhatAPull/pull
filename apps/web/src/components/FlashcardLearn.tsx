@@ -65,8 +65,11 @@ export function FlashcardLearn({
 
   const question = learnQuestion(state, set.cards);
   const { mastered, total } = learnProgress(state);
+  // Nothing to learn: the cards a test missed, all deleted since -- on another screen, and
+  // the set read again. Rounds of none would each end at once and offer the next, for ever.
+  const empty = total === 0;
   const done = learnDone(state);
-  const between = !done && learnRoundOver(state);
+  const between = !empty && !done && learnRoundOver(state);
   const answered = state.answered;
   const promptSide: AnswerSide = state.answerWith === 'term' ? 'definition' : 'term';
 
@@ -110,9 +113,11 @@ export function FlashcardLearn({
         <button type="button" className="btn btn--plain meta" onClick={onLeave}>
           ← Back to the set
         </button>
-        <span className="flashcards__count">
-          Round {state.roundNo} · Mastered {mastered} of {total}
-        </span>
+        {!empty && (
+          <span className="flashcards__count">
+            Round {state.roundNo} · Mastered {mastered} of {total}
+          </span>
+        )}
       </div>
       <p className="meta" dir="auto">
         {set.title}
@@ -120,17 +125,33 @@ export function FlashcardLearn({
       <h1 id={headingId} tabIndex={-1} className="flashcards__heading">
         Learn
       </h1>
-      <Meter
-        value={total === 0 ? 0 : mastered / total}
-        label={`Mastered ${mastered} of ${total}`}
-      />
-      <AnswerWithChoice
-        value={state.answerWith}
-        onChange={restart}
-        note="Changing this starts again."
-      />
+      {!empty && (
+        <>
+          <Meter value={mastered / total} label={`Mastered ${mastered} of ${total}`} />
+          <AnswerWithChoice
+            value={state.answerWith}
+            onChange={restart}
+            note="Changing this starts again."
+          />
+        </>
+      )}
 
-      {done ? (
+      {empty ? (
+        <div className="stack flashcards__end">
+          <h2 id={BREAK_ID} tabIndex={-1} className="flashcards__subheading">
+            There are no cards to learn here.
+          </h2>
+          <p>
+            The cards you were to learn are no longer in the set: it was changed somewhere else
+            since you began.
+          </p>
+          <div className="flashcards__actions">
+            <button type="button" className="btn btn--primary" onClick={onLeave}>
+              Back to the set
+            </button>
+          </div>
+        </div>
+      ) : done ? (
         <div className="stack flashcards__end">
           <h2 id={BREAK_ID} tabIndex={-1} className="flashcards__subheading">
             You’ve learnt all {cardCount(total)}.

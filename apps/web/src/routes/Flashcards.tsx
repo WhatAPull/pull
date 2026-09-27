@@ -62,6 +62,14 @@ export function Flashcards({
 
   useEffect(() => {
     const controller = new AbortController();
+    /*
+     * Arriving here from a set that is gone -- "Leave it deleted", a set deleted elsewhere --
+     * the pressed control went with its screen and focus fell to the page. The list's heading
+     * takes it once the list is drawn, as a set's title does on its own page.
+     */
+    const arrived = () => {
+      if (document.activeElement === document.body) focusAfter(LIST_TITLE);
+    };
     const fromThisDevice = async () => {
       const kept = await readFlashcardSets(userId);
       if (controller.signal.aborted) return;
@@ -69,6 +77,7 @@ export function Flashcards({
       setFromDevice(true);
       setError(null);
       setSettled(true);
+      arrived();
     };
     // Offline, what is on the device at once, rather than after supabase-js has retried its
     // way to failing; the account is read again when the connection returns.
@@ -83,6 +92,7 @@ export function Flashcards({
         setFromDevice(false);
         setError(null);
         setSettled(true);
+        arrived();
         // A set the whole list does not have is gone from the account -- deleted on another
         // device -- and its copy goes from this one.
         if (complete) void pruneFlashcardSets(userId, new Set(list.map((s) => s.id)));
@@ -98,7 +108,7 @@ export function Flashcards({
         setSettled(true);
       });
     return () => controller.abort();
-  }, [userId, attempt]);
+  }, [userId, attempt, focusAfter]);
 
   // A list read from this device is read from the account again when the connection is back.
   useEffect(() => {

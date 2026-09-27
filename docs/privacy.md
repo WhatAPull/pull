@@ -12,8 +12,9 @@ catalogue, and nothing in them is sent to a model: studying them — card by car
 Test and Match — happens in your browser, and how you did is not recorded by us. So you can
 study without a connection, a copy of each set you open stays in the browser you opened it
 in; a round of cards in progress, your best Match time, and changes to a set you have not
-saved yet are kept in that browser too. Each goes from a browser when you delete the set
-there, when you sign out there, and when you delete your account there; a set you delete
+saved yet are kept in that browser too — the changes in the tab you made them in. Each goes
+from a browser when you delete the set there (its unsaved changes, from the tab you delete
+it in), when you sign out there, and when you delete your account there; a set you delete
 on another device goes from this one the next time you open your list of sets here. Reading
 a card aloud uses only a voice installed on your device. Your sets are in your account
 export and are deleted with your account. See [What you create](#what-you-create).
@@ -526,10 +527,12 @@ What the app does put on your device, all of it first-party and all of it necess
   time in Match, so a reload picks up where you were; a round is let go once it ends. In
   `sessionStorage`, which the browser keeps for one tab, changes to a set you have not saved
   yet, so leaving the page by accident does not lose them. All are kept under your own id,
-  in the browser they were made in, and are removed from it when you delete the set there,
-  when you sign out there, and when you delete your account there. A copy of a set you
-  deleted on another device is removed the next time your list of sets is read here; changes
-  you had not saved stay in the tab until you save them or let them go.
+  in the browser they were made in, and are removed from it when you sign out there and when
+  you delete your account there. Deleting a set there removes its copy, its round and its
+  best time from that browser, and its unsaved changes from the tab you delete it in; changes
+  to it you had not saved in another tab stay in that tab until you save them or let them go.
+  A copy of a set you deleted on another device is removed the next time your list of sets is
+  read here; changes you had not saved stay in the tab until you save them or let them go.
 - **The app itself**, cached by a service worker.
 
 Clearing your browser's site data removes all of it, and signs you out.
@@ -579,8 +582,9 @@ While your account exists, your data exists — unlimited history is one of the 
 this product refuses to charge for, so we are not going to quietly trim it.
 
 You can delete a flashcard set, with all its cards, from the set's page, without deleting
-your account; what that browser kept of it goes with it, and a copy on another device goes
-the next time you open your list of sets there.
+your account; what that browser kept of it goes with it (unsaved changes to it, from the tab
+you delete it in), and a copy on another device goes the next time you open your list of
+sets there.
 
 You can delete an individual private study source and all its versions from Studio.
 This removes the extracted text for that source, and every version of a study course and

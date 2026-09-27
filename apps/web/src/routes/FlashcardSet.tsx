@@ -8,7 +8,7 @@
  * for a connection. A set that is not the reader's -- or not anyone's -- reads "No such set",
  * one answer for both, because RLS makes them the same thing.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { FlashcardEditor } from '../components/FlashcardEditor.js';
 import { FlashcardLearn } from '../components/FlashcardLearn.js';
 import { FlashcardMatch } from '../components/FlashcardMatch.js';
@@ -84,6 +84,19 @@ export function FlashcardSetPage({
   const [deleted, setDeleted] = useState(false);
   // Opening the editor again -- on the latest version of the set -- is a new editor.
   const [editing, setEditing] = useState(0);
+  /*
+   * Whether this page is still the reader's. A save or a read of the latest version resolves
+   * after its awaits, and the page may be gone by then -- the reader signed out, which cleared
+   * this device of their sets. Writing the set back to this device then put it under an id
+   * nobody is signed in as. The load below checks its own abort signal; these check this.
+   */
+  const live = useRef(true);
+  useEffect(() => {
+    live.current = true;
+    return () => {
+      live.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -265,6 +278,7 @@ export function FlashcardSetPage({
             // what the account holds -- and if the read fails, the save still happened, so
             // the page shows what was saved rather than calling it unsaved.
             const fresh = await fetchSet(set.id).catch(() => null);
+            if (!live.current) return;
             const next: FlashcardSet = fresh ?? {
               id: payload.id,
               title: payload.title,
@@ -285,6 +299,7 @@ export function FlashcardSetPage({
           onLoadLatest={() => {
             void fetchSet(set.id)
               .then((fresh) => {
+                if (!live.current) return;
                 if (!fresh) {
                   forgetHere(set.id);
                   setMissing(true);
@@ -299,6 +314,7 @@ export function FlashcardSetPage({
                 focusAfter(EDIT_TITLE_ID);
               })
               .catch((e: unknown) => {
+                if (!live.current) return;
                 setView({ kind: 'overview' });
                 setActionError(
                   isOfflineFailure(e)
