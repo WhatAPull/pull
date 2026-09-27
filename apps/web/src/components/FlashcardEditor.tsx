@@ -51,7 +51,7 @@ import {
 } from '../lib/flashcards.js';
 import { isOfflineFailure } from '../lib/offline.js';
 import { sqlDetail, sqlState } from '../lib/rpc-error.js';
-import { mutationId } from '../lib/submission.js';
+import { recordId } from '../lib/submission.js';
 import { FlashcardImport } from './FlashcardImport.js';
 import { cardCount, readStored, useFocusAfter, writeStored } from './FlashcardParts.js';
 
@@ -358,7 +358,7 @@ export function FlashcardEditor({
   }, []);
 
   const addCard = () => {
-    const card = { id: mutationId(), term: '', definition: '' };
+    const card = { id: recordId(), term: '', definition: '' };
     setDraft((d) => ({ ...d, cards: [...d.cards, card] }));
     focusAfter(`${id}-term-${card.id}`);
   };
@@ -647,7 +647,7 @@ export function FlashcardEditor({
                 ...d,
                 cards: [
                   ...d.cards.filter((c) => c.term.trim() || c.definition.trim()),
-                  ...cards.map((c) => ({ id: mutationId(), ...c })),
+                  ...cards.map((c) => ({ id: recordId(), ...c })),
                 ],
               }));
               setImporting(false);

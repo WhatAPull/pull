@@ -199,24 +199,49 @@ function ankiHeader(text: string): AnkiHeader {
   return { lines, count, html, separator, drop };
 }
 
+/** The entities Anki writes, as what they stand for. */
+const ANKI_ENTITIES: Record<string, string> = {
+  nbsp: ' ',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  '#39': "'",
+  amp: '&',
+};
+const ANKI_ENTITY = /&(nbsp|lt|gt|quot|#39|amp);/g;
+/** The tags that end a line: `<br>`, and the close of a block. */
+const ANKI_LINE_END = /^(?:br\s*\/?|\/(?:div|p))$/i;
+
 /**
  * Anki's HTML, as text: a line break a line break, and every other tag gone.
  *
- * A tag is read up to the next `<` at most, not to the next `>` wherever it is: a field of
- * forty thousand `<` and no `>` had each one searched to the end of the field, and a file of
- * them froze the tab for as long as it was quadratic.
+ * One pass, left to right, rather than a chain of replacements. A tag is a `<`, then no `<`
+ * or `>`, then a `>`; a `<` that another `<` follows first is text. Each character is looked
+ * at once -- a field of forty thousand `<` and no `>` froze the tab when each was searched to
+ * the end -- and the entities are decoded in one step, only in the text between tags, so
+ * `&amp;lt;` stays `&lt;` and nothing decoded is read as a tag.
+ *
+ * What comes out is text, and it is only ever shown as text: `&lt;b&gt;` is a card about
+ * HTML, and it keeps its angle brackets.
  */
 function ankiText(html: string): string {
-  return html
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(?:div|p)>/gi, '\n')
-    .replace(/<[^<>]*>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&amp;/g, '&');
+  const text = (s: string) =>
+    s.replace(ANKI_ENTITY, (_, name: string) => ANKI_ENTITIES[name] as string);
+  let out = '';
+  let from = 0; // where the text not yet written begins
+  let open = -1; // the `<` the next `>` would close, if there is one
+  for (let i = 0; i < html.length; i += 1) {
+    const c = html[i];
+    if (c === '<') {
+      open = i;
+    } else if (c === '>' && open !== -1) {
+      out += text(html.slice(from, open));
+      if (ANKI_LINE_END.test(html.slice(open + 1, i))) out += '\n';
+      from = i + 1;
+      open = -1;
+    }
+  }
+  return out + text(html.slice(from));
 }
 
 /** A record of the source and where it began, before it is read as a card. */

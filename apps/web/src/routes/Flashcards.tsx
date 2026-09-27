@@ -30,7 +30,7 @@ import {
   readFlashcardSets,
 } from '../lib/offline.js';
 import { sqlDetail, sqlState } from '../lib/rpc-error.js';
-import { mutationId } from '../lib/submission.js';
+import { recordId } from '../lib/submission.js';
 
 type View = 'list' | 'new' | 'import';
 
@@ -55,7 +55,7 @@ export function Flashcards({
   const [attempt, setAttempt] = useState(0);
   // The id a new set is made under, minted when the screen opens, so a save retried after
   // a lost response makes the same set rather than a second one.
-  const [newId, setNewId] = useState(mutationId);
+  const [newId, setNewId] = useState(recordId);
   const [importTitle, setImportTitle] = useState('');
   const [importError, setImportError] = useState<string | null>(null);
   // The screen whose import is on its way, by its id: the state is the page's, and a screen
@@ -136,7 +136,7 @@ export function Flashcards({
   const open = (next: View) => {
     setView(next);
     setImportError(null);
-    if (next !== 'list') setNewId(mutationId());
+    if (next !== 'list') setNewId(recordId());
     focusAfter(next === 'new' ? NEW_TITLE : next === 'import' ? IMPORT_TITLE : LIST_TITLE);
     window.scrollTo(0, 0);
   };
@@ -175,7 +175,7 @@ export function Flashcards({
       <FlashcardEditor
         key={newId}
         userId={userId}
-        initial={newDraft(newId, mutationId)}
+        initial={newDraft(newId, recordId)}
         saved={null}
         heading="A new set"
         headingId={NEW_TITLE}
@@ -207,7 +207,7 @@ export function Flashcards({
           description: null,
           termLang: null,
           definitionLang: null,
-          cards: cards.map((c) => ({ id: mutationId(), ...c })),
+          cards: cards.map((c) => ({ id: recordId(), ...c })),
         });
       } catch (e: unknown) {
         setImportError(

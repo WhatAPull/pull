@@ -178,6 +178,19 @@ describe('Anki’s text export', () => {
     ]);
   });
 
+  it('reads each tag once, and what an entity stands for only as text', () => {
+    const read = (field: string) => parseImport(`#html:true\nt\t${field}`, TAB_LINES).cards[0];
+    // Decoded once: an escaped entity is the entity, written out.
+    expect(read('&amp;lt;b&amp;gt;')?.definition).toBe('&lt;b&gt;');
+    // A card about HTML keeps its angle brackets: decoded text is never read as a tag.
+    expect(read('&lt;script&gt;x&lt;/script&gt;')?.definition).toBe('<script>x</script>');
+    // A `<` that another `<` follows first is text; the tag is the second.
+    expect(read('a<<b>c')?.definition).toBe('a<c');
+    expect(read('a<BR/>b</P>c<br >d</div>')?.definition).toBe('a\nb\nc\nd');
+    // A tag with attributes goes, and so does a `>` with nothing to close.
+    expect(read('<span class="x">a</span> > b')?.definition).toBe('a > b');
+  });
+
   it('takes out the columns its header says are Anki’s own: tags, deck, note type, guid', () => {
     const tags = parseImport(
       '#separator:tab\n#html:true\n#tags column:3\nhola\thello\tspanish verbs\nadiós\tgoodbye\t\n',
