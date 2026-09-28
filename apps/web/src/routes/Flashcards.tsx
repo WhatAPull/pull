@@ -198,7 +198,11 @@ export function Flashcards({
         definitionLang: null,
         cards: suggested,
       });
-      if (mounted.current) onNavigate(`/flashcards/${encodeURIComponent(out.id)}`);
+      // Opens the set only from the list it was added on. New set and Import wait while an add
+      // is on its way; were the list gone, it is read again instead of pulling the reader off.
+      if (!mounted.current) return;
+      if (showing.current === null) onNavigate(`/flashcards/${encodeURIComponent(out.id)}`);
+      else setAttempt((n) => n + 1);
     } catch (e: unknown) {
       if (!mounted.current) return;
       setSuggestionError(
@@ -380,10 +384,10 @@ export function Flashcards({
         <button
           type="button"
           className="btn btn--primary"
-          aria-disabled={cannotMake}
+          aria-disabled={cannotMake || adding}
           aria-describedby={cannotMake ? 'flashcards-make-note' : undefined}
           onClick={() => {
-            if (!cannotMake) open('new');
+            if (!cannotMake && !adding) open('new');
           }}
         >
           New set
@@ -391,10 +395,10 @@ export function Flashcards({
         <button
           type="button"
           className="btn"
-          aria-disabled={cannotMake}
+          aria-disabled={cannotMake || adding}
           aria-describedby={cannotMake ? 'flashcards-make-note' : undefined}
           onClick={() => {
-            if (!cannotMake) open('import');
+            if (!cannotMake && !adding) open('import');
           }}
         >
           Import a set
