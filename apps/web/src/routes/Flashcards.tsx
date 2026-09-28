@@ -135,13 +135,18 @@ export function Flashcards({
   }, [userId, attempt, focusAfter]);
 
   // The suggestion is read beside the list, online. It is an offer, not the page: if it
-  // cannot be read, it is simply not made.
+  // cannot be read, it is simply not made. Once offered it is kept, ids and all, across a
+  // reconnect or a reread: an add whose answer was lost is retried as the same set, not made
+  // a second time under new ids. Only a suggestion too small to offer is replaced.
   useEffect(() => {
     if (!online || fromDevice) return;
     const controller = new AbortController();
     fetchSuggestion(recordId, controller.signal)
       .then((cards) => {
-        if (!controller.signal.aborted) setSuggestion({ id: recordId(), cards });
+        if (controller.signal.aborted) return;
+        setSuggestion((kept) =>
+          kept && kept.cards.length >= SUGGESTION_MIN ? kept : { id: recordId(), cards },
+        );
       })
       .catch((e: unknown) => {
         if (!controller.signal.aborted) console.warn('Suggested flashcards request failed', e);
