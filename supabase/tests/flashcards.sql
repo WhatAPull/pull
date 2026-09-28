@@ -807,3 +807,91 @@ begin
 end $test$;
 
 rollback;
+
+-- ------------------------------------------------ suggested from your reading (20260928100000)
+-- The ideas a reader has met, most due first, as headline and body: theirs and nobody
+-- else's, at most thirty, read under RLS as the reader. The function has invoker rights, so
+-- the policies on knowledge_states and pulls are its privacy -- asserted here too, since a
+-- definer that forgot its filter would hand one reader another's reading.
+begin;
+
+-- The first block's helpers went with its rollback, so this one switches role itself.
+do $test$
+declare
+  reader_a uuid := extensions.gen_random_uuid();
+  reader_b uuid := extensions.gen_random_uuid();
+  pulls_   uuid[];
+  got      uuid[];
+  n        int;
+  first_   record;
+begin
+  insert into auth.users
+    (id, instance_id, aud, role, email, encrypted_password,
+     email_confirmed_at, created_at, updated_at, is_anonymous,
+     raw_app_meta_data, raw_user_meta_data)
+  select r, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+         'suggest-' || r || '@example.test', '', now(), now(), now(), false, '{}', '{}'
+  from unnest(array[reader_a, reader_b]) as r;
+
+  select array_agg(id order by id) into pulls_ from (select id from public.pulls order by id limit 34) p;
+  if cardinality(pulls_) < 34 then
+    raise exception 'the corpus has % Pulls; these cases need 34', cardinality(pulls_);
+  end if;
+  -- Reader a met three, due in the order 2, 0, 1; reader b met a fourth.
+  insert into public.knowledge_states (user_id, pull_id, next_due_at) values
+    (reader_a, pulls_[1], now() + interval '2 days'),
+    (reader_a, pulls_[2], now() + interval '3 days'),
+    (reader_a, pulls_[3], now() - interval '1 day'),
+    (reader_b, pulls_[4], now());
+
+  perform set_config('role', 'authenticated', true);
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', reader_a, 'role', 'authenticated')::text, true);
+  if current_user <> 'authenticated' then
+    raise exception 'the suggestion must be read as a reader, not as %', current_user;
+  end if;
+  select array_agg(s.pull_id) into got from public.suggested_flashcards() as s;
+  if got is distinct from array[pulls_[3], pulls_[1], pulls_[2]] then
+    raise exception 'suggested % for reader a, not their three ideas, most due first', got;
+  end if;
+  select s.* into first_ from public.suggested_flashcards() as s limit 1;
+  if not exists (select 1 from public.pulls p
+                 where p.id = pulls_[3] and p.headline = first_.term
+                   and p.body = first_.definition) then
+    raise exception 'a suggested card is not its Pull''s headline and body';
+  end if;
+
+  perform set_config('role', 'authenticated', true);
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', reader_b, 'role', 'authenticated')::text, true);
+  select array_agg(s.pull_id) into got from public.suggested_flashcards() as s;
+  if got is distinct from array[pulls_[4]] then
+    raise exception 'reader b was suggested % -- not only their own idea', got;
+  end if;
+
+  -- At most thirty, however much a reader has met.
+  perform set_config('role', 'postgres', true);
+  insert into public.knowledge_states (user_id, pull_id)
+  select reader_b, p from unnest(pulls_[5:34]) as p;
+  perform set_config('role', 'authenticated', true);
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', reader_b, 'role', 'authenticated')::text, true);
+  select count(*) into n from public.suggested_flashcards();
+  if n <> 30 then
+    raise exception 'a reader with 31 ideas met was suggested %, not 30', n;
+  end if;
+
+  perform set_config('role', 'postgres', true);
+  if has_function_privilege('anon', 'public.suggested_flashcards()', 'execute')
+     or not has_function_privilege('authenticated', 'public.suggested_flashcards()', 'execute') then
+    raise exception 'suggested_flashcards is executable by the wrong roles';
+  end if;
+  if (select prosecdef from pg_proc where oid = 'public.suggested_flashcards()'::regprocedure) then
+    raise exception 'suggested_flashcards runs with definer rights: RLS no longer guards it';
+  end if;
+
+  raise notice 'flashcards suggested from your reading: the reader''s own, most due first, '
+    'at most thirty, under RLS';
+end $test$;
+
+rollback;

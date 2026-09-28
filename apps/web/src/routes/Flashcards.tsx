@@ -14,6 +14,7 @@ import { cardCount, shortDate, useFocusAfter, useOnline } from '../components/Fl
 import {
   CARD_LIMIT,
   SET_LIMIT,
+  SUGGESTION_MIN,
   TITLE_MAX,
   TOTAL_CARD_LIMIT,
   longerThan,
@@ -21,8 +22,9 @@ import {
   saveRefusal,
   type FlashcardSetSummary,
   type SavePayload,
+  type SuggestedCard,
 } from '../lib/flashcards.js';
-import { fetchSets, saveSet } from '../lib/flashcards-api.js';
+import { fetchSets, fetchSuggestion, saveSet } from '../lib/flashcards-api.js';
 import {
   isOfflineFailure,
   onReconnect,
@@ -61,6 +63,11 @@ export function Flashcards({
   // The screen whose import is on its way, by its id: the state is the page's, and a screen
   // opened after is not the one saving.
   const [importingId, setImportingId] = useState<string | null>(null);
+  // Cards suggested from the reader's reading, and the id the set is made under: both fixed
+  // once read, so an add retried after a lost answer makes the same set with the same cards.
+  const [suggestion, setSuggestion] = useState<{ id: string; cards: SuggestedCard[] } | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [suggestionError, setSuggestionError] = useState<string | null>(null);
   const importing = importingId !== null && importingId === newId;
   // The new set's id while its screen -- New set or Import -- is the one showing, and null on
   // the list or once this page has gone: a save answers only the screen it was made from.
@@ -127,6 +134,26 @@ export function Flashcards({
     return () => controller.abort();
   }, [userId, attempt, focusAfter]);
 
+  // The suggestion is read beside the list, online. It is an offer, not the page: if it
+  // cannot be read, it is simply not made. Once offered it is kept, ids and all, across a
+  // reconnect or a reread: an add whose answer was lost is retried as the same set, not made
+  // a second time under new ids. Only a suggestion too small to offer is replaced.
+  useEffect(() => {
+    if (!online || fromDevice) return;
+    const controller = new AbortController();
+    fetchSuggestion(recordId, controller.signal)
+      .then((cards) => {
+        if (controller.signal.aborted) return;
+        setSuggestion((kept) =>
+          kept && kept.cards.length >= SUGGESTION_MIN ? kept : { id: recordId(), cards },
+        );
+      })
+      .catch((e: unknown) => {
+        if (!controller.signal.aborted) console.warn('Suggested flashcards request failed', e);
+      });
+    return () => controller.abort();
+  }, [userId, attempt, online, fromDevice]);
+
   // A list read from this device is read from the account again when the connection is back.
   useEffect(() => {
     if (!fromDevice) return;
@@ -152,6 +179,42 @@ export function Flashcards({
     : fullOfCards
       ? `You have ${TOTAL_CARD_LIMIT.toLocaleString('en')} cards across your sets, which is as many as an account keeps. Delete cards or sets you are done with to make room.`
       : 'Making or importing a set needs a connection.';
+
+  // What the suggestion adds: as many of its cards as the account has room for.
+  const suggested = suggestion ? suggestion.cards.slice(0, Math.max(0, cardRoom)) : [];
+  const offerSuggestion = !cannotMake && suggested.length >= SUGGESTION_MIN;
+
+  const addSuggestion = async () => {
+    if (!suggestion || adding || !offerSuggestion) return;
+    setAdding(true);
+    setSuggestionError(null);
+    try {
+      const out = await saveSet({
+        id: suggestion.id,
+        title: `From your reading, ${shortDate(new Date().toISOString())}`,
+        description:
+          'Ideas you have read, most due for review first: each Pull’s headline and what it says.',
+        termLang: null,
+        definitionLang: null,
+        cards: suggested,
+      });
+      // Opens the set only from the list it was added on. New set and Import wait while an add
+      // is on its way; were the list gone, it is read again instead of pulling the reader off.
+      if (!mounted.current) return;
+      if (showing.current === null) onNavigate(`/flashcards/${encodeURIComponent(out.id)}`);
+      else setAttempt((n) => n + 1);
+    } catch (e: unknown) {
+      if (!mounted.current) return;
+      setSuggestionError(
+        isOfflineFailure(e)
+          ? 'That did not reach your account — you look offline. Try again once you are connected.'
+          : (saveRefusal(sqlState(e), sqlDetail(e), e instanceof Error ? e.message : '') ??
+              (e instanceof Error ? e.message : 'The set could not be made.')),
+      );
+    } finally {
+      if (mounted.current) setAdding(false);
+    }
+  };
 
   /*
    * A save opens the set it made -- if the reader is still on the screen they pressed Save on.
@@ -321,10 +384,10 @@ export function Flashcards({
         <button
           type="button"
           className="btn btn--primary"
-          aria-disabled={cannotMake}
+          aria-disabled={cannotMake || adding}
           aria-describedby={cannotMake ? 'flashcards-make-note' : undefined}
           onClick={() => {
-            if (!cannotMake) open('new');
+            if (!cannotMake && !adding) open('new');
           }}
         >
           New set
@@ -332,10 +395,10 @@ export function Flashcards({
         <button
           type="button"
           className="btn"
-          aria-disabled={cannotMake}
+          aria-disabled={cannotMake || adding}
           aria-describedby={cannotMake ? 'flashcards-make-note' : undefined}
           onClick={() => {
-            if (!cannotMake) open('import');
+            if (!cannotMake && !adding) open('import');
           }}
         >
           Import a set
@@ -351,6 +414,34 @@ export function Flashcards({
           You are offline. These are the sets opened on this device, and you can study any of them.
           Making, importing, editing or deleting a set needs a connection.
         </p>
+      )}
+
+      {offerSuggestion && (
+        <section className="stack flashcards__suggestion" aria-labelledby="flashcards-suggestion">
+          <h2 id="flashcards-suggestion" className="flashcards__subheading">
+            Suggested from your reading
+          </h2>
+          <p>
+            {cardCount(suggested.length)} from the ideas you have read, the ones most due for review
+            first: each Pull’s headline, and what it says. Adding them makes a set of your own, like
+            any other.
+          </p>
+          <div className="flashcards__actions">
+            <button
+              type="button"
+              className="btn"
+              aria-disabled={adding}
+              onClick={() => void addSuggestion()}
+            >
+              {adding ? 'Adding…' : 'Add as a set'}
+            </button>
+          </div>
+          {suggestionError && (
+            <p className="form-note" role="alert">
+              {suggestionError}
+            </p>
+          )}
+        </section>
       )}
 
       {sets.length === 0 ? (

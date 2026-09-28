@@ -203,6 +203,25 @@ set of 150 cards embedded as `flashcards(*)` came back with 100. So:
   set's title, not with the move, which read the heading over it.
 - Saving needs a connection; offline, Save says why instead of failing.
 
+## Suggested from your reading
+
+The list offers a set made from what the reader has read: the Pulls they have met
+(`knowledge_states`), most due for review first, each as a card from its headline to its body
+(`suggested_flashcards()`, `20260928100000`). It is a join and nothing else: no model, no new
+text, and the text is our own analysis of the work, not the work (laws 2 and 4).
+
+- **Invoker rights.** The function reads as the reader, so the policies on `knowledge_states`
+  and `pulls` are the whole of its privacy. `supabase/tests/flashcards.sql` asserts that one
+  reader never sees another's, and that the function stays SECURITY INVOKER.
+- **At most thirty cards,** and offered only from three. They are trimmed and cut to the card
+  limits in the browser (`suggestedCards`), because `flashcard_trim` is not a reader's to call;
+  the save trims again as it always does.
+- **An offer, then an ordinary set.** "Add as a set" saves the cards through
+  `save_flashcard_set` under an id fixed when the suggestion was read, so a retried add makes
+  one set. From then on the set is the reader's own, like any other, and nothing about how they
+  study it is recorded. Studying it does not move the Delta.
+- **Online only.** Offline, or if it cannot be read, the offer is simply not made.
+
 ## Importing
 
 **Import a set** on `/flashcards`, and **Add from text** in the editor, take pasted text or a

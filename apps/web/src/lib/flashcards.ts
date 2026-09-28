@@ -65,6 +65,48 @@ export function longerThan(text: string, max: number): boolean {
   return text.length > max && charCount(text) > max;
 }
 
+/** A suggestion is offered from this many cards: fewer is not a set worth making. */
+export const SUGGESTION_MIN = 3;
+
+/** A card suggested from the reader's reading, with the id it is saved under. */
+export interface SuggestedCard {
+  id: string;
+  term: string;
+  definition: string;
+}
+
+/** Trimmed, and cut to `max` characters as the limits count them -- never inside a pair. */
+function clipTo(text: string, max: number): string {
+  const t = text.trim();
+  if (!longerThan(t, max)) return t;
+  return Array.from(t).slice(0, max).join('').trim();
+}
+
+/**
+ * The rows `suggested_flashcards()` answers, as cards: each Pull's headline and body, trimmed
+ * and cut to the card limits, one card to a Pull, and none with a side left blank. `mint`
+ * gives each its id once, so a save retried after a lost answer saves the same cards.
+ */
+export function suggestedCards(data: unknown, mint: () => string): SuggestedCard[] {
+  if (!Array.isArray(data)) return [];
+  const seen = new Set<string>();
+  const cards: SuggestedCard[] = [];
+  for (const row of data) {
+    if (!row || typeof row !== 'object') continue;
+    const { pull_id: pull, term, definition } = row as Record<string, unknown>;
+    if (typeof pull !== 'string' || typeof term !== 'string' || typeof definition !== 'string') {
+      continue;
+    }
+    if (seen.has(pull)) continue;
+    const front = clipTo(term, TERM_MAX);
+    const back = clipTo(definition, DEFINITION_MAX);
+    if (!front || !back) continue;
+    seen.add(pull);
+    cards.push({ id: mint(), term: front, definition: back });
+  }
+  return cards;
+}
+
 /** A text's length in UTF-8 bytes, as the size limit weighs it: `octet_length` in the database. */
 export function utf8Length(text: string): number {
   let n = 0;

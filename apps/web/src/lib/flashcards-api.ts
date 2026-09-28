@@ -15,9 +15,11 @@ import {
   newestFirst,
   shapeSet,
   shapeSetSummaries,
+  suggestedCards,
   type FlashcardSet,
   type FlashcardSetSummary,
   type SavePayload,
+  type SuggestedCard,
 } from './flashcards.js';
 import { rpcError } from './rpc-error.js';
 import { supabase } from './supabase.js';
@@ -170,4 +172,20 @@ export async function deleteSet(setId: string): Promise<boolean> {
   const { data, error } = await supabase.rpc('delete_flashcard_set', { p_id: setId });
   if (error) throw rpcError(error);
   return data === true;
+}
+
+/**
+ * Cards suggested from the reader's reading: the Pulls they have met, most due for review
+ * first (`suggested_flashcards`, 20260928100000). A read under RLS, at most thirty rows; each
+ * card is given its id here, once.
+ */
+export async function fetchSuggestion(
+  mint: () => string,
+  signal?: AbortSignal,
+): Promise<SuggestedCard[]> {
+  let request = supabase.rpc('suggested_flashcards');
+  if (signal) request = request.abortSignal(signal);
+  const { data, error } = await request;
+  if (error) throw rpcError(error);
+  return suggestedCards(data, mint);
 }

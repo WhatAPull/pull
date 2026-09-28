@@ -5443,6 +5443,14 @@ export type Database = {
           run: string
         }[]
       }
+      suggested_flashcards: {
+        Args: never
+        Returns: {
+          definition: string
+          pull_id: string
+          term: string
+        }[]
+      }
       summary_is_readable: {
         Args: { s: Database["public"]["Tables"]["summaries"]["Row"] }
         Returns: boolean

@@ -1,9 +1,17 @@
 # Privacy Policy
 
-**Effective 27 September 2026.** Every revision of this document is a commit in this
+**Effective 28 September 2026.** Every revision of this document is a commit in this
 repository, so what changed and when is public history rather than a claim.
 
-**You can now make flashcard sets of your own.** A set is a title, a description if you
+**Flashcards can now start from your reading.** On your list of sets we suggest one made
+from the Pulls you have read, the ideas most due for review first: each card is a Pull's
+headline and what it says. We read only what we already keep — which Pulls you have met and
+when each is due again — and nothing is sent to a model. The suggestion is not saved unless
+you add it; added, it is a set of your own like any other, and how you study it is not
+recorded. See [What you create](#what-you-create).
+
+The previous revision, effective 27 September, said that **you can make flashcard sets of
+your own.** A set is a title, a description if you
 give one, the language each side is written in if you choose one, and its cards — each a
 term and a definition you typed, pasted, or opened from a file (`flashcard_sets`,
 `flashcards`). A file you open is read in your browser and is not uploaded; only the cards
@@ -19,7 +27,7 @@ on another device goes from this one the next time you open your list of sets he
 a card aloud uses only a voice installed on your device. Your sets are in your account
 export and are deleted with your account. See [What you create](#what-you-create).
 
-The previous revision, also effective 27 September, said that **you can add public study
+The revision before, also effective 27 September, said that **you can add public study
 courses.** We publish some study courses ourselves, made from
 works in the public domain or licensed to us and checked by a person -- never from anything a
 reader saved. Adding one copies it into your account as one of your courses, with its short
@@ -32,7 +40,7 @@ about the rights in it, we may delete every reader's copy of it** -- and with yo
 answers to its questions, your place in it, and what your answers showed you remember of it.
 See [What you create](#what-you-create).
 
-The revision before, also effective 27 September, said that **study courses may open to every
+Before that, a revision also effective 27 September said that **study courses may open to every
 reader with an account, and we measure how well they teach.** Until then only readers we
 invited could make a study course. We will open courses
 to everyone only after a human-reviewed quality check passes, and what making one sends and
@@ -44,7 +52,7 @@ an idea the course counted as known was answered wrong, how many reports were ma
 which only the people running the service can read, and in which no row names a reader.
 Nothing is sent to a model. See [What you create](#what-you-create).
 
-Before that, a revision also effective 27 September **made your study courses remember what your
+Earlier that day, a revision **made your study courses remember what your
 answers show.** For each claim a course
 teaches, we keep how well you remember it — worked out from your answers the course could
 check, the way your feed's review schedule is — and when you last answered it right or
