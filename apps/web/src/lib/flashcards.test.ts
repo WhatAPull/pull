@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   CARD_LIMIT,
   CHOICES,
+  DEFINITION_MAX,
   LEARN_ROUND,
   MATCH_CARDS,
   SET_BYTES_LIMIT,
+  TERM_MAX,
   acceptedAnswers,
   acceptedKeys,
   answerKey,
@@ -16,6 +18,7 @@ import {
   canMatch,
   charCount,
   choiceOptions,
+  suggestedCards,
   claimRight,
   continueLearn,
   defaultTestCount,
@@ -1153,5 +1156,63 @@ describe('what the screens keep in this browser', () => {
       readKeptDraft(JSON.stringify({ draft: { ...draft, title: 7 }, base: null }), 's1'),
     ).toBeNull();
     expect(readKeptDraft(JSON.stringify({ draft, base: 5 }), 's1')).toBeNull();
+  });
+});
+
+describe('suggestedCards', () => {
+  const mint = (() => {
+    let n = 0;
+    return () => `id-${(n += 1)}`;
+  })();
+
+  it('makes a Pull a card: headline to body, trimmed, each with an id minted once', () => {
+    const cards = suggestedCards(
+      [
+        {
+          pull_id: 'p1',
+          term: '  Yielding overcomes hardness. ',
+          definition: ' Soft outlasts hard.\n',
+        },
+        { pull_id: 'p2', term: 'Second', definition: 'Two' },
+      ],
+      mint,
+    );
+    expect(cards).toEqual([
+      { id: 'id-1', term: 'Yielding overcomes hardness.', definition: 'Soft outlasts hard.' },
+      { id: 'id-2', term: 'Second', definition: 'Two' },
+    ]);
+  });
+
+  it('keeps one card to a Pull, and none with a side left blank or a row it cannot read', () => {
+    const cards = suggestedCards(
+      [
+        { pull_id: 'p1', term: 'A', definition: 'a' },
+        { pull_id: 'p1', term: 'A again', definition: 'a' },
+        { pull_id: 'p2', term: '   ', definition: 'b' },
+        { pull_id: 'p3', term: 'C', definition: '' },
+        { pull_id: 4, term: 'D', definition: 'd' },
+        null,
+        'e',
+      ],
+      () => 'x',
+    );
+    expect(cards.map((c) => c.term)).toEqual(['A']);
+    expect(suggestedCards(null, () => 'x')).toEqual([]);
+  });
+
+  it('cuts a side to the card limits as they count characters, never inside a pair', () => {
+    const [card] = suggestedCards(
+      [
+        {
+          pull_id: 'p',
+          term: 'x'.repeat(TERM_MAX - 1) + '😀😀',
+          definition: 'y'.repeat(DEFINITION_MAX + 5),
+        },
+      ],
+      () => 'x',
+    );
+    expect(charCount(card!.term)).toBe(TERM_MAX);
+    expect(card!.term.endsWith('😀')).toBe(true);
+    expect(charCount(card!.definition)).toBe(DEFINITION_MAX);
   });
 });

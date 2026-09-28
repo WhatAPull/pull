@@ -602,3 +602,10 @@
 .flashcards__import--held * {
   cursor: progress;
 }
+
+/* Suggested from your reading: an offer set off by a hairline, as the page's sections are --
+   no panel, no shadow, no second accent. */
+.flashcards__suggestion {
+  padding-block: var(--space-4);
+  border-block: 1px solid var(--rule);
+}

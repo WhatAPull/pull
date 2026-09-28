@@ -5,7 +5,8 @@ repository, so what changed and when is public history rather than a claim.
 
 **You can now make flashcard sets of your own.** A set is a title, a description if you
 give one, the language each side is written in if you choose one, and its cards — each a
-term and a definition you typed, pasted, or opened from a file (`flashcard_sets`,
+term and a definition you typed, pasted, opened from a file, or added from a set we
+suggested from Pulls you have read (`flashcard_sets`,
 `flashcards`). A file you open is read in your browser and is not uploaded; only the cards
 you save are. Your sets are readable only by you, are never published and never join the
 catalogue, and nothing in them is sent to a model: studying them — card by card, Learn,
